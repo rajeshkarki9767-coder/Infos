@@ -62,7 +62,10 @@
       auth: {
         persistSession: true,        // keeps the session in storage (managed by Supabase)
         autoRefreshToken: true,      // rotates the short-lived access token automatically
-        detectSessionInUrl: true     // handles magic-link / OAuth redirects
+        // false → clicking the email confirmation link verifies the account but
+        // does NOT auto-create a session. The app routes the user to the sign-in
+        // page, where they enter email + password (per product requirement).
+        detectSessionInUrl: false
       }
     });
   }
@@ -81,7 +84,15 @@
         options: { data: { name: name || '' } }
       });
       if (error) throw error;
-      return data.user;
+      // With email confirmation ON, Supabase returns a user but NO session
+      // (session is null) until the user clicks the email link. We surface that
+      // so the app can show "check your email" and route to sign-in instead of
+      // auto-logging-in an unconfirmed account.
+      return {
+        user: data.user || null,
+        session: data.session || null,
+        needsConfirmation: !!(data.user && !data.session)
+      };
     },
 
     async signIn(email, password) {

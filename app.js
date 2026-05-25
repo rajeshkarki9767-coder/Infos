@@ -2463,14 +2463,23 @@
     if (window.InfosSupabase && window.InfosSupabase.configured()) {
       try {
         const name = authMode === 'signup' ? $('#auth-name').value.trim() : '';
-        const sbUser = authMode === 'signup'
-          ? await window.InfosSupabase.Auth.signUp(email, pw, name)
-          : await window.InfosSupabase.Auth.signIn(email, pw);
+        if (authMode === 'signup') {
+          const result = await window.InfosSupabase.Auth.signUp(email, pw, name);
+          btn.textContent = original; btn.disabled = false;
+          // Always route a new signup to the sign-in screen. If confirmation is
+          // required, show a popup telling them to check their email. Either way
+          // we do NOT auto-login a freshly created account.
+          openSignupConfirmModal(email, !!(result && result.needsConfirmation));
+          // Pre-fill the email on the sign-in form and switch to sign-in mode.
+          setAuthMode('signin');
+          const ef = $('#auth-email'); if (ef) ef.value = email;
+          const pf = $('#auth-password'); if (pf) pf.value = '';
+          return;
+        }
+        // Sign-in path
+        const sbUser = await window.InfosSupabase.Auth.signIn(email, pw);
         if (!sbUser) {
-          // e.g. signup needs email confirmation
-          showAuthError(authMode === 'signup'
-            ? 'Account created. Check your email to confirm, then sign in.'
-            : 'Could not sign in. Check your credentials.');
+          showAuthError('Could not sign in. Check your credentials.');
           btn.textContent = original; btn.disabled = false;
           return;
         }
@@ -2546,6 +2555,29 @@
   // Terms & Privacy preview modals from auth screen
   $('#show-terms').onclick = (e) => { e.preventDefault(); openTermsModal(); };
   $('#show-privacy-link').onclick = (e) => { e.preventDefault(); openPrivacyPreviewModal(); };
+
+  // Popup shown right after a successful signup. Uses the standard modal (which
+  // has the blurred backdrop). Tells the user to confirm via email, then sign in.
+  function openSignupConfirmModal(email, needsConfirmation) {
+    const safeEmail = esc(email || 'your email');
+    openModal(`
+      <div class="modal-head"><h3>${needsConfirmation ? 'Confirm your email' : 'Account created'}</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
+      <div class="modal-body" style="text-align:center;padding-top:8px;">
+        <div style="width:64px;height:64px;margin:4px auto 16px;border-radius:50%;background:var(--accent-bg);display:flex;align-items:center;justify-content:center;">
+          <i class="ti ti-mail" style="font-size:30px;color:var(--accent-solid);"></i>
+        </div>
+        ${needsConfirmation
+          ? `<p style="margin:0 0 8px;font-size:15px;color:var(--text-primary);font-weight:600;">Account created!</p>
+             <p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--text-secondary);">We've sent a confirmation link to <strong style="color:var(--text-primary);">${safeEmail}</strong>. Click it to verify your account, then sign in below.</p>`
+          : `<p style="margin:0 0 8px;font-size:15px;color:var(--text-primary);font-weight:600;">Your account is ready!</p>
+             <p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--text-secondary);">Sign in with <strong style="color:var(--text-primary);">${safeEmail}</strong> and your password to continue.</p>`}
+      </div>
+      <div class="modal-foot" style="justify-content:center;"><button class="btn-primary btn-block" id="signup-go-signin">Sign in now</button></div>
+    `);
+    const close = () => { closeModal(); const ef = $('#auth-email'); if (ef) { ef.focus(); } };
+    $('#m-close').onclick = close;
+    $('#signup-go-signin').onclick = () => { closeModal(); setAuthMode('signin'); const pf = $('#auth-password'); if (pf) pf.focus(); };
+  }
 
   function openTermsModal() {
     openModal(`
@@ -5377,32 +5409,34 @@
           confirmLabel: 'Delete forever',
           danger: true,
           onConfirm: async () => {
-            // Best-effort cloud cleanup. Try full account deletion (removes the
-            // auth user + data via the server function); if that endpoint isn't
-            // deployed, fall back to deleting just the user's own data row.
             if (cloud) {
-              let fullyDeleted = false;
+              // Full account deletion: removes the auth user + data via the
+              // server function. If it fails, we STOP and show the real error
+              // rather than silently leaving the auth user in place.
               try {
-                if (window.InfosSupabase.Auth && window.InfosSupabase.Auth.deleteAccount) {
-                  await window.InfosSupabase.Auth.deleteAccount();
-                  fullyDeleted = true;
+                if (!(window.InfosSupabase.Auth && window.InfosSupabase.Auth.deleteAccount)) {
+                  throw new Error('Delete endpoint unavailable (deploy api/delete-account.js).');
                 }
-              } catch (e) { console.warn('Full account deletion unavailable, deleting data only:', e); }
-              if (!fullyDeleted) {
-                try {
-                  const adapter = window.InfosSupabase.adapter;
-                  if (adapter && typeof adapter.deleteOwnData === 'function') await adapter.deleteOwnData();
-                } catch (e) { console.warn('Cloud data delete failed:', e); }
+                await window.InfosSupabase.Auth.deleteAccount();
+              } catch (e) {
+                const msg = (e && e.message) || 'Unknown error';
+                confirmAction({
+                  title: 'Account not deleted',
+                  message: `Your account could NOT be removed from the server, so nothing was deleted. Error: ${msg}\n\nThis usually means the SUPABASE_SERVICE_ROLE_KEY env var is missing on the server, or the delete function isn't deployed. Fix that and try again.`,
+                  confirmLabel: 'OK',
+                  onConfirm: () => {}
+                });
+                return; // do NOT wipe local — account still exists on the server
               }
               try { await window.InfosSupabase.Auth.signOut(); } catch {}
               try { if (window.Sync) window.Sync.disable(); } catch {}
             }
+            // Account is gone from the server (or this is a local-only account).
             // Clear in-memory session so nothing re-persists a logged-in state.
             state.user = null;
             state.bizContext = null;
             state.syncAdapter = null;
             if (cloud) {
-              // Cloud account: this device should be fully signed out & wiped.
               state.accounts = [];
               state.recentSignins = [];
             } else {
@@ -5410,8 +5444,6 @@
               state.recentSignins = (state.recentSignins || []).filter(e => e.email !== myEmail);
             }
             // Properly wipe persisted storage (IndexedDB + localStorage fallbacks).
-            // This is the real fix: previously it removed the wrong key, so the
-            // account survived in IndexedDB and auto-logged back in on reload.
             try { if (window.Storage && window.Storage.clear) await window.Storage.clear(); } catch {}
             try { localStorage.removeItem('infos-state-v2'); } catch {}
             try { localStorage.removeItem('infos-state-v3-fallback'); } catch {}
@@ -5968,6 +6000,16 @@
 
   // ---------- Init ----------
   async function bootstrap() {
+    // If the user arrived via an email confirmation / recovery link, Supabase
+    // appends tokens to the URL hash. We do NOT auto-login from these (per
+    // product requirement) — strip the fragment so the app lands cleanly on the
+    // sign-in page where they enter email + password.
+    try {
+      if (location.hash && /access_token=|type=signup|type=recovery|type=email/i.test(location.hash)) {
+        history.replaceState(null, '', location.pathname + location.search);
+        sessionStorage.setItem('infos-just-confirmed', '1');
+      }
+    } catch {}
     // If we had a user before, show a skeleton immediately to avoid blank flash
     try {
       const quickPeek = JSON.parse(localStorage.getItem('infos-state-v2') || localStorage.getItem('infos-state-v3-fallback') || 'null');
@@ -6108,6 +6150,15 @@
         screenOnb.hidden = false; showOnbSlide(1);
       }
       renderRecentSignins();
+      // If the user just clicked an email confirmation link, greet them on the
+      // sign-in screen and prompt them to sign in (we never auto-login from it).
+      try {
+        if (sessionStorage.getItem('infos-just-confirmed')) {
+          sessionStorage.removeItem('infos-just-confirmed');
+          setAuthMode('signin');
+          setTimeout(() => { try { showAuthError('Email confirmed! Please sign in with your email and password.'); } catch {} }, 300);
+        }
+      } catch {}
     }
     // Reapply per-biz tint when OS theme changes (only matters if theme is auto)
     try {
