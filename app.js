@@ -2466,14 +2466,17 @@
         if (authMode === 'signup') {
           const result = await window.InfosSupabase.Auth.signUp(email, pw, name);
           btn.textContent = original; btn.disabled = false;
-          // Always route a new signup to the sign-in screen. If confirmation is
-          // required, show a popup telling them to check their email. Either way
-          // we do NOT auto-login a freshly created account.
-          openSignupConfirmModal(email, !!(result && result.needsConfirmation));
-          // Pre-fill the email on the sign-in form and switch to sign-in mode.
+          // Do NOT auto-login a new signup. Switch to sign-in and show a short
+          // inline note. Clicking the email confirmation link will bring the
+          // user back to this sign-in page to log in with their credentials.
           setAuthMode('signin');
           const ef = $('#auth-email'); if (ef) ef.value = email;
           const pf = $('#auth-password'); if (pf) pf.value = '';
+          if (result && result.needsConfirmation) {
+            showAuthError('Account created. Check your email for a confirmation link, then sign in.');
+          } else {
+            showAuthError('Account created. Please sign in.');
+          }
           return;
         }
         // Sign-in path
@@ -2558,27 +2561,6 @@
 
   // Popup shown right after a successful signup. Uses the standard modal (which
   // has the blurred backdrop). Tells the user to confirm via email, then sign in.
-  function openSignupConfirmModal(email, needsConfirmation) {
-    const safeEmail = esc(email || 'your email');
-    openModal(`
-      <div class="modal-head"><h3>${needsConfirmation ? 'Confirm your email' : 'Account created'}</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
-      <div class="modal-body" style="text-align:center;padding-top:8px;">
-        <div style="width:64px;height:64px;margin:4px auto 16px;border-radius:50%;background:var(--accent-bg);display:flex;align-items:center;justify-content:center;">
-          <i class="ti ti-mail" style="font-size:30px;color:var(--accent-solid);"></i>
-        </div>
-        ${needsConfirmation
-          ? `<p style="margin:0 0 8px;font-size:15px;color:var(--text-primary);font-weight:600;">Account created!</p>
-             <p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--text-secondary);">We've sent a confirmation link to <strong style="color:var(--text-primary);">${safeEmail}</strong>. Click it to verify your account, then sign in below.</p>`
-          : `<p style="margin:0 0 8px;font-size:15px;color:var(--text-primary);font-weight:600;">Your account is ready!</p>
-             <p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--text-secondary);">Sign in with <strong style="color:var(--text-primary);">${safeEmail}</strong> and your password to continue.</p>`}
-      </div>
-      <div class="modal-foot" style="justify-content:center;"><button class="btn-primary btn-block" id="signup-go-signin">Sign in now</button></div>
-    `);
-    const close = () => { closeModal(); const ef = $('#auth-email'); if (ef) { ef.focus(); } };
-    $('#m-close').onclick = close;
-    $('#signup-go-signin').onclick = () => { closeModal(); setAuthMode('signin'); const pf = $('#auth-password'); if (pf) pf.focus(); };
-  }
-
   function openTermsModal() {
     openModal(`
       <div class="modal-head"><h3>Terms &amp; Conditions</h3><button id="m-close" class="btn-icon"><i class="ti ti-x"></i></button></div>
@@ -2735,7 +2717,7 @@
       const displayName = asBizId ? bizById(asBizId)?.name : name;
       const subtitle = action === 'creating'
         ? "Setting up your workspace"
-        : asBizId ? `Signing in as ${bizById(asBizId)?.name} team` : `Welcome back, ${name}`;
+        : asBizId ? `Signing in as ${bizById(asBizId)?.name} team` : `Welcome, ${name}`;
       const splashColor = asBizId ? (bizById(asBizId)?.color || null) : (state.customAccent || null);
       showLoadingSplash(displayName, { action, subtitle, color: splashColor });
       setTimeout(() => {
@@ -2849,7 +2831,7 @@
     const initial = (displayName || 'I').charAt(0).toUpperCase();
     const o = opts || {};
     const action = o.action || 'signing-in'; // 'signing-in' | 'creating' | 'switching'
-    const actionVerb = action === 'creating' ? 'Creating your account' : action === 'switching' ? 'Switching account' : 'Welcome back';
+    const actionVerb = action === 'creating' ? 'Creating your account' : action === 'switching' ? 'Switching account' : 'Welcome';
     const subtitle = o.subtitle ||
       (action === 'creating' ? 'Setting up your private workspace' :
        action === 'switching' ? 'Preparing your view' :
