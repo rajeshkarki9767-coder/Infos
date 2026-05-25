@@ -1,0 +1,78 @@
+<!-- ===========================================================================
+     Infos — "Confirm your new email address" email
+     Paste into: Supabase → Authentication → Email Templates → "Change Email Address"
+     Subject suggestion: Confirm your new Infos email address
+     Note: Supabase sends this to confirm an email change. {{ .Email }} is the old
+           address and {{ .NewEmail }} is the new one (available in this template).
+     =========================================================================== -->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#FAFAF7;margin:0;padding:0;">
+  <tr>
+    <td align="center" style="padding:32px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background-color:#ffffff;border:1px solid #ECEAE4;border-radius:16px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+
+        <tr>
+          <td align="center" style="padding:36px 32px 8px 32px;">
+            <table role="presentation" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="width:56px;height:56px;background-color:#378ADD;border-radius:15px;text-align:center;vertical-align:middle;font-family:Georgia,'Times New Roman',serif;font-size:34px;font-weight:bold;color:#ffffff;line-height:56px;">i</td>
+                <td style="padding-left:14px;font-size:24px;font-weight:700;color:#1A1A18;letter-spacing:-0.3px;">Infos</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <tr>
+          <td align="center" style="padding:20px 32px 0 32px;">
+            <h1 style="margin:0;font-size:21px;line-height:1.3;color:#1A1A18;font-weight:700;">Confirm your new email</h1>
+          </td>
+        </tr>
+
+        <tr>
+          <td align="center" style="padding:12px 32px 0 32px;">
+            <p style="margin:0;font-size:15px;line-height:1.6;color:#56544E;">
+              You asked to change the email address on your Infos account to
+              <strong style="color:#1A1A18;">{{ .NewEmail }}</strong>.
+              Confirm the change by clicking the button below.
+            </p>
+          </td>
+        </tr>
+
+        <tr>
+          <td align="center" style="padding:28px 32px 8px 32px;">
+            <table role="presentation" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="background-color:#378ADD;border-radius:10px;">
+                  <a href="{{ .ConfirmationURL }}" target="_blank"
+                     style="display:inline-block;padding:14px 32px;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:10px;">
+                    Confirm new email
+                  </a>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <tr>
+          <td align="center" style="padding:16px 32px 0 32px;">
+            <p style="margin:0;font-size:12px;line-height:1.6;color:#8A8880;">
+              If the button doesn't work, copy and paste this link into your browser:
+            </p>
+            <p style="margin:6px 0 0 0;font-size:12px;line-height:1.5;word-break:break-all;">
+              <a href="{{ .ConfirmationURL }}" style="color:#378ADD;text-decoration:underline;">{{ .ConfirmationURL }}</a>
+            </p>
+          </td>
+        </tr>
+
+        <tr>
+          <td align="center" style="padding:28px 32px 36px 32px;">
+            <hr style="border:none;border-top:1px solid #ECEAE4;margin:0 0 16px 0;" />
+            <p style="margin:0;font-size:12px;line-height:1.6;color:#A8A69E;">
+              If you didn't request this change, please secure your account — do not click the link, and reset your password.
+            </p>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>

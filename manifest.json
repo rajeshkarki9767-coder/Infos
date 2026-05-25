@@ -1,0 +1,197 @@
+{
+  "name": "Infos",
+  "short_name": "Infos",
+  "description": "A cross-platform info viewer with native gestures, universal search, and full theming. Manage notices, system info, games, credentials, and accounts in one polished interface.",
+  "start_url": "/index.html",
+  "scope": "/",
+  "id": "/index.html",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "tabbed", "standalone", "minimal-ui", "browser"],
+  "orientation": "portrait",
+  "theme_color": "#378ADD",
+  "background_color": "#FAFAF7",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["productivity", "utilities", "lifestyle"],
+  "prefer_related_applications": false,
+  "edge_side_panel": {
+    "preferred_width": 400
+  },
+  "launch_handler": {
+    "client_mode": ["navigate-existing", "auto"]
+  },
+  "handle_links": "preferred",
+  "icons": [
+    {
+      "src": "icons/icon-72.png",
+      "sizes": "72x72",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-96.png",
+      "sizes": "96x96",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-128.png",
+      "sizes": "128x128",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-144.png",
+      "sizes": "144x144",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-152.png",
+      "sizes": "152x152",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-256.png",
+      "sizes": "256x256",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-384.png",
+      "sizes": "384x384",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "icons/screenshot-wide.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Infos desktop view"
+    },
+    {
+      "src": "icons/screenshot-narrow.png",
+      "sizes": "720x1280",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Infos mobile view"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Notices",
+      "short_name": "Notices",
+      "description": "Jump to your notices",
+      "url": "/index.html?tab=notices",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "System",
+      "short_name": "System",
+      "description": "View system status",
+      "url": "/index.html?tab=system",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "ID & Pass",
+      "short_name": "ID & Pass",
+      "description": "Manage credentials",
+      "url": "/index.html?tab=idpass",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ],
+  "share_target": {
+    "action": "/index.html",
+    "method": "GET",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  },
+  "protocol_handlers": [
+    {
+      "protocol": "web+infos",
+      "url": "/index.html?handler=%s"
+    }
+  ],
+  "scope_extensions": [
+    { "origin": "*.infos.app" }
+  ],
+  "file_handlers": [
+    {
+      "action": "/index.html?open=file",
+      "accept": {
+        "application/json": [".json"]
+      },
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }],
+      "launch_type": "single-client"
+    }
+  ],
+  "note_taking": {
+    "new_note_url": "/index.html?tab=notices&action=new"
+  },
+  "tab_strip": {
+    "new_tab_button": {
+      "url": "/index.html"
+    }
+  },
+  "widgets": [
+    {
+      "name": "Infos Quick View",
+      "short_name": "Infos",
+      "description": "See your latest notices at a glance.",
+      "tag": "infos-notices",
+      "template": "infos-notices-template",
+      "ms_ac_template": "icons/widget-template.json",
+      "data": "/index.html?widget=notices",
+      "type": "application/json",
+      "screenshots": [
+        {
+          "src": "icons/screenshot-narrow.png",
+          "sizes": "720x1280",
+          "label": "Infos notices widget"
+        }
+      ],
+      "icons": [
+        { "src": "icons/icon-96.png", "sizes": "96x96" }
+      ],
+      "auth": false,
+      "update": 86400
+    }
+  ]
+}

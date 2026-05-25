@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#378ADD" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#131311" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="A cross-platform info viewer with businesses, tags, gestures, and full theming.">
+<meta name="application-name" content="Infos">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Infos">
+<meta name="msapplication-TileColor" content="#378ADD">
+<meta name="msapplication-tap-highlight" content="no">
+<meta name="format-detection" content="telephone=no">
+<title>Infos</title>
+<script>
+  // Link the manifest only over http(s). Linking it statically makes the browser
+  // try to fetch it even on file://, producing a noisy (harmless) CORS error.
+  if (location.protocol === 'http:' || location.protocol === 'https:') {
+    var _m = document.createElement('link');
+    _m.rel = 'manifest'; _m.href = 'manifest.json';
+    document.head.appendChild(_m);
+  }
+</script>
+<link rel="icon" type="image/x-icon" href="icons/favicon.ico">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+<link rel="mask-icon" href="icons/icon.svg" color="#378ADD">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="install-banner" class="install-banner" hidden>
+  <svg width="32" height="32" viewBox="0 0 512 512" aria-hidden="true" style="flex-shrink:0;border-radius:8px;">
+    <rect x="0" y="0" width="512" height="512" rx="128" fill="#378ADD"/>
+    <rect x="234" y="148" width="44" height="44" rx="11" fill="#FFFFFF"/>
+    <rect x="206" y="220" width="100" height="20" rx="10" fill="#FFFFFF" opacity="0.55"/>
+    <rect x="206" y="268" width="100" height="96" rx="18" fill="#FFFFFF"/>
+  </svg>
+  <div class="install-text">
+    <div class="install-title">Install Infos</div>
+    <div class="install-sub">Get the full app experience</div>
+  </div>
+  <button id="install-btn" class="btn-primary btn-sm">Install</button>
+  <button id="install-dismiss" class="btn-icon" aria-label="Dismiss"><i class="ti ti-x"></i></button>
+</div>
+
+<div id="offline-banner" class="offline-banner" hidden>
+  <i class="ti ti-wifi-off" aria-hidden="true"></i>
+  <span>You are offline. Showing cached content.</span>
+</div>
+
+<div id="app" data-theme="auto" data-accent="blue">
+
+  <!-- ONBOARDING OVERLAY (first run) -->
+  <section id="screen-onboarding" class="screen" hidden>
+    <div class="onboarding-wrap">
+      <div class="onb-slide" data-slide="1">
+        <div class="onb-icon"><i class="ti ti-building-store"></i></div>
+        <h2>Manage businesses</h2>
+        <p>Create as many businesses as you need. Each one has its own credentials, brand color, tags, and assigned items.</p>
+      </div>
+      <div class="onb-slide" data-slide="2" hidden>
+        <div class="onb-icon"><i class="ti ti-tag"></i></div>
+        <h2>Tag and organize</h2>
+        <p>Inside each business, create tags for departments or projects. Assign notices, games, and credentials to a business and any combination of its tags.</p>
+      </div>
+      <div class="onb-slide" data-slide="3" hidden>
+        <div class="onb-icon"><i class="ti ti-eye"></i></div>
+        <h2>Share view-only access</h2>
+        <p>Give a business's email and password to a teammate. They sign in and see only what's assigned, with no ability to edit or delete.</p>
+      </div>
+      <div class="onb-slide" data-slide="4" hidden>
+        <div class="onb-icon"><i class="ti ti-command"></i></div>
+        <h2>Move fast</h2>
+        <p>Press <kbd>⌘</kbd><kbd>K</kbd> for the command palette, <kbd>?</kbd> for shortcuts, <kbd>⌘</kbd><kbd>N</kbd> to add an item. Long-press for context menus on mobile.</p>
+      </div>
+      <div class="onb-dots">
+        <span class="onb-dot active" data-go="1"></span>
+        <span class="onb-dot" data-go="2"></span>
+        <span class="onb-dot" data-go="3"></span>
+        <span class="onb-dot" data-go="4"></span>
+      </div>
+      <div class="onb-foot">
+        <button id="onb-skip" class="btn-outline btn-sm">Skip</button>
+        <button id="onb-next" class="btn-primary">Next</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- AUTH SCREEN -->
+  <section id="screen-auth" class="screen screen-active">
+    <div class="auth-wrap">
+      <div class="auth-header">
+        <div class="auth-logo">
+          <svg viewBox="0 0 512 512" width="64" height="64" aria-label="Infos logo">
+            <rect x="0" y="0" width="512" height="512" rx="128" fill="var(--accent-solid)"/>
+            <rect x="234" y="148" width="44" height="44" rx="11" fill="#FFFFFF"/>
+            <rect x="206" y="220" width="100" height="20" rx="10" fill="#FFFFFF" opacity="0.55"/>
+            <rect x="206" y="268" width="100" height="96" rx="18" fill="#FFFFFF"/>
+            <rect x="234" y="296" width="44" height="12" rx="6" fill="var(--accent-solid)"/>
+            <rect x="234" y="324" width="44" height="12" rx="6" fill="var(--accent-solid)"/>
+          </svg>
+        </div>
+        <h1 id="auth-title">Welcome to Infos</h1>
+        <p id="auth-sub">Sign in to continue</p>
+      </div>
+      <div id="auth-mode-signin">
+        <div id="recent-signins-wrap" class="recent-signins" hidden>
+          <div class="recent-signins-label">Continue as</div>
+          <div id="recent-signins-list" class="recent-signins-list"></div>
+        </div>
+        <div class="form-stack">
+          <div class="field" id="field-name" hidden>
+            <label>Name</label>
+            <input id="auth-name" type="text" placeholder="Your name" autocomplete="name">
+          </div>
+          <div class="field">
+            <label>Email</label>
+            <input id="auth-email" type="email" placeholder="you@example.com" autocomplete="email" inputmode="email">
+          </div>
+          <div class="field">
+            <div class="field-row">
+              <label>Password</label>
+              <button id="forgot-link" type="button" class="btn-link-sm">Forgot?</button>
+            </div>
+            <div class="input-wrap">
+              <input id="auth-password" type="password" placeholder="••••••••" autocomplete="current-password">
+              <button id="auth-pw-toggle" type="button" class="input-icon-btn" data-pw-eye="auth-password" aria-label="Show password"><i class="ti ti-eye"></i></button>
+            </div>
+          <div id="pw-strength" class="pw-bar" hidden><div id="pw-strength-bar"></div></div>
+          </div>
+          <div class="field" id="field-confirm-pw" hidden>
+            <label>Confirm password</label>
+            <div class="input-wrap">
+              <input id="auth-password2" type="password" placeholder="••••••••" autocomplete="new-password">
+              <button id="auth-pw2-toggle" type="button" class="input-icon-btn" data-pw-eye="auth-password2" aria-label="Show password"><i class="ti ti-eye"></i></button>
+            </div>
+          </div>
+          <div id="auth-terms-wrap" class="terms-row" hidden>
+            <label class="terms-label">
+              <input type="checkbox" id="auth-terms" />
+              <span>I agree to the <button type="button" class="btn-link-sm" id="show-terms">Terms &amp; Conditions</button> and <button type="button" class="btn-link-sm" id="show-privacy-link">Privacy Policy</button></span>
+            </label>
+          </div>
+          <div id="auth-error" class="error-msg" hidden></div>
+          <button id="auth-submit" class="btn-primary btn-block">Sign in</button>
+          <div class="auth-switch-line">
+            <span id="auth-switch-prompt">Don't have an account?</span>
+            <button id="auth-switch-mode" type="button" class="btn-link-sm">Create new account</button>
+          </div>
+        </div>
+      </div>
+      <div id="auth-mode-forgot" hidden>
+        <div id="forgot-step-1" class="auth-step">
+          <p class="form-hint">Enter the email for your account. We'll send a 6-digit code.</p>
+          <div class="field"><label>Email</label><input id="forgot-email" type="email" placeholder="you@example.com" inputmode="email"></div>
+          <div id="forgot-error-1" class="error-msg" hidden></div>
+          <button id="forgot-send" class="btn-primary btn-block">Send code</button>
+        </div>
+        <div id="forgot-step-2" class="auth-step" hidden>
+          <div class="info-banner">
+            <i class="ti ti-mail-check"></i>
+            <span>Code sent to <strong id="forgot-email-display"></strong>. Use <code>123456</code> for this demo.</span>
+          </div>
+          <label class="block-label">Verification code</label>
+          <div id="otp-row">
+            <input class="otp-input" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+            <input class="otp-input" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+            <input class="otp-input" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+            <input class="otp-input" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+            <input class="otp-input" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+            <input class="otp-input" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+          </div>
+          <div id="forgot-error-2" class="error-msg" hidden></div>
+          <div class="resend-row">
+            <span id="otp-timer">Resend in 0:30</span>
+            <button id="otp-resend" class="btn-link-sm" disabled>Resend code</button>
+          </div>
+          <button id="forgot-verify" class="btn-primary btn-block">Verify</button>
+        </div>
+        <div id="forgot-step-3" class="auth-step" hidden>
+          <p class="form-hint">Choose a new password.</p>
+          <div class="field"><label>New password</label>
+            <div class="input-wrap">
+              <input id="new-password" type="password" placeholder="••••••••" autocomplete="new-password">
+              <button id="new-pw-toggle" type="button" class="input-icon-btn" data-pw-eye="new-password" aria-label="Show password"><i class="ti ti-eye"></i></button>
+            </div>
+            <div class="pw-bar"><div id="new-pw-bar"></div></div>
+          </div>
+          <div class="field"><label>Confirm password</label><input id="confirm-password" type="password" placeholder="••••••••" autocomplete="new-password"></div>
+          <div id="forgot-error-3" class="error-msg" hidden></div>
+          <button id="forgot-reset" class="btn-primary btn-block">Reset password</button>
+        </div>
+        <div id="forgot-step-4" class="auth-step center-content" hidden>
+          <div class="success-circle"><i class="ti ti-check"></i></div>
+          <h2>Password reset</h2>
+          <p>You can now sign in with your new password.</p>
+          <button id="forgot-done" class="btn-primary">Continue to sign in</button>
+        </div>
+        <button id="forgot-back" class="btn-back"><i class="ti ti-arrow-left"></i>Back to sign in</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- MAIN APP -->
+  <section id="screen-main" class="screen">
+    <div id="sidebar-overlay" class="sidebar-overlay" hidden></div>
+
+    <aside id="sidebar">
+      <div class="sidebar-head">
+        <svg width="28" height="28" viewBox="0 0 512 512" aria-hidden="true" class="brand-logo">
+          <rect x="0" y="0" width="512" height="512" rx="128" fill="var(--accent-solid)"/>
+          <rect x="234" y="148" width="44" height="44" rx="11" fill="#FFFFFF"/>
+          <rect x="206" y="220" width="100" height="20" rx="10" fill="#FFFFFF" opacity="0.55"/>
+          <rect x="206" y="268" width="100" height="96" rx="18" fill="#FFFFFF"/>
+          <rect x="234" y="296" width="44" height="12" rx="6" fill="var(--accent-solid)"/>
+          <rect x="234" y="324" width="44" height="12" rx="6" fill="var(--accent-solid)"/>
+        </svg>
+        <span class="label brand-name">Infos</span>
+        <button id="close-drawer" class="btn-icon drawer-close" aria-label="Close menu"><i class="ti ti-x"></i></button>
+      </div>
+      <div class="sidebar-padded">
+        <button id="search-trigger" class="search-trigger search-trigger-full">
+          <i class="ti ti-search"></i>
+          <span class="label" id="search-trigger-label">Search</span>
+        </button>
+      </div>
+      <div id="biz-filter-wrap" class="sidebar-padded">
+        <div id="active-biz" class="biz-filter-trigger">
+          <span id="active-biz-icon" class="biz-filter-icon"><i class="ti ti-filter"></i></span>
+          <span class="label" id="active-biz-label">All businesses</span>
+          <i class="ti ti-chevron-down chev"></i>
+        </div>
+      </div>
+      <nav id="nav-list" class="sidebar-nav"></nav>
+      <div class="sidebar-foot">
+        <div class="nav-item" data-tab="settings"><i class="ti ti-settings nav-icon"></i><span class="label">Settings</span></div>
+        <div class="nav-item nav-muted" data-action="switch-account"><i class="ti ti-users nav-icon"></i><span class="label">Switch account</span></div>
+        <div class="nav-item nav-muted" data-tab="logout"><i class="ti ti-logout nav-icon"></i><span class="label">Sign out</span></div>
+      </div>
+    </aside>
+
+    <main id="main">
+      <header class="app-header">
+        <button id="mobile-menu" class="btn-icon menu-btn" aria-label="Open menu"><i class="ti ti-menu-2"></i></button>
+        <button id="back-btn" class="btn-icon header-back-btn" aria-label="Back" hidden><i class="ti ti-arrow-left"></i></button>
+        <div class="header-titles">
+          <h2 id="page-title">Notices</h2>
+          <span id="page-subtitle">Recent updates</span>
+        </div>
+        <div id="header-actions" class="header-actions">
+          <button id="bulk-toggle" class="btn-icon" aria-label="Select multiple" hidden><i class="ti ti-square-check"></i></button>
+          <button id="header-switch-account" class="btn-icon header-switch-btn" aria-label="Switch account" title="Switch account"><i class="ti ti-users"></i></button>
+          <div id="header-badge" class="header-badge" hidden>
+            <i class="ti ti-eye"></i>
+            <span>View only</span>
+          </div>
+        </div>
+      </header>
+
+      <div id="bulk-bar" class="bulk-bar" hidden>
+        <button id="bulk-cancel" class="btn-icon" aria-label="Cancel"><i class="ti ti-x"></i></button>
+        <span id="bulk-count">0 selected</span>
+        <button id="bulk-all" class="btn-link-sm">Select all</button>
+        <div style="flex:1"></div>
+        <button id="bulk-assign" class="btn-icon" aria-label="Assign to business" title="Assign to business"><i class="ti ti-tag"></i></button>
+        <button id="bulk-move" class="btn-icon" aria-label="Move to tab" title="Move to another tab"><i class="ti ti-folder"></i></button>
+        <button id="bulk-pin" class="btn-icon" aria-label="Pin" title="Pin / unpin"><i class="ti ti-pin"></i></button>
+        <button id="bulk-delete" class="btn-icon btn-danger-icon" aria-label="Delete" title="Move to trash"><i class="ti ti-trash"></i></button>
+      </div>
+
+      <div id="pull-indicator" class="pull-indicator">
+        <i class="ti ti-refresh"></i>
+        <span id="pull-text">Pull to refresh</span>
+      </div>
+
+      <div id="page-viewport"><div id="page-content"></div></div>
+
+      <button id="fab" class="fab" hidden aria-label="Add new"><i class="ti ti-plus"></i></button>
+
+      <nav id="bottom-tabs" class="bottom-tabs" hidden></nav>
+    </main>
+  </section>
+
+  <div id="biz-picker" class="biz-picker" hidden></div>
+
+  <!-- SEARCH (now command palette) -->
+  <div id="search-modal" class="modal" hidden>
+    <div class="modal-content search-content">
+      <div class="search-bar">
+        <i class="ti ti-search"></i>
+        <input id="search-input" type="text" placeholder="Search or jump to…  (try tag:engineering or biz:acme)">
+        <button id="search-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button>
+      </div>
+      <div id="search-results" class="search-results"></div>
+      <div class="search-foot">
+        <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+        <span><kbd>↵</kbd> select</span>
+        <span><kbd>esc</kbd> close</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- KEYBOARD SHORTCUTS OVERLAY -->
+  <div id="shortcuts-modal" class="modal" hidden>
+    <div class="modal-content shortcuts-content">
+      <div class="modal-head">
+        <h3>Keyboard shortcuts</h3>
+        <button id="shortcuts-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button>
+      </div>
+      <div class="modal-body shortcuts-body">
+        <div class="kbd-group">
+          <div class="kbd-group-title">Navigation</div>
+          <div class="kbd-row"><span>Command palette</span><span><kbd>⌘</kbd><kbd>K</kbd></span></div>
+          <div class="kbd-row"><span>Show shortcuts</span><span><kbd>?</kbd></span></div>
+          <div class="kbd-row"><span>Go back</span><span><kbd>⌘</kbd><kbd>[</kbd></span></div>
+          <div class="kbd-row"><span>Close any modal</span><span><kbd>Esc</kbd></span></div>
+        </div>
+        <div class="kbd-group">
+          <div class="kbd-group-title">Actions</div>
+          <div class="kbd-row"><span>Add new item</span><span><kbd>⌘</kbd><kbd>N</kbd></span></div>
+          <div class="kbd-row"><span>Bulk select mode</span><span><kbd>⌘</kbd><kbd>B</kbd></span></div>
+          <div class="kbd-row"><span>Toggle theme</span><span><kbd>⌘</kbd><kbd>D</kbd></span></div>
+        </div>
+        <div class="kbd-group">
+          <div class="kbd-group-title">Jump to tabs</div>
+          <div class="kbd-row"><span>Notices</span><span><kbd>G</kbd><kbd>N</kbd></span></div>
+          <div class="kbd-row"><span>System</span><span><kbd>G</kbd><kbd>S</kbd></span></div>
+          <div class="kbd-row"><span>Businesses</span><span><kbd>G</kbd><kbd>B</kbd></span></div>
+          <div class="kbd-row"><span>Settings</span><span><kbd>G</kbd><kbd>,</kbd></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ICON PICKER -->
+  <div id="icon-picker" class="modal" hidden>
+    <div class="modal-content icon-picker-content">
+      <div class="modal-head">
+        <h3>Choose an icon</h3>
+        <button id="icon-picker-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button>
+      </div>
+      <div style="padding:10px 14px 6px;">
+        <input id="icon-search" placeholder="Filter icons…">
+      </div>
+      <div id="icon-grid" class="icon-grid"></div>
+    </div>
+  </div>
+
+  <div id="modal" class="modal" hidden><div id="modal-content" class="modal-content"></div></div>
+
+  <div id="toast" class="toast" hidden></div>
+</div>
+
+<script src="db.js"></script>
+<script src="crypto.js"></script>
+<script src="sync.js"></script>
+<script src="icons.js"></script>
+
+<!-- ============================================================
+     OPTIONAL CLOUD BACKEND (Supabase) — see SUPABASE_SETUP.md
+     To enable cloud accounts + cross-device sync, uncomment the
+     three lines below and paste your project URL + anon key.
+     Leave commented to keep Infos fully local (default).
+     ============================================================ -->
+<!--
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  window.__INFOS_SUPABASE_URL__ = 'https://YOUR-PROJECT.supabase.co';
+  window.__INFOS_SUPABASE_ANON_KEY__ = 'YOUR-ANON-KEY';
+</script>
+<script src="supabase/adapter.js"></script>
+-->
+
+<script src="app.js"></script>
+<script>
+  // When opened directly from disk (file://), the manifest, service worker, and IndexedDB
+  // are blocked by browsers for security. Show a friendly banner pointing the user to localhost.
+  if (location.protocol === 'file:') {
+    document.addEventListener('DOMContentLoaded', () => {
+      const banner = document.createElement('div');
+      banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#EF9F27;color:#1A1A18;font:13px/1.5 system-ui,sans-serif;padding:10px 16px;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.15);';
+      banner.innerHTML = 'Heads up — opening Infos from a file path limits saving and installation. ' +
+        'Run <code style="background:rgba(0,0,0,0.1);padding:1px 6px;border-radius:3px;font-family:monospace;">python -m http.server 8080</code> ' +
+        'in this folder, then visit <code style="background:rgba(0,0,0,0.1);padding:1px 6px;border-radius:3px;font-family:monospace;">http://localhost:8080</code>. ' +
+        '<button id="file-banner-dismiss" style="margin-left:10px;background:rgba(0,0,0,0.15);color:inherit;border:none;border-radius:3px;padding:2px 8px;cursor:pointer;font:inherit;">Dismiss</button>';
+      document.body.insertBefore(banner, document.body.firstChild);
+      document.body.style.paddingTop = banner.offsetHeight + 'px';
+      banner.querySelector('#file-banner-dismiss').onclick = () => {
+        document.body.style.paddingTop = '';
+        banner.remove();
+      };
+    });
+  }
+</script>
+<script>
+  // Register the service worker so Infos is installable as a PWA and works offline.
+  // Service workers require HTTP(S) — silently skip when opened from file:// to avoid noisy errors.
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(err => {
+        console.info('Service worker not registered:', err.message);
+      });
+    });
+  }
+</script>
+</body>
+</html>
