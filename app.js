@@ -5393,12 +5393,27 @@
               try { await window.InfosSupabase.Auth.signOut(); } catch {}
               try { if (window.Sync) window.Sync.disable(); } catch {}
             }
-            // Local cleanup
-            state.accounts = (state.accounts || []).filter(a => a.email !== myEmail);
-            state.recentSignins = (state.recentSignins || []).filter(e => e.email !== myEmail);
-            if (cloud || state.accounts.length === 0) {
-              try { localStorage.removeItem(STORAGE_KEY); } catch {}
-              try { localStorage.removeItem('infos-device-fp'); } catch {}
+            // Clear in-memory session so nothing re-persists a logged-in state.
+            state.user = null;
+            state.bizContext = null;
+            state.syncAdapter = null;
+            if (cloud) {
+              // Cloud account: this device should be fully signed out & wiped.
+              state.accounts = [];
+              state.recentSignins = [];
+            } else {
+              state.accounts = (state.accounts || []).filter(a => a.email !== myEmail);
+              state.recentSignins = (state.recentSignins || []).filter(e => e.email !== myEmail);
+            }
+            // Properly wipe persisted storage (IndexedDB + localStorage fallbacks).
+            // This is the real fix: previously it removed the wrong key, so the
+            // account survived in IndexedDB and auto-logged back in on reload.
+            try { if (window.Storage && window.Storage.clear) await window.Storage.clear(); } catch {}
+            try { localStorage.removeItem('infos-state-v2'); } catch {}
+            try { localStorage.removeItem('infos-state-v3-fallback'); } catch {}
+            try { localStorage.removeItem(STORAGE_KEY); } catch {}
+            try { localStorage.removeItem('infos-device-fp'); } catch {}
+            if (cloud || (state.accounts || []).length === 0) {
               location.reload();
               return;
             }
@@ -6022,6 +6037,19 @@
             state.accounts.push({ email, name: nm, cloud: true, createdAt: Date.now() });
           }
           if (!state.user && email) state.user = { name: nm, email };
+        } else {
+          // CLOUD MODE, NO VALID SESSION → the user is NOT logged in. The Supabase
+          // session is the source of truth here, so we must clear any stale local
+          // owner session (this is what was causing deleted accounts to "come back"
+          // and auto-log-in). Business (view-only) sessions are local and untouched.
+          if (state.user && !state.bizContext) {
+            state.user = null;
+            state.accounts = [];
+            state.recentSignins = [];
+            try { if (window.Sync) window.Sync.disable(); } catch {}
+            state.syncAdapter = null;
+            persistAll();
+          }
         }
       } catch (e) { console.warn('Supabase session restore failed:', e); }
     }

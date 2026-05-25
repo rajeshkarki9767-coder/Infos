@@ -1817,17 +1817,25 @@ h1, h2, h3, h4 {
 .loading-splash {
   position: fixed;
   inset: 0;
+  /* Extend under the status bar / notches so nothing shows behind it */
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 100vh;
+  min-height: 100dvh;
   z-index: 100000;
   --splash-tint: var(--accent-solid);
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--app-bg);
+  /* Solid, fully-opaque background — no app content shows through */
+  background-color: var(--app-bg, #FAFAF7);
   opacity: 0;
   pointer-events: none;
   overflow: hidden;
   transition: opacity 0.35s var(--ease-out);
 }
+[data-theme="dark"] .loading-splash { background-color: var(--app-bg, #131311); }
 .loading-splash.visible { opacity: 1; pointer-events: auto; }
 .loading-splash.exiting { opacity: 0; transform: scale(0.99); transition: opacity 0.45s var(--ease-out), transform 0.45s var(--ease-out); }
 
