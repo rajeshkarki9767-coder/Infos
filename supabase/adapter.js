@@ -219,7 +219,10 @@
   }
 
   // Expose for the app + register with the Sync system if present.
-  window.InfosSupabase = { Auth, adapter, init, configured: () => !!getClient() };
+  // `ready` resolves once config has been fetched (from globals or /api/config),
+  // so the app can await it before deciding auth state.
+  const ready = init();
+  window.InfosSupabase = { Auth, adapter, init, ready, configured: () => !!getClient() };
   if (window.Sync && typeof window.Sync.register === 'function') {
     window.Sync.register('supabase', adapter);
   }

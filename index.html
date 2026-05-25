@@ -363,19 +363,12 @@
 <script src="icons.js"></script>
 
 <!-- ============================================================
-     OPTIONAL CLOUD BACKEND (Supabase) — see SUPABASE_SETUP.md
-     To enable cloud accounts + cross-device sync, uncomment the
-     three lines below and paste your project URL + anon key.
-     Leave commented to keep Infos fully local (default).
+     CLOUD BACKEND (Supabase) — keys come from /api/config (Vercel env vars).
+     The adapter fetches config at runtime, so no keys are hardcoded here.
+     See SUPABASE_SETUP.md / DEPLOYMENT.md.
      ============================================================ -->
-<!--
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script>
-  window.__INFOS_SUPABASE_URL__ = 'https://YOUR-PROJECT.supabase.co';
-  window.__INFOS_SUPABASE_ANON_KEY__ = 'YOUR-ANON-KEY';
-</script>
 <script src="supabase/adapter.js"></script>
--->
 
 <script src="app.js"></script>
 <script>

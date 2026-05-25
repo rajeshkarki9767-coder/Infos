@@ -2456,6 +2456,10 @@
     btn.textContent = authMode === 'signup' ? 'Creating…' : 'Signing in…'; btn.disabled = true;
 
     // ---- Cloud path: if Supabase is configured, authenticate against it ----
+    // Wait for config to load (from /api/config) so we don't fall to local by race.
+    if (window.InfosSupabase && window.InfosSupabase.ready) {
+      try { await window.InfosSupabase.ready; } catch {}
+    }
     if (window.InfosSupabase && window.InfosSupabase.configured()) {
       try {
         const name = authMode === 'signup' ? $('#auth-name').value.trim() : '';
@@ -6018,8 +6022,9 @@
 
     // If Supabase is configured and a session is still valid, resume it and pull
     // the latest cloud snapshot before rendering.
-    if (window.InfosSupabase) {
-      try { if (window.InfosSupabase.init) await window.InfosSupabase.init(); } catch {}
+    // Wait for Supabase config to load (from /api/config) before deciding auth.
+    if (window.InfosSupabase && window.InfosSupabase.ready) {
+      try { await window.InfosSupabase.ready; } catch {}
     }
     if (window.InfosSupabase && window.InfosSupabase.configured()) {
       try {
