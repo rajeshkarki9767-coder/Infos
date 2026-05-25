@@ -2409,6 +2409,70 @@
   // Merge a pulled cloud snapshot into local state. Cloud is authoritative for
   // user data; we keep device-local prefs (theme, etc.) as-is. Last-write-wins
   // at the snapshot level (documented limitation of the snapshot sync model).
+  // STAGE 4: render a simple, read-only view for a signed-in team member.
+  // Members don't get the full owner app — just the business + allowed-tab
+  // items the owner shared with them, live from the cloud.
+  let memberRealtimeUnsub = null;
+  function enterMemberView(view, email) {
+    if (!view) {
+      showAuthError('No shared data found for this login yet. Ask the business owner to share data with you.');
+      try { window.InfosSupabase.Auth.signOut(); } catch {}
+      return;
+    }
+    state.__memberMode = true;
+    state.__memberEmail = email;
+    renderMemberView(view);
+    // STAGE 5 hook: subscribe to live updates (added in Stage 5).
+    try { if (window.InfosSupabase.Auth.subscribeMemberView) {
+      memberRealtimeUnsub = window.InfosSupabase.Auth.subscribeMemberView(view.business.id, () => {
+        window.InfosSupabase.Auth.fetchMemberView().then(v => { if (v) renderMemberView(v); }).catch(()=>{});
+      });
+    } } catch {}
+  }
+
+  function renderMemberView(view) {
+    let main = document.getElementById('member-view-root');
+    if (!main) {
+      main = document.createElement('div');
+      main.id = 'member-view-root';
+      main.style.cssText = 'position:fixed;inset:0;z-index:9000;overflow:auto;background:var(--bg-primary);';
+      document.body.appendChild(main);
+    }
+    const b = view.business || {};
+    const tabs = view.allowedTabs || [];
+    const itemsByTab = view.itemsByTab || {};
+    const tint = b.color || '#378ADD';
+    const tabHTML = tabs.length ? tabs.map(t => {
+      const items = itemsByTab[t] || [];
+      const rows = items.length
+        ? items.map(it => {
+            const title = esc(String(it.name || it.title || it.recordedBy || 'Item'));
+            const sub = esc(String(it.notes || it.amount || it.value || ''));
+            return `<div class="member-item"><div class="member-item-title">${title}</div>${sub ? `<div class="member-item-sub">${sub}</div>` : ''}</div>`;
+          }).join('')
+        : `<div class="member-empty">No entries in ${esc(t)} yet.</div>`;
+      return `<section class="member-tab"><h2 class="member-tab-title">${esc(t)}</h2>${rows}</section>`;
+    }).join('') : `<div class="member-empty">No tabs have been shared with you yet.</div>`;
+    main.innerHTML = `
+      <div class="member-view" style="--member-tint:${tint};">
+        <header class="member-head">
+          <div class="member-biz">${esc(b.name || 'Shared business')}</div>
+          <div class="member-badge">View only</div>
+          <button id="member-signout" class="btn-outline btn-sm">Sign out</button>
+        </header>
+        <div class="member-body">${tabHTML}</div>
+        <div class="member-foot">You're viewing data shared by the business owner. Updates appear automatically.</div>
+      </div>`;
+    const so = $('#member-signout');
+    if (so) so.onclick = async () => {
+      try { if (memberRealtimeUnsub) memberRealtimeUnsub(); } catch {}
+      memberRealtimeUnsub = null;
+      try { await window.InfosSupabase.Auth.signOut(); } catch {}
+      state.__memberMode = false;
+      location.reload();
+    };
+  }
+
   function mergeCloudState(remote) {
     if (!remote || typeof remote !== 'object') return;
     const keep = new Set(['theme', 'accent', 'sidebarCollapsed', 'customAccent', 'onboarded', 'currentTab']);
@@ -2495,6 +2559,19 @@
           showAuthError('Could not sign in. Check your credentials.');
           btn.textContent = original; btn.disabled = false;
           return;
+        }
+        // STAGE 4: is this a TEAM MEMBER (business login)? If so, render the
+        // read-only member view from the cloud instead of the owner experience.
+        try {
+          const membership = await window.InfosSupabase.Auth.getMembership();
+          if (membership) {
+            const view = await window.InfosSupabase.Auth.fetchMemberView();
+            btn.textContent = original; btn.disabled = false;
+            enterMemberView(view, email);
+            return;
+          }
+        } catch (memErr) {
+          console.warn('Member check failed, continuing as owner:', memErr);
         }
         // Turn on sync and pull any existing cloud state for this user.
         try {
@@ -6140,6 +6217,17 @@
       try {
         const sbUser = await window.InfosSupabase.Auth.currentUser();
         if (sbUser) {
+          // STAGE 4: if this session is a team member, render the member view
+          // and skip the owner data load entirely.
+          try {
+            const membership = await window.InfosSupabase.Auth.getMembership();
+            if (membership) {
+              const view = await window.InfosSupabase.Auth.fetchMemberView();
+              hideBootSplash();
+              enterMemberView(view, sbUser.email || '');
+              return;
+            }
+          } catch (memErr) { console.warn('Member bootstrap check failed:', memErr); }
           try { const sub = document.getElementById('boot-splash-sub'); if (sub) sub.textContent = 'Syncing your data…'; } catch {}
           await window.Sync.enable('supabase');
           state.syncAdapter = 'supabase';

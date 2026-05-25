@@ -163,6 +163,39 @@
       return data?.user || null;
     },
 
+    // ---- STAGE 4: member read path ----
+    // Detect whether the signed-in user is a team MEMBER (a hidden business
+    // login). We don't trust user_metadata alone; the authoritative signal is
+    // having a row in business_members (RLS lets a member read only their own).
+    async getMembership() {
+      const c = getClient(); if (!c) return null;
+      const user = await Auth.currentUser();
+      if (!user) return null;
+      const { data, error } = await c.from('business_members')
+        .select('business_id, allowed_tabs')
+        .eq('member_uid', user.id);
+      if (error || !data || !data.length) return null;
+      // A member login is linked to exactly one business in this model.
+      return { businessId: data[0].business_id, allowedTabs: data[0].allowed_tabs || [] };
+    },
+
+    // Fetch the business + shared items a member is allowed to read. RLS scopes
+    // this to exactly their allowed business/tabs, so even a crafted query can't
+    // over-read. Returns { business, itemsByTab } or null.
+    async fetchMemberView() {
+      const c = getClient(); if (!c) return null;
+      const m = await Auth.getMembership();
+      if (!m) return null;
+      const { data: bizRows } = await c.from('businesses')
+        .select('id, name, color').eq('id', m.businessId);
+      const business = (bizRows && bizRows[0]) || { id: m.businessId, name: 'Shared business', color: '#378ADD' };
+      const { data: itemRows } = await c.from('shared_items')
+        .select('tab, data').eq('business_id', m.businessId);
+      const itemsByTab = {};
+      (itemRows || []).forEach(r => { (itemsByTab[r.tab] = itemsByTab[r.tab] || []).push(r.data); });
+      return { business, allowedTabs: m.allowedTabs, itemsByTab };
+    },
+
     async resetPassword(email) {
       const c = getClient(); if (!c) throw new Error('Supabase not configured');
       const { error } = await c.auth.resetPasswordForEmail(email);
