@@ -10,7 +10,7 @@ It's an **opt-in layer**: the app keeps working locally as-is until you turn thi
 > (handled by Supabase, not plaintext), and cross-device sync.**
 > It does **not** yet give live multi-user collaboration on the same business —
 > for that you migrate to the normalized tables sketched at the bottom of
-> `supabase-schema.sql`. Build that when you actually need members editing
+> `supabase/schema.sql`. Build that when you actually need members editing
 > concurrently.
 
 ---
@@ -21,7 +21,7 @@ It's an **opt-in layer**: the app keeps working locally as-is until you turn thi
 
 ## Step 2 — Create the database schema (this is the security layer)
 1. In your project: **SQL Editor → New query**.
-2. Paste the entire contents of **`supabase-schema.sql`** and click **Run**.
+2. Paste the entire contents of **`supabase/schema.sql`** and click **Run**.
 3. This creates the `app_state` table and **enables Row-Level Security** with
    policies so each user can only ever read/write their own row. This is what
    prevents one user from accessing another's data — it's enforced by the
@@ -44,7 +44,7 @@ In `index.html`, just before the existing app scripts, add:
   window.__INFOS_SUPABASE_URL__ = 'https://YOUR-PROJECT.supabase.co';
   window.__INFOS_SUPABASE_ANON_KEY__ = 'YOUR-ANON-KEY';
 </script>
-<script src="supabase-adapter.js"></script>
+<script src="supabase/adapter.js"></script>
 ```
 
 > Note: this loads the Supabase client from a CDN. If you want zero external

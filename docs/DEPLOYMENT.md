@@ -7,7 +7,7 @@ This is the full path to put Infos online with a real backend. Read the
 
 ## TL;DR of the security model
 - The **anon key is public-safe** — it's fine in client code. Real protection
-  is **Row-Level Security (RLS)** in Supabase. You MUST run `supabase-schema.sql`.
+  is **Row-Level Security (RLS)** in Supabase. You MUST run `supabase/schema.sql`.
 - **NEVER commit the `service_role` key.** It bypasses RLS = full data access.
   It should only ever live in server-side Supabase functions, never here.
 - Keys are read from **Vercel environment variables** at runtime via
@@ -18,7 +18,7 @@ This is the full path to put Infos online with a real backend. Read the
 
 ## Step 1 — Supabase
 1. Create a project at https://supabase.com.
-2. **SQL Editor → New query →** paste all of `supabase-schema.sql` → **Run**.
+2. **SQL Editor → New query →** paste all of `supabase/schema.sql` → **Run**.
    This creates the `app_state` table and enables RLS. (Without this, the app
    has no real data protection.)
 3. **Settings → API:** copy the **Project URL** and the **anon / public** key.
@@ -69,7 +69,7 @@ adapter activates automatically and sign-in/sign-up route through Supabase Auth.
 ---
 
 ## Security checklist before going public
-- [ ] `supabase-schema.sql` was run and RLS is **enabled** (verify in Table Editor → app_state → RLS shows "Enabled").
+- [ ] `supabase/schema.sql` was run and RLS is **enabled** (verify in Table Editor → app_state → RLS shows "Enabled").
 - [ ] `service_role` key is **nowhere** in the repo or client.
 - [ ] Email confirmation is **on** in Supabase Auth.
 - [ ] Reviewed Supabase Auth **rate limits**; enabled **CAPTCHA** if exposed broadly.
@@ -82,7 +82,7 @@ adapter activates automatically and sign-in/sign-up route through Supabase Auth.
 - **Snapshot sync, not live collaboration.** The whole app state syncs as one
   JSON blob per user (last-write-wins). Two devices editing the *same* account
   simultaneously can overwrite each other. For true concurrent multi-user
-  editing, migrate to the normalized tables sketched in `supabase-schema.sql`.
+  editing, migrate to the normalized tables sketched in `supabase/schema.sql`.
 - **Business-member logins are still local** in this version; the cloud account
   is the owner. Members syncing through the cloud needs the normalized model.
 - **CSP uses `'unsafe-inline'` for scripts** because index.html has small inline
