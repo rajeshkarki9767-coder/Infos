@@ -2466,17 +2466,27 @@
         if (authMode === 'signup') {
           const result = await window.InfosSupabase.Auth.signUp(email, pw, name);
           btn.textContent = original; btn.disabled = false;
-          // Do NOT auto-login a new signup. Switch to sign-in and show a short
-          // inline note. Clicking the email confirmation link will bring the
-          // user back to this sign-in page to log in with their credentials.
-          setAuthMode('signin');
-          const ef = $('#auth-email'); if (ef) ef.value = email;
-          const pf = $('#auth-password'); if (pf) pf.value = '';
-          if (result && result.needsConfirmation) {
-            showAuthError('Account created. Check your email for a confirmation link, then sign in.');
-          } else {
-            showAuthError('Account created. Please sign in.');
-          }
+          // Do NOT auto-login. Show a dedicated confirmation screen so the user
+          // clearly sees the "check your email" message. The only button is
+          // "Back to sign in" (not "Sign in") so they don't skip confirmation by
+          // habit. Clicking the email link later brings them to the sign-in page.
+          const needsConfirm = !!(result && result.needsConfirmation);
+          showFullScreenMessage({
+            icon: 'ti-mail-check',
+            title: needsConfirm ? 'Check your email' : 'Account created',
+            message: needsConfirm
+              ? `We've sent a confirmation link to ${email}. Open your inbox and click the link to verify your account. After confirming, come back here to sign in.`
+              : `Your account is ready. Use the Back button below to sign in with your email and password.`,
+            button: {
+              label: 'Back',
+              onClick: () => {
+                const fsm = document.getElementById('fullscreen-message'); if (fsm) fsm.remove();
+                setAuthMode('signin');
+                const ef = $('#auth-email'); if (ef) ef.value = email;
+                const pf = $('#auth-password'); if (pf) pf.value = '';
+              }
+            }
+          });
           return;
         }
         // Sign-in path
@@ -2820,6 +2830,39 @@
       });
       setTimeout(() => ctx.close().catch(() => {}), 700);
     } catch {}
+  }
+
+  // A full-screen, opaque message overlay (no app content shows behind it).
+  // Used for the account-deletion "thank you" screen and similar moments.
+  // opts: { icon, title, message, button: {label, onClick}, spinner: bool }
+  function showFullScreenMessage(opts) {
+    const o = opts || {};
+    let el = document.getElementById('fullscreen-message');
+    if (el) el.remove();
+    el = document.createElement('div');
+    el.id = 'fullscreen-message';
+    el.className = 'loading-splash visible';
+    el.style.flexDirection = 'column';
+    const iconHTML = o.icon
+      ? `<div style="width:72px;height:72px;border-radius:50%;background:var(--accent-bg);display:flex;align-items:center;justify-content:center;margin-bottom:20px;"><i class="ti ${esc(o.icon)}" style="font-size:34px;color:var(--accent-solid);"></i></div>`
+      : '';
+    const spinnerHTML = o.spinner
+      ? `<div style="width:26px;height:26px;margin-top:22px;border-radius:50%;border:3px solid var(--accent-bg);border-top-color:var(--accent-solid);animation:bootspin .8s linear infinite;"></div>`
+      : '';
+    el.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;text-align:center;padding:32px;max-width:380px;">
+        ${iconHTML}
+        <div style="font-size:21px;font-weight:700;color:var(--text-primary);line-height:1.3;">${esc(o.title || '')}</div>
+        <div style="font-size:14px;line-height:1.6;color:var(--text-secondary);margin-top:12px;">${esc(o.message || '')}</div>
+        ${o.button ? `<button id="fsm-btn" class="btn-primary" style="margin-top:24px;min-width:160px;">${esc(o.button.label || 'OK')}</button>` : ''}
+        ${spinnerHTML}
+      </div>`;
+    document.body.appendChild(el);
+    if (o.button) {
+      const b = el.querySelector('#fsm-btn');
+      if (b) b.onclick = () => { try { if (o.button.onClick) o.button.onClick(); } catch {} };
+    }
+    return el;
   }
 
   function showLoadingSplash(displayName, opts) {
@@ -5431,13 +5474,19 @@
             try { localStorage.removeItem('infos-state-v3-fallback'); } catch {}
             try { localStorage.removeItem(STORAGE_KEY); } catch {}
             try { localStorage.removeItem('infos-device-fp'); } catch {}
+            // Show a graceful farewell screen, then reload to the sign-in screen.
+            showFullScreenMessage({
+              icon: 'ti-heart-handshake',
+              title: 'Your account is being deleted',
+              message: 'Thank you for being with us. We hope to see you again sometime. You can create a new account anytime.',
+              spinner: true
+            });
             if (cloud || (state.accounts || []).length === 0) {
-              location.reload();
+              setTimeout(() => { location.reload(); }, 4000);
               return;
             }
             persistAll();
-            toast('Account deleted');
-            logout();
+            setTimeout(() => { logout(); }, 4000);
           }
         });
       }
