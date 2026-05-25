@@ -115,6 +115,29 @@
       await c.auth.signOut();
     },
 
+    // STAGE 2: create a hidden member account for a business login via the
+    // server function. Owner-only; the server verifies ownership. Returns the
+    // new member's uid. Requires api/create-member.js deployed.
+    async createMember(businessId, memberEmail, memberPassword, allowedTabs) {
+      const c = getClient(); if (!c) throw new Error('Supabase not configured');
+      const { data } = await c.auth.getSession();
+      const tk = data && data.session && data.session.access_token;
+      if (!tk) throw new Error('Not signed in');
+      const res = await fetch('/api/create-member', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tk}` },
+        body: JSON.stringify({
+          business_id: businessId,
+          member_email: String(memberEmail || '').toLowerCase(),
+          member_password: memberPassword,
+          allowed_tabs: Array.isArray(allowedTabs) ? allowedTabs : []
+        })
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(out.error || 'Could not create member');
+      return out.member_uid;
+    },
+
     // Permanently delete the signed-in user's auth account via the server
     // function (needs api/delete-account.js + SUPABASE_SERVICE_ROLE_KEY set).
     // Falls back gracefully if the endpoint isn't deployed.
@@ -208,6 +231,63 @@
       const user = await Auth.currentUser();
       if (!user) throw new Error('Not signed in');
       const { error } = await c.from('app_state').delete().eq('user_id', user.id);
+      if (error) throw error;
+      return true;
+    },
+
+    // ---- STAGE 3: owner publishes the view-only slice for team members ----
+    // Create or update a cloud `businesses` row for one of the owner's
+    // businesses. Returns the cloud UUID (caller stores it to map local→cloud).
+    // `cloudId` is the existing UUID if we've published this biz before.
+    async publishBusiness({ cloudId, name, color }) {
+      const c = getClient(); if (!c) throw new Error('Supabase not configured');
+      const user = await Auth.currentUser();
+      if (!user) throw new Error('Not signed in');
+      if (cloudId) {
+        const { error } = await c.from('businesses')
+          .update({ name: name || '', color: color || '#378ADD' })
+          .eq('id', cloudId).eq('owner_id', user.id);
+        if (error) throw error;
+        return cloudId;
+      }
+      const { data, error } = await c.from('businesses')
+        .insert({ owner_id: user.id, name: name || '', color: color || '#378ADD' })
+        .select('id').single();
+      if (error) throw error;
+      return data.id;
+    },
+
+    // Replace the published items for a business's allowed tabs. We delete the
+    // existing shared_items for this business then insert the current allowed
+    // slice — simple and correct (members are read-only; volume is small).
+    // `itemsByTab` = { notices: [ {..}, ... ], balance: [...] } (allowed tabs only)
+    async publishItems(cloudBusinessId, itemsByTab) {
+      const c = getClient(); if (!c) throw new Error('Supabase not configured');
+      const user = await Auth.currentUser();
+      if (!user) throw new Error('Not signed in');
+      // Clear existing published items for this business (RLS scopes to owner).
+      const { error: delErr } = await c.from('shared_items').delete().eq('business_id', cloudBusinessId);
+      if (delErr) throw delErr;
+      const rows = [];
+      Object.keys(itemsByTab || {}).forEach(tab => {
+        (itemsByTab[tab] || []).forEach(item => {
+          rows.push({ business_id: cloudBusinessId, tab, data: item });
+        });
+      });
+      if (rows.length) {
+        const { error: insErr } = await c.from('shared_items').insert(rows);
+        if (insErr) throw insErr;
+      }
+      return rows.length;
+    },
+
+    // Remove a published business (and its items/members cascade) from the cloud.
+    async unpublishBusiness(cloudBusinessId) {
+      const c = getClient(); if (!c) throw new Error('Supabase not configured');
+      const user = await Auth.currentUser();
+      if (!user) throw new Error('Not signed in');
+      const { error } = await c.from('businesses').delete()
+        .eq('id', cloudBusinessId).eq('owner_id', user.id);
       if (error) throw error;
       return true;
     }

@@ -2476,9 +2476,9 @@
             title: needsConfirm ? 'Check your email' : 'Account created',
             message: needsConfirm
               ? `We've sent a confirmation link to ${email}. Open your inbox and click the link to verify your account. After confirming, come back here to sign in.`
-              : `Your account is ready. Use the Back button below to sign in with your email and password.`,
+              : `Your account is ready. Tap "Back to login" below to sign in with your email and password.`,
             button: {
-              label: 'Back',
+              label: 'Back to login',
               onClick: () => {
                 const fsm = document.getElementById('fullscreen-message'); if (fsm) fsm.remove();
                 setAuthMode('signin');
@@ -2640,9 +2640,35 @@
     clearInterval(resendId);
     resendId = setInterval(() => { s--; if (s <= 0) { clearInterval(resendId); $('#otp-resend').disabled = false; $('#otp-timer').textContent = 'Code expired'; } else $('#otp-timer').textContent = `Resend in 0:${s.toString().padStart(2,'0')}`; }, 1000);
   }
-  $('#forgot-send').onclick = () => {
+  $('#forgot-send').onclick = async () => {
     const email = $('#forgot-email').value.trim().toLowerCase();
     if (!email.includes('@')) { $('#forgot-error-1').textContent = 'Enter a valid email'; $('#forgot-error-1').hidden = false; return; }
+    const cloud = !!(window.InfosSupabase && window.InfosSupabase.configured());
+    if (cloud) {
+      // Cloud accounts: send a real Supabase password-reset email (uses the
+      // branded reset template). We don't reveal whether the email exists.
+      const sendBtn = $('#forgot-send'); const orig = sendBtn.textContent;
+      sendBtn.textContent = 'Sending…'; sendBtn.disabled = true;
+      try { await window.InfosSupabase.Auth.resetPassword(email); } catch (e) { console.warn('reset email error:', e); }
+      sendBtn.textContent = orig; sendBtn.disabled = false;
+      // Always show the same confirmation (avoid leaking which emails exist).
+      showFullScreenMessage({
+        icon: 'ti-mail-check',
+        title: 'Check your email',
+        message: `If an account exists for ${email}, we've sent a password-reset link. Open it to choose a new password, then come back here to sign in.`,
+        button: {
+          label: 'Back to login',
+          onClick: () => {
+            const fsm = document.getElementById('fullscreen-message'); if (fsm) fsm.remove();
+            $('#auth-mode-forgot').hidden = true; $('#auth-mode-signin').hidden = false;
+            $('#auth-title').textContent = 'Welcome to Infos'; $('#auth-sub').textContent = 'Sign in to continue';
+            const ef = $('#auth-email'); if (ef) { ef.value = email; ef.focus(); }
+          }
+        }
+      });
+      return;
+    }
+    // Local mode: keep the existing in-app reset flow (no external email).
     const acc = (state.accounts || []).find(a => a.email === email);
     if (!acc) { $('#forgot-error-1').textContent = 'No account found with that email'; $('#forgot-error-1').hidden = false; return; }
     $('#forgot-email-display').textContent = email; showForgotStep(2);
@@ -5434,6 +5460,15 @@
           confirmLabel: 'Delete forever',
           danger: true,
           onConfirm: async () => {
+            // Show an instant "processing" screen the moment delete is confirmed,
+            // so there's immediate feedback even on a slow connection while the
+            // server call runs.
+            showFullScreenMessage({
+              icon: 'ti-trash',
+              title: 'Deleting your account…',
+              message: 'Please wait while we permanently remove your account and data. This only takes a moment.',
+              spinner: true
+            });
             if (cloud) {
               // Full account deletion: removes the auth user + data via the
               // server function. If it fails, we STOP and show the real error
@@ -5444,6 +5479,7 @@
                 }
                 await window.InfosSupabase.Auth.deleteAccount();
               } catch (e) {
+                const fsm = document.getElementById('fullscreen-message'); if (fsm) fsm.remove();
                 const msg = (e && e.message) || 'Unknown error';
                 confirmAction({
                   title: 'Account not deleted',
