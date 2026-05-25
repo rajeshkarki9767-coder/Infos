@@ -5346,28 +5346,61 @@
     };
   }
 
-  // Delete account — type your email to confirm.
+  // Delete account — type your email to confirm, then a final confirmation.
   function openDeleteAccountFlow() {
     const myEmail = state.user.email;
+    const cloud = !!(window.InfosSupabase && window.InfosSupabase.configured());
     confirmAction({
       title: 'Delete your account?',
-      message: `This permanently removes your account, your businesses, and all items stored on this device. There is no undo and no backup unless you exported one. To confirm, type your account email below.`,
-      confirmLabel: 'Delete my account',
+      message: cloud
+        ? `This permanently removes your account and all your data from this device and the cloud. There is no undo and no backup unless you exported one. To confirm, type your account email below.`
+        : `This permanently removes your account, your businesses, and all items stored on this device. There is no undo and no backup unless you exported one. To confirm, type your account email below.`,
+      confirmLabel: 'Continue',
       danger: true,
       typeToConfirm: myEmail,
       typeToConfirmLabel: `Type your account email (${myEmail}) to confirm`,
       onConfirm: () => {
-        state.accounts = (state.accounts || []).filter(a => a.email !== myEmail);
-        state.recentSignins = (state.recentSignins || []).filter(e => e.email !== myEmail);
-        if (state.accounts.length === 0) {
-          try { localStorage.removeItem(STORAGE_KEY); } catch {}
-          try { localStorage.removeItem('infos-device-fp'); } catch {}
-          location.reload();
-          return;
-        }
-        persistAll();
-        toast('Account deleted');
-        logout();
+        // Second confirmation — a deliberate "are you absolutely sure" gate.
+        confirmAction({
+          title: 'Are you absolutely sure?',
+          message: `This is your last chance to cancel. Deleting removes everything permanently${cloud ? ', including your cloud data' : ''}. This cannot be undone.`,
+          confirmLabel: 'Delete forever',
+          danger: true,
+          onConfirm: async () => {
+            // Best-effort cloud cleanup. Try full account deletion (removes the
+            // auth user + data via the server function); if that endpoint isn't
+            // deployed, fall back to deleting just the user's own data row.
+            if (cloud) {
+              let fullyDeleted = false;
+              try {
+                if (window.InfosSupabase.Auth && window.InfosSupabase.Auth.deleteAccount) {
+                  await window.InfosSupabase.Auth.deleteAccount();
+                  fullyDeleted = true;
+                }
+              } catch (e) { console.warn('Full account deletion unavailable, deleting data only:', e); }
+              if (!fullyDeleted) {
+                try {
+                  const adapter = window.InfosSupabase.adapter;
+                  if (adapter && typeof adapter.deleteOwnData === 'function') await adapter.deleteOwnData();
+                } catch (e) { console.warn('Cloud data delete failed:', e); }
+              }
+              try { await window.InfosSupabase.Auth.signOut(); } catch {}
+              try { if (window.Sync) window.Sync.disable(); } catch {}
+            }
+            // Local cleanup
+            state.accounts = (state.accounts || []).filter(a => a.email !== myEmail);
+            state.recentSignins = (state.recentSignins || []).filter(e => e.email !== myEmail);
+            if (cloud || state.accounts.length === 0) {
+              try { localStorage.removeItem(STORAGE_KEY); } catch {}
+              try { localStorage.removeItem('infos-device-fp'); } catch {}
+              location.reload();
+              return;
+            }
+            persistAll();
+            toast('Account deleted');
+            logout();
+          }
+        });
       }
     });
   }

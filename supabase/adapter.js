@@ -104,6 +104,25 @@
       await c.auth.signOut();
     },
 
+    // Permanently delete the signed-in user's auth account via the server
+    // function (needs api/delete-account.js + SUPABASE_SERVICE_ROLE_KEY set).
+    // Falls back gracefully if the endpoint isn't deployed.
+    async deleteAccount() {
+      const c = getClient(); if (!c) throw new Error('Supabase not configured');
+      const { data } = await c.auth.getSession();
+      const token = data && data.session && data.session.access_token;
+      if (!token) throw new Error('Not signed in');
+      const res = await fetch('/api/delete-account', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) {
+        let detail = ''; try { detail = (await res.json()).error || ''; } catch {}
+        throw new Error(detail || 'Account deletion not available');
+      }
+      return true;
+    },
+
     async currentUser() {
       const c = getClient(); if (!c) return null;
       const { data } = await c.auth.getUser();
@@ -167,6 +186,19 @@
       s.__cloudVersion = data.version || 0;
       s.__cloudUpdatedAt = data.updated_at || null;
       return s;
+    },
+
+    // Delete the current user's own cloud data row. RLS ensures a user can only
+    // delete their own row. NOTE: this removes the stored DATA, not the auth
+    // user itself — deleting the auth account requires a server-side function
+    // with the service_role key (see api/delete-account.js).
+    async deleteOwnData() {
+      const c = getClient(); if (!c) throw new Error('Supabase not configured');
+      const user = await Auth.currentUser();
+      if (!user) throw new Error('Not signed in');
+      const { error } = await c.from('app_state').delete().eq('user_id', user.id);
+      if (error) throw error;
+      return true;
     }
   };
 
