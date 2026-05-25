@@ -1,5 +1,5 @@
-const CACHE_VERSION = 'infos-v31.0.0';
-const RUNTIME_CACHE = 'infos-runtime-v31';
+const CACHE_VERSION = 'infos-v33.0.0';
+const RUNTIME_CACHE = 'infos-runtime-v33';
 
 const PRECACHE_URLS = [
   '/',
@@ -10,6 +10,8 @@ const PRECACHE_URLS = [
   '/crypto.js',
   '/sync.js',
   '/icons.js',
+  '/vendor/supabase-js.min.js',
+  '/supabase/adapter.js',
   '/manifest.json',
   '/icons/icon.svg',
   '/icons/icon-192.png',

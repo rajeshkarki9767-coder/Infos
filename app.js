@@ -6065,6 +6065,7 @@
     // If Supabase is configured and a session is still valid, resume it and pull
     // the latest cloud snapshot before rendering.
     // Wait for Supabase config to load (from /api/config) before deciding auth.
+    try { const sub = document.getElementById('boot-splash-sub'); if (sub) sub.textContent = 'Checking your session…'; } catch {}
     if (window.InfosSupabase && window.InfosSupabase.ready) {
       try { await window.InfosSupabase.ready; } catch {}
     }
@@ -6072,6 +6073,7 @@
       try {
         const sbUser = await window.InfosSupabase.Auth.currentUser();
         if (sbUser) {
+          try { const sub = document.getElementById('boot-splash-sub'); if (sub) sub.textContent = 'Syncing your data…'; } catch {}
           await window.Sync.enable('supabase');
           state.syncAdapter = 'supabase';
           const remote = await window.Sync.pullNow();
@@ -6167,6 +6169,23 @@
       if (mq.addEventListener) mq.addEventListener('change', onChange);
       else if (mq.addListener) mq.addListener(onChange); // Safari fallback
     } catch {}
+    // Boot finished — the correct screen (main or sign-in) is now set, so fade
+    // out the boot splash. This is what prevents the brief login-screen flash on
+    // refresh: the splash covers the whole async session check above.
+    hideBootSplash();
   }
+
+  function hideBootSplash() {
+    try {
+      const bs = document.getElementById('boot-splash');
+      if (!bs) return;
+      bs.classList.add('boot-hide');
+      setTimeout(() => { try { bs.remove(); } catch {} }, 400);
+    } catch {}
+  }
+
+  // Safety net: never let the splash get stuck if boot throws somewhere.
+  setTimeout(() => { try { hideBootSplash(); } catch {} }, 8000);
+
   bootstrap();
 })();

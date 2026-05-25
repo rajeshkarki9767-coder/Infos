@@ -34,6 +34,41 @@
 </head>
 <body>
 
+<!-- Boot splash: shown from the very first paint and removed by app.js once it
+     has decided whether to show the main app or the sign-in screen. This avoids
+     the brief flash of the login screen on refresh while the session is checked. -->
+<div id="boot-splash" role="status" aria-live="polite">
+  <div class="boot-splash-inner">
+    <svg width="72" height="72" viewBox="0 0 512 512" aria-hidden="true" class="boot-splash-logo">
+      <rect x="0" y="0" width="512" height="512" rx="128" fill="#378ADD"/>
+      <rect x="234" y="148" width="44" height="44" rx="11" fill="#FFFFFF"/>
+      <rect x="206" y="220" width="100" height="20" rx="10" fill="#FFFFFF" opacity="0.55"/>
+      <rect x="206" y="268" width="100" height="96" rx="18" fill="#FFFFFF"/>
+    </svg>
+    <div class="boot-splash-title">Infos</div>
+    <div class="boot-splash-sub" id="boot-splash-sub">Loading your workspace…</div>
+    <div class="boot-splash-spinner" aria-hidden="true"></div>
+  </div>
+</div>
+<style>
+  /* Inline so the splash styles apply before styles.css finishes loading. */
+  #boot-splash{position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;
+    background:#FAFAF7;width:100vw;height:100vh;height:100dvh;transition:opacity .35s ease;}
+  #boot-splash.boot-hide{opacity:0;pointer-events:none;}
+  @media (prefers-color-scheme: dark){#boot-splash{background:#131311;}}
+  .boot-splash-inner{display:flex;flex-direction:column;align-items:center;gap:14px;text-align:center;padding:24px;}
+  .boot-splash-logo{border-radius:20px;box-shadow:0 10px 30px rgba(55,138,221,.25);animation:bootpulse 1.8s ease-in-out infinite;}
+  .boot-splash-title{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    font-size:26px;font-weight:700;letter-spacing:-.4px;color:#1A1A18;margin-top:4px;}
+  @media (prefers-color-scheme: dark){.boot-splash-title{color:#F5F4F0;}}
+  .boot-splash-sub{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    font-size:13.5px;color:#8A8880;max-width:260px;line-height:1.5;}
+  .boot-splash-spinner{width:26px;height:26px;margin-top:8px;border-radius:50%;
+    border:3px solid rgba(55,138,221,.25);border-top-color:#378ADD;animation:bootspin .8s linear infinite;}
+  @keyframes bootspin{to{transform:rotate(360deg);}}
+  @keyframes bootpulse{0%,100%{transform:scale(1);}50%{transform:scale(1.05);}}
+</style>
+
 <div id="install-banner" class="install-banner" hidden>
   <svg width="32" height="32" viewBox="0 0 512 512" aria-hidden="true" style="flex-shrink:0;border-radius:8px;">
     <rect x="0" y="0" width="512" height="512" rx="128" fill="#378ADD"/>
@@ -367,7 +402,7 @@
      The adapter fetches config at runtime, so no keys are hardcoded here.
      See SUPABASE_SETUP.md / DEPLOYMENT.md.
      ============================================================ -->
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="vendor/supabase-js.min.js"></script>
 <script src="supabase/adapter.js"></script>
 
 <script src="app.js"></script>
