@@ -1334,6 +1334,44 @@
   }
 
   // ---------- Business modal ----------
+  // Automatically publish a business to the cloud + ensure its team login exists.
+  // Called silently after saving a business (when cloud is configured). Safe to
+  // call repeatedly — if the member account already exists, it just updates data.
+  async function autoShareBusiness(b, plainPw) {
+    if (!b || !window.InfosSupabase || !window.InfosSupabase.configured()) return;
+    let pwPlain = plainPw || b.password || '';
+    if (!pwPlain && b.passwordEnc) {
+      try { if (window.Crypto.isUnlocked()) pwPlain = await window.Crypto.decrypt(b.passwordEnc); } catch {}
+    }
+    if (!b.email || !pwPlain) return; // need both to create the login
+    try {
+      const existingCloudId = (state.bizCloudMap && state.bizCloudMap[b.id]) || null;
+      const cloudId = await window.InfosSupabase.adapter.publishBusiness({ cloudId: existingCloudId, name: b.name, color: b.color });
+      if (!state.bizCloudMap) state.bizCloudMap = {};
+      state.bizCloudMap[b.id] = cloudId;
+      // Publish allowed-tab items.
+      const allowed = (state.bizAllowedTabs && state.bizAllowedTabs[b.id]) || Object.keys(state.items);
+      const itemsByTab = {};
+      allowed.forEach(tab => {
+        const list = (state.items[tab] || []).filter(it => itemHasBiz(it, b.id) && !it.deleted);
+        if (list.length) itemsByTab[tab] = list.map(it => sanitizeShared(it));
+      });
+      await window.InfosSupabase.adapter.publishItems(cloudId, itemsByTab);
+      // Ensure the hidden member account exists (idempotent — ignore "already exists").
+      try {
+        await window.InfosSupabase.Auth.createMember(cloudId, b.email, pwPlain, allowed);
+      } catch (memErr) {
+        const msg = String(memErr && memErr.message || '');
+        if (!/already|exists|registered|duplicate/i.test(msg)) throw memErr;
+        // Already exists — that's fine. (Password changes are handled separately.)
+      }
+      persistAll();
+    } catch (e) {
+      console.warn('autoShareBusiness error:', e);
+      // Non-fatal: local data is intact; will retry on next save.
+    }
+  }
+
   // STAGE 4b: publish a business + its allowed-tab items to the cloud and
   // create the hidden member account from the business login, so a team member
   // can sign in on their own device and see this data live (read-only).
@@ -1459,7 +1497,6 @@
       </div>
       <div class="modal-foot">
         <button class="btn-outline" id="m-cancel">Cancel</button>
-        ${editing && window.InfosSupabase && window.InfosSupabase.configured() ? `<button class="btn-outline" id="m-share" style="margin-right:auto;"><i class="ti ti-cloud-share"></i> Share with team</button>` : ''}
         <button class="btn-primary" id="m-save">${editing ? 'Save' : 'Create'}</button>
       </div>
     `);
@@ -1501,7 +1538,6 @@
     $$('.color-swatch').forEach(el => el.onclick = () => setColor(el.dataset.c, 'swatch'));
     $('#m-close').onclick = closeModal;
     $('#m-cancel').onclick = closeModal;
-    if ($('#m-share')) $('#m-share').onclick = () => { closeModal(); shareBusinessWithTeam(editId); };
     $('#m-save').onclick = async () => {
       const name = $('#m-name').value.trim(), email = $('#m-email').value.trim().toLowerCase();
       const pw = $('#m-pw').value, pw2 = $('#m-pw2').value;
@@ -1524,6 +1560,7 @@
         state.businesses.push(newBiz);
         recordActivity(newBiz, 'created', 'Business created');
       }
+      const savedBiz = editing || state.businesses[state.businesses.length - 1];
       closeModal(); buildNav(); updateActiveBizDisplay(); persistAll();
       const cur = state.history[state.history.length-1]?.split(':')[0];
       if (cur === 'businesses' || cur === 'biz-detail') {
@@ -1532,6 +1569,12 @@
         else setActive('businesses','fade');
       }
       toast(editing ? 'Saved' : 'Created'); haptic();
+      // Automatically publish this business to the cloud so the team can sign in
+      // with its email + password — no separate "Share" step needed. Runs in the
+      // background; failures are non-fatal (local data is unaffected).
+      if (savedBiz && window.InfosSupabase && window.InfosSupabase.configured() && !state.__memberMode) {
+        autoShareBusiness(savedBiz, pw).catch(e => console.warn('Auto-share failed:', e));
+      }
     };
   }
 
