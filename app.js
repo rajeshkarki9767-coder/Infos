@@ -2570,6 +2570,18 @@
     }
     state.__memberMode = true;
     state.__memberEmail = email;
+    // Hide everything else so only the member view shows (no overlap with the
+    // auth screen, main app, or any open modal).
+    try {
+      const auth = document.getElementById('screen-auth'); if (auth) auth.classList.remove('screen-active');
+      const main = document.getElementById('screen-main'); if (main) main.classList.remove('screen-active');
+      if (typeof closeModal === 'function') closeModal();
+      const modalContent = document.getElementById('modal-content');
+      if (modalContent) modalContent.innerHTML = '';
+      const modalEl = document.getElementById('modal'); if (modalEl) modalEl.hidden = true;
+      // Remove the boot splash if still up.
+      const bs = document.getElementById('boot-splash'); if (bs) bs.remove();
+    } catch {}
     renderMemberView(view);
     // STAGE 5 hook: subscribe to live updates (added in Stage 5).
     try { if (window.InfosSupabase.Auth.subscribeMemberView) {
@@ -2584,7 +2596,7 @@
     if (!main) {
       main = document.createElement('div');
       main.id = 'member-view-root';
-      main.style.cssText = 'position:fixed;inset:0;z-index:9000;overflow:auto;background:var(--bg-primary);';
+      main.style.cssText = 'position:fixed;inset:0;z-index:2147483600;overflow:auto;background:var(--bg-primary,#FAFAF7);';
       document.body.appendChild(main);
     }
     const b = view.business || {};
