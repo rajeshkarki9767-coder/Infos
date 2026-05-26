@@ -1421,11 +1421,11 @@
       return;
     }
     confirmAction({
-      title: 'Share with team',
-      message: `This shares "${b.name}" with your team. Anyone you give the email (${b.email}) and password to can sign in on their own device and get the FULL app on the same live data — they can add and edit entries together with you, and changes sync to everyone. Continue?`,
-      confirmLabel: 'Share',
+      title: 'Enable business login',
+      message: `This lets "${b.name}" sign in on any device using the email (${b.email}) and password you set. On every device they'll see exactly what you see for this business — live and synced. They can VIEW everything but can't create or manage businesses; they can only add entries on entry tabs (like Balance). Continue?`,
+      confirmLabel: 'Enable',
       onConfirm: async () => {
-        showFullScreenMessage({ icon: 'ti-cloud-share', title: 'Setting up shared access…', message: 'Publishing data and setting up the team login. One moment.', spinner: true });
+        showFullScreenMessage({ icon: 'ti-cloud-share', title: 'Setting up business login…', message: 'Publishing this business and setting up the login. One moment.', spinner: true });
         try {
           const existingCloudId = (state.bizCloudMap && state.bizCloudMap[bizId]) || null;
           const cloudId = await window.InfosSupabase.adapter.ensureSharedBusiness({ cloudId: existingCloudId, name: b.name, color: b.color });
@@ -1436,12 +1436,12 @@
           let memberMsg = '';
           try {
             await window.InfosSupabase.Auth.createMember(cloudId, b.email, pwPlain, allowed);
-            memberMsg = 'A team login was created.';
+            memberMsg = 'The business login is ready.';
           } catch (memErr) {
             // Most common: the member already exists from a previous share.
             memberMsg = /already|exists|registered/i.test(String(memErr && memErr.message))
-              ? 'Team login already existed (data updated).'
-              : 'Set up, but team login could not be created: ' + (memErr && memErr.message || 'error');
+              ? 'The business login already existed (data updated).'
+              : 'Set up, but the business login could not be created: ' + (memErr && memErr.message || 'error');
           }
           // Push the current shared slice up.
           const Slice = window.InfosSharedSlice;
@@ -1453,8 +1453,8 @@
           persistAll();
           const fsm = document.getElementById('fullscreen-message'); if (fsm) fsm.remove();
           confirmAction({
-            title: 'Shared with team',
-            message: `"${b.name}" is now a shared workspace. ${memberMsg}\n\nYour team can sign in at the app with:\nEmail: ${b.email}\nPassword: (the business password you set)\n\nThey get the full app on the same live data — add, edit, everything — synced to everyone.`,
+            title: 'Business login enabled',
+            message: `"${b.name}" can now be signed in to on any device. ${memberMsg}\n\nSign in with:\nEmail: ${b.email}\nPassword: (the business password you set)\n\nThat login sees this business exactly as you do — view-only, with entries allowed on entry tabs like Balance. It can't create or manage businesses.`,
             confirmLabel: 'Done',
             onConfirm: () => {}
           });
@@ -2190,6 +2190,25 @@
       bindChipClicks(pageContent);
     }
   }
+
+  // Re-render the current view (via the given callback) WITHOUT losing the
+  // user's scroll position. Used for in-page "Load more / View more / Show less"
+  // and inline deletes, so the page doesn't jump to the top and force the user
+  // to scroll all the way back down. We snapshot scrollTop, run the re-render,
+  // then restore scrollTop on the next frame (after layout settles). We also
+  // suppress the slide/fade transition so it doesn't visually flash.
+  function rerenderPreservingScroll(doRerender) {
+    const prevTop = pageContent ? pageContent.scrollTop : 0;
+    const prevBehavior = pageContent ? pageContent.style.scrollBehavior : '';
+    if (pageContent) pageContent.style.scrollBehavior = 'auto'; // no smooth-scroll animation
+    try { doRerender(); } catch (e) { console.warn('rerenderPreservingScroll failed:', e); }
+    // Restore after the new DOM is laid out. rAF twice = after paint, robustly.
+    const restore = () => { if (pageContent) pageContent.scrollTop = prevTop; };
+    requestAnimationFrame(() => { restore(); requestAnimationFrame(() => {
+      restore();
+      if (pageContent) pageContent.style.scrollBehavior = prevBehavior;
+    }); });
+  }
   bulkToggleBtn.onclick = () => toggleBulkMode();
   if (headerSwitchBtn) headerSwitchBtn.onclick = () => { openSwitchAccountPicker(); haptic(); };
   // Hide the header switch button when there's nothing to switch to.
@@ -2610,18 +2629,25 @@
       : { schema: Slice.SCHEMA, business: { id: biz.id, name: biz.name || 'Shared business', color: biz.color || '#378ADD' },
           items: {}, itemOrder: {}, allowedTabs: biz.allowedTabs || null, tabOrder: null, customTabs: [], activity: [] };
 
-    // Hydrate the full local state from the slice and mark this session shared.
+    // Hydrate local state from the slice. The business login runs as a VIEW-ONLY
+    // session scoped to this one business — exactly like the owner's view when
+    // filtered to that business: view everything, no business creation, and the
+    // only place it can add is the Balance entry path (createdByBiz). We achieve
+    // that by setting state.bizContext (the established view-only flag), so ALL
+    // the existing owner-business gating applies automatically. __sharedMode just
+    // marks that this bizContext session is backed by the cloud shared row (for
+    // live cross-device sync + pushing Balance entries up).
     const ms = Slice.sliceToMemberState(slice, { email });
     Object.assign(state, ms);
     state.__sharedMode = true;
     state.__sharedBusinessId = biz.id;
     state.__sharedVersion = (snap && snap.version) || 0;
     state.__sharedEmail = email;
-    // A business login is NOT bizContext (that was the old view-only flag) — it's
-    // a full editor scoped to one business. We surface it via __sharedMode.
-    state.bizContext = null;
-    state.user = { name: (biz.name || 'Business') + ' team', email };
+    // VIEW-ONLY scoped to this business (this is what makes it behave like the
+    // owner's Business view: view-only everywhere, entries only on Balance).
+    state.bizContext = biz.id;
     state.activeBizId = biz.id;
+    state.user = { name: (biz.name || 'Business'), email };
     // Drop any owner-only collections that the member slice doesn't define, so a
     // previous owner session on this device leaves nothing in memory during the
     // business session. (Disk prefs are untouched — see persistAll's shared-mode
@@ -2632,10 +2658,17 @@
     state.cryptoMeta = null;
     state.hiddenTabs = [];
 
-    // Reveal the main app (hide auth/splash), build nav, render.
+    // Reveal the main app. IMPORTANT ORDER (fixes the login glitch): show the
+    // welcome splash FIRST (covering the screen), THEN build/render underneath it,
+    // so the user never sees the dashboard flash before the welcome screen.
+    try {
+      const bs = document.getElementById('boot-splash'); if (bs) bs.remove();
+    } catch {}
+    if (!state.__switchInProgress) {
+      showLoadingSplash(biz.name || 'Business', { action: 'signing-in', subtitle: `Signing in to ${biz.name || 'your business'}`, color: biz.color || null });
+    }
     try {
       const auth = document.getElementById('screen-auth'); if (auth) auth.classList.remove('screen-active');
-      const bs = document.getElementById('boot-splash'); if (bs) bs.remove();
     } catch {}
     screenMain.classList.add('screen-active');
     state.history = [];
@@ -2647,7 +2680,6 @@
     subscribeShared(biz.id);
 
     if (!state.__switchInProgress) {
-      showLoadingSplash(biz.name || 'Business', { action: 'signing-in', subtitle: `Signing in to ${biz.name || 'your business'}`, color: biz.color || null });
       setTimeout(() => { hideLoadingSplash(); toast(`Signed in to ${biz.name || 'your business'}`); }, 1500);
     }
   }
@@ -2689,7 +2721,7 @@
         state.__sharedMode = true;
         state.__sharedBusinessId = cloudBusinessId;
         state.__sharedVersion = snap.version || 0;
-        state.user = state.user || { name: (snap.data.business && snap.data.business.name || 'Business') + ' team', email: state.__sharedEmail };
+        state.user = state.user || { name: (snap.data.business && snap.data.business.name || 'Business'), email: state.__sharedEmail };
         // Silent in-place re-render (no slide/fade) so live updates don't flash.
         rerenderCurrentTab();
       } else {
@@ -2957,7 +2989,7 @@
         login(ownerAcc.name, email, null);
       } else if (bizMatch) {
         state.__nextSplashAction = 'signing-in';
-        login(bizMatch.name + ' team', email, bizMatch.id);
+        login(bizMatch.name, email, bizMatch.id);
       } else {
         showAuthError('No account found with that email and password. If you haven\u2019t signed up yet, choose Create account.');
       }
@@ -3123,6 +3155,17 @@
     state.activeTagId = null;
     { const am = $('#avatar-mini'); if (am) am.textContent = name.charAt(0).toUpperCase(); }
     headerBadge.hidden = true;
+    // GLITCH FIX: put up the welcome splash BEFORE switching to / rendering the
+    // main screen, so the dashboard never flashes before the welcome screen.
+    if (!state.__switchInProgress) {
+      const action = state.__nextSplashAction || 'signing-in';
+      const displayName = asBizId ? bizById(asBizId)?.name : name;
+      const subtitle = action === 'creating'
+        ? "Setting up your workspace"
+        : asBizId ? `Signing in to ${bizById(asBizId)?.name}` : `Welcome, ${name}`;
+      const splashColor = asBizId ? (bizById(asBizId)?.color || null) : (state.customAccent || null);
+      showLoadingSplash(displayName, { action, subtitle, color: splashColor });
+    }
     screenAuth.classList.remove('screen-active');
     screenMain.classList.add('screen-active');
     state.history = [];
@@ -3154,15 +3197,7 @@
     buildNav(); updateActiveBizDisplay(); persistAll();
     setActive('notices');
     if (!state.__switchInProgress) {
-      // Show a 3-second loading splash while everything renders.
-      const action = state.__nextSplashAction || 'signing-in';
       state.__nextSplashAction = null;
-      const displayName = asBizId ? bizById(asBizId)?.name : name;
-      const subtitle = action === 'creating'
-        ? "Setting up your workspace"
-        : asBizId ? `Signing in as ${bizById(asBizId)?.name} team` : `Welcome, ${name}`;
-      const splashColor = asBizId ? (bizById(asBizId)?.color || null) : (state.customAccent || null);
-      showLoadingSplash(displayName, { action, subtitle, color: splashColor });
       setTimeout(() => {
         hideLoadingSplash();
         if (asBizId) toast(`Signed in to ${bizById(asBizId)?.name}`); else toast(`Welcome, ${name}`);
@@ -3431,7 +3466,14 @@
       stepEls[2]?.classList.add('done');
     }, Math.floor(totalMs * 0.95));
 
-    requestAnimationFrame(() => el.classList.add('visible'));
+    // Make the splash fully opaque IMMEDIATELY (no fade-in). The fade-in left the
+    // splash transparent for the first frames, so the dashboard underneath showed
+    // through — the "dashboard, then welcome" glitch. We force opacity:1 inline so
+    // it covers the screen the instant it's added, before any dashboard render.
+    el.style.opacity = '1';
+    el.style.pointerEvents = 'auto';
+    el.classList.add('visible');
+    // (No requestAnimationFrame fade — the inline opacity above wins instantly.)
   }
   function hideLoadingSplash() {
     const el = document.getElementById('loading-splash');
@@ -3479,7 +3521,7 @@
     });
     (state.businesses || []).forEach(b => {
       if (b.id === currentBizId) return;
-      out.push({ kind: 'business', email: b.email, name: b.name + ' team', bizId: b.id });
+      out.push({ kind: 'business', email: b.email, name: b.name, bizId: b.id });
     });
     return out;
   }
@@ -3528,7 +3570,7 @@
     if (kind === 'business') {
       const b = bizById(bizId);
       if (!b) { toast("That business is no longer available"); return; }
-      displayName = b.name + ' team';
+      displayName = b.name;
       sub = b.email;
       switchColor = b.color || null;
     } else {
@@ -3549,7 +3591,7 @@
       // Sign in as the chosen account
       if (kind === 'business') {
         const b = bizById(bizId);
-        login(b.name + ' team', b.email, b.id);
+        login(b.name, b.email, b.id);
       } else {
         const acc = (state.accounts || []).find(a => a.email.toLowerCase() === email.toLowerCase());
         login(acc.name, acc.email, null);
@@ -5233,24 +5275,26 @@
         });
       });
     }
-    // Activity controls: view more / less, delete one, clear all
+    // Activity controls: view more / less, delete one, clear all.
+    // These re-render the biz-detail page; wrap in rerenderPreservingScroll so
+    // the page stays where the user was (load below, don't jump to top).
     const moreBtn = $('#biz-activity-more');
     if (moreBtn) moreBtn.onclick = () => {
       state.__bizActivityExpanded = state.__bizActivityExpanded || {};
       state.__bizActivityExpanded[b.id] = true;
-      state.history.pop(); setActive('biz-detail','fade',{bizId:b.id,title:b.name,sub:b.email});
+      rerenderPreservingScroll(() => { state.history.pop(); setActive('biz-detail','none',{bizId:b.id,title:b.name,sub:b.email}); });
     };
     const lessBtn = $('#biz-activity-less');
     if (lessBtn) lessBtn.onclick = () => {
       if (state.__bizActivityExpanded) state.__bizActivityExpanded[b.id] = false;
-      state.history.pop(); setActive('biz-detail','fade',{bizId:b.id,title:b.name,sub:b.email});
+      rerenderPreservingScroll(() => { state.history.pop(); setActive('biz-detail','none',{bizId:b.id,title:b.name,sub:b.email}); });
     };
     if (!isViewOnly()) {
       c.querySelectorAll('[data-activity-del]').forEach(btn => btn.onclick = () => {
         const id = btn.dataset.activityDel;
         b.activity = (b.activity || []).filter(a => a.id !== id);
         persistAll();
-        state.history.pop(); setActive('biz-detail','fade',{bizId:b.id,title:b.name,sub:b.email});
+        rerenderPreservingScroll(() => { state.history.pop(); setActive('biz-detail','none',{bizId:b.id,title:b.name,sub:b.email}); });
       });
       const clearAll = $('#biz-activity-clear-all');
       if (clearAll) clearAll.onclick = () => {
@@ -5784,8 +5828,8 @@
     const shared = isSharedLogin();
     // The signed-in business name for a shared login (its single business).
     const sharedBiz = shared ? (state.businesses && state.businesses[0]) : null;
-    const displayName = bizCtx ? (bizCtx.name + ' team')
-                      : shared ? ((sharedBiz && sharedBiz.name ? sharedBiz.name : 'Business') + ' team')
+    const displayName = bizCtx ? bizCtx.name
+                      : shared ? (sharedBiz && sharedBiz.name ? sharedBiz.name : 'Business')
                       : state.user.name;
     const displayEmail = state.user.email;
     const showOwnerAccount = !bizCtx && !shared;
