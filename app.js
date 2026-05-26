@@ -173,7 +173,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '59.0.0';
+  const APP_VERSION = '60.0.0';
 
   // ---------- State ----------
   const state = {
