@@ -102,26 +102,66 @@ export default async function handler(req, res) {
         user_metadata: { role: 'member', business_id }
       })
     });
-    if (!createRes.ok) {
+
+    let memberUid;
+    if (createRes.ok) {
+      const created = await createRes.json();
+      memberUid = created && (created.id || (created.user && created.user.id));
+    } else {
+      // The account likely already exists (created on a previous share). Make this
+      // IDEMPOTENT: find the existing user and UPDATE its password to the current
+      // one, so the owner can re-set the business password and it actually takes
+      // effect. (Without this, the auth account keeps its original password and
+      // sign-in fails with "incorrect email or password" forever.)
       const detail = await createRes.text();
-      // Most common: email already in use.
-      res.status(400).json({ error: 'Could not create member login', detail });
-      return;
+      const looksDuplicate = /already|exists|registered|duplicate|been registered/i.test(detail);
+      if (!looksDuplicate) {
+        res.status(400).json({ error: 'Could not create member login', detail });
+        return;
+      }
+      // Look up the existing user by email. The admin list endpoint's ?email=
+      // filter isn't honored on every GoTrue version, so we match explicitly
+      // against the returned list rather than blindly taking the first row.
+      const wantEmail = String(member_email).toLowerCase();
+      const lookup = await fetch(
+        `${SUPABASE_URL}/auth/v1/admin/users?email=${encodeURIComponent(wantEmail)}`,
+        { headers: adminHeaders }
+      );
+      const lk = lookup.ok ? await lookup.json() : null;
+      const userList = lk && (Array.isArray(lk.users) ? lk.users : (Array.isArray(lk) ? lk : []));
+      const existing = (userList || []).find(u => String(u.email || '').toLowerCase() === wantEmail) || null;
+      memberUid = existing && existing.id;
+      if (!memberUid) {
+        res.status(400).json({ error: 'Member already exists but could not be located to update', detail });
+        return;
+      }
+      // Update password + re-stamp metadata + keep email confirmed.
+      const upd = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${memberUid}`, {
+        method: 'PUT',
+        headers: adminHeaders,
+        body: JSON.stringify({
+          password: String(member_password),
+          email_confirm: true,
+          user_metadata: { role: 'member', business_id }
+        })
+      });
+      if (!upd.ok) {
+        const ud = await upd.text();
+        res.status(500).json({ error: 'Could not update existing member password', detail: ud });
+        return;
+      }
     }
-    const created = await createRes.json();
-    const memberUid = created && (created.id || (created.user && created.user.id));
     if (!memberUid) { res.status(500).json({ error: 'Member created but id missing' }); return; }
 
-    // 5) Link the member to the business with allowed tabs.
+    // 5) Link the member to the business with allowed tabs (idempotent upsert so
+    //    re-sharing an existing member doesn't fail on a duplicate link).
     const linkRes = await fetch(`${SUPABASE_URL}/rest/v1/business_members`, {
       method: 'POST',
-      headers: { ...adminHeaders, Prefer: 'return=minimal' },
+      headers: { ...adminHeaders, Prefer: 'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({ business_id, member_uid: memberUid, allowed_tabs })
     });
     if (!linkRes.ok) {
       const detail = await linkRes.text();
-      // Roll back the orphaned auth account so we don't leave junk.
-      try { await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${memberUid}`, { method: 'DELETE', headers: adminHeaders }); } catch {}
       res.status(500).json({ error: 'Could not link member to business', detail });
       return;
     }

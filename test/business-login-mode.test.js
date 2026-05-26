@@ -50,7 +50,13 @@ check('no "full app ... sync to everyone" wording in profile card', !/full app a
 
 console.log('\nno orphaned entries — new owner items always get an assignment:');
 check('new non-notices item defaults to assignSelf when no business pre-selected', /tabKey !== 'notices' && chosenBizIds\.length === 0\)/.test(src));
-check('owner Balance entry: auto-assigns active biz or requires a choice (never orphaned)', /Choose which business this balance entry is for/.test(src) && /ownerTarget = \[state\.activeBizId\]/.test(src));
+
+console.log('\nBALANCE: only the business login adds; owner is view-only on Balance:');
+check('Balance "Add entry" button only shown to business login (canAddBalance = isViewOnly())', /const canAddBalance = isViewOnly\(\)/.test(src));
+check('openBalanceModal refuses the owner (hard gate)', /Balance entries are added by the business login'\); return; \}/.test(src));
+check('owner cannot edit Balance batches', /const canEditBatch = \(b\) => \{\s*if \(!isViewOnly\(\)\) return false;/.test(src));
+check('owner cannot delete Balance batches', /const canDeleteBatch = \(b\) => \{\s*if \(!isViewOnly\(\)\) return false;/.test(src));
+check('Cmd+N on Balance restricted to business login', /state\.items\.balance && isViewOnly\(\)\) openBalanceModal\(\)/.test(src));
 
 console.log('\naccount switch — leaving a business (shared) session reloads cleanly (no stuck splash):');
 const pas = src.slice(src.indexOf('function performAccountSwitch'), src.indexOf('function performAccountSwitch') + 2200);
@@ -59,20 +65,19 @@ check('shared switch awaits signOut before reload', /await Promise\.race/.test(p
 
 console.log('\nview-only gating is driven by bizContext (so it behaves like owner business view):');
 check('isViewOnly() is true when bizContext set', /function isViewOnly\(\)\s*\{\s*return\s*!!state\.bizContext/.test(src));
-// The "New entry" button on list tabs is hidden when isViewOnly() — entries are
-// only addable via the Balance path. Confirm that gate still exists.
+// The "New entry" button on list tabs is hidden when isViewOnly() — non-Balance
+// tabs are owner-only for adding. Confirm that gate still exists.
 check('list "New entry" button gated behind !isViewOnly()', /if \(!isViewOnly\(\)\) \{[\s\S]{0,200}tab-add-btn/.test(src));
-// Balance allows the business user to add (isBizUser = isViewOnly()).
-check('Balance entry uses bizContext for a business user', /const targetBizIds = isBizUser \? \[state\.bizContext\]/.test(src));
+check('Balance entry assigns to bizContext for the business user', /const targetBizIds = isBizUser \? \[state\.bizContext\]/.test(src));
 // Businesses tab is owner-only and hidden for view-only sessions.
 check('Businesses tab is ownerOnly (hidden for business logins)', /businesses:\s*\{[^}]*ownerOnly:\s*true/.test(src));
 
-console.log('\nCONFIRMED REQ 1 — entries ONLY on Balance (everything else view-only):');
+console.log('\nCONFIRMED — non-Balance tabs: only the OWNER adds (business login view-only there):');
 // openItemModal (the create/edit path for ALL non-Balance tabs) must hard-return
 // for a view-only session, so System/Games/Schedule/ID&Pass/custom can't be edited.
 const oim = src.slice(src.indexOf('function openItemModal'), src.indexOf('function openItemModal') + 120);
-check('openItemModal returns early for view-only (no edit on non-Balance tabs)', /if \(isViewOnly\(\)\) return;/.test(oim));
-check('Balance is the one exception: isBizUser = isViewOnly()', /const isBizUser = isViewOnly\(\)/.test(src));
+check('openItemModal returns early for view-only (business login cannot add on non-Balance tabs)', /if \(isViewOnly\(\)\) return;/.test(oim));
+check('Balance add path keyed on isViewOnly (business user)', /const isBizUser = isViewOnly\(\)/.test(src));
 
 console.log('\nCONFIRMED REQ 2 — business login sees ALL data on ALL tabs of its business:');
 // The member slice must NOT carry a tab-restriction, so every tab is visible.

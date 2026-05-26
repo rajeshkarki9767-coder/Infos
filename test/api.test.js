@@ -114,6 +114,29 @@ async function run() {
     const createCall = globalThis.fetch.__calls.find(c => c.url.includes('/auth/v1/admin/users') && (c.opts.method === 'POST'));
     check('stamps role=member metadata on the new account', !!createCall && /"role":"member"/.test(createCall.opts.body));
   }
+  {
+    // Idempotent path: member already exists -> look up + UPDATE password (the fix
+    // for "account shows in Supabase Auth but sign-in says incorrect password").
+    const createMember = loadHandler('../api/create-member.js');
+    stubFetch([
+      { match: (u, o) => u.includes('/auth/v1/user') && (!o.method || o.method === 'GET') && !u.includes('admin'), json: { id: 'owner-1' } },
+      { match: u => u.includes('/rest/v1/businesses'), json: [{ id: 'biz-1', owner_id: 'owner-1' }] },
+      // POST create -> fails as duplicate
+      { match: (u, o) => u.includes('/auth/v1/admin/users') && o.method === 'POST', ok: false, status: 422, text: 'email address has already been registered' },
+      // GET lookup by email -> returns existing user
+      { match: (u, o) => u.includes('/auth/v1/admin/users?email=') && (!o.method || o.method === 'GET'), json: { users: [{ id: 'existing-uid', email: 'a@b.com' }] } },
+      // PUT update -> ok
+      { match: (u, o) => /\/auth\/v1\/admin\/users\/existing-uid/.test(u) && o.method === 'PUT', ok: true, json: { id: 'existing-uid' } },
+      { match: u => u.includes('/rest/v1/business_members'), ok: true, json: {} }
+    ]);
+    let res = mockRes();
+    await createMember({ method: 'POST', headers: { authorization: 'Bearer tok' },
+      body: { business_id: '11111111-1111-1111-1111-111111111111', member_email: 'a@b.com', member_password: 'newpass2', allowed_tabs: ['notices'] } }, res);
+    check('existing member: returns 200 (idempotent, not an error)', res.statusCode === 200);
+    const putCall = globalThis.fetch.__calls.find(c => /\/auth\/v1\/admin\/users\/existing-uid/.test(c.url) && c.opts.method === 'PUT');
+    check('existing member: PUTs a password update', !!putCall && /"password":"newpass2"/.test(putCall.opts.body));
+    check('existing member: re-confirms email + role metadata', !!putCall && /"email_confirm":true/.test(putCall.opts.body) && /"role":"member"/.test(putCall.opts.body));
+  }
 
   console.log('\ndelete-account — member self-delete guard:');
   {

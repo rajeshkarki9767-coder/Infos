@@ -173,7 +173,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '56.0.0';
+  const APP_VERSION = '59.0.0';
 
   // ---------- State ----------
   const state = {
@@ -1202,8 +1202,8 @@
     if ((e.metaKey || e.ctrlKey) && e.key === 'n' && !inInput) {
       e.preventDefault();
       if (state.currentTab === 'balance') {
-        // Balance entries can be made by both owners and biz users
-        if (state.items.balance) openBalanceModal();
+        // Balance entries are added ONLY by the business login (view-only session).
+        if (state.items.balance && isViewOnly()) openBalanceModal();
       } else if (state.items[state.currentTab] && !isViewOnly()) {
         openItemModal(state.currentTab);
       }
@@ -1381,16 +1381,13 @@
       const cloudId = await window.InfosSupabase.adapter.ensureSharedBusiness({ cloudId: existingCloudId, name: b.name, color: b.color });
       if (!state.bizCloudMap) state.bizCloudMap = {};
       state.bizCloudMap[b.id] = cloudId;
-      // Ensure the hidden member account exists (idempotent — ignore "already exists").
+      // Create OR update the hidden member account. create-member is idempotent:
+      // if it already exists it UPDATES the password to the current one, so
+      // re-saving the business password actually takes effect (fixes stale
+      // "incorrect email or password"). Let real errors propagate to the catch.
       const allowed = (state.bizAllowedTabs && state.bizAllowedTabs[b.id]) || Object.keys(state.items);
-      try {
-        await window.InfosSupabase.Auth.createMember(cloudId, b.email, pwPlain, allowed);
-      } catch (memErr) {
-        const msg = String(memErr && memErr.message || '');
-        if (!/already|exists|registered|duplicate/i.test(msg)) throw memErr;
-        // Already exists — that's fine. (Password changes are handled separately.)
-      }
-      // Push the current shared slice so the team login has live data to load.
+      await window.InfosSupabase.Auth.createMember(cloudId, b.email, pwPlain, allowed);
+      // Push the current shared slice so the business login has live data to load.
       const Slice = window.InfosSharedSlice;
       const slice = Slice.buildSharedSlice(state, b.id, cloudId);
       const expected = (state.bizCloudVersions && state.bizCloudVersions[cloudId]) || 0;
@@ -1409,7 +1406,21 @@
       state.__cloudShareErr = schemaLikely
         ? 'Cloud sharing isn’t set up on the server yet (database schema not applied), so this business can’t sync to its login yet. Your local data is safe.'
         : ('Couldn’t set up cloud sharing for this business: ' + msg);
-      try { toast(state.__cloudShareErr); } catch {}
+      // Make this impossible to miss — if the login can't be created, signing in
+      // as the business will fail with "incorrect email or password", which is
+      // confusing. Tell the owner explicitly.
+      try {
+        if (typeof confirmAction === 'function') {
+          confirmAction({
+            title: 'Business login not set up',
+            message: state.__cloudShareErr + (schemaLikely
+              ? '\n\nUntil this is fixed, signing in with the business email/password will say “incorrect email or password,” because the login account couldn’t be created.'
+              : ''),
+            confirmLabel: 'OK',
+            onConfirm: () => {}
+          });
+        } else { toast(state.__cloudShareErr); }
+      } catch { try { toast(state.__cloudShareErr); } catch {} }
       // Non-fatal: local data is intact; will retry on next save.
     }
   }
@@ -2704,7 +2715,7 @@
     subscribeShared(biz.id);
 
     if (!state.__switchInProgress) {
-      setTimeout(() => { hideLoadingSplash(); toast(`Signed in to ${biz.name || 'your business'}`); }, 1500);
+      setTimeout(() => { hideLoadingSplash(); toast(`Signed in to ${biz.name || 'your business'}`); }, 500);
     }
   }
 
@@ -3232,7 +3243,7 @@
       setTimeout(() => {
         hideLoadingSplash();
         if (asBizId) toast(`Signed in to ${bizById(asBizId)?.name}`); else toast(`Welcome, ${name}`);
-      }, 3000);
+      }, 600);
     }
     flushPendingShare();
   }
@@ -3797,12 +3808,24 @@
     // A business login holds only the shared business's data in memory; reload to
     // restore this device's own (owner/local) state cleanly from storage.
     if (wasShared) {
+      // Capture what we need to flush the final save BEFORE clearing shared flags.
+      const flushCloudId = state.__sharedBusinessId;
+      const flushSlice = (() => { try { return Slice.memberStateToSlice(state); } catch { return null; } })();
+      const flushExpected = state.__sharedVersion || 0;
       state.__sharedMode = false; state.__sharedBusinessId = null; state.__sharedVersion = 0;
-      // CRITICAL: actually wait for Supabase to clear its session token BEFORE we
-      // reload. If we reload first, the still-valid session is detected on boot and
-      // the business login is auto-restored — looking like "logged out then logged
-      // back in". Awaiting signOut (with a short safety timeout) prevents that.
       (async () => {
+        // CRITICAL: await the final data write so the last entry isn't lost to a
+        // reload that races the debounced push.
+        try {
+          if (flushCloudId && flushSlice && window.InfosSupabase && window.InfosSupabase.configured()) {
+            await Promise.race([
+              window.InfosSupabase.adapter.saveSharedState(flushCloudId, flushSlice, flushExpected),
+              new Promise(r => setTimeout(r, 2500))
+            ]);
+          }
+        } catch {}
+        // Then wait for Supabase to clear its session token BEFORE we reload, so
+        // boot doesn't detect a still-valid session and auto-restore the business.
         try {
           if (window.InfosSupabase && window.InfosSupabase.Auth) {
             await Promise.race([
@@ -4519,10 +4542,20 @@
     const all = (state.items[tabKey] || []).filter(i => !i.deleted);
     const filtered = filterByBiz(all);
 
-    const fabHTML = `<div class="tab-actions-bar"><button class="btn-primary btn-block tab-add-btn" id="tab-add-btn"><i class="ti ti-plus" style="font-size:15px;vertical-align:-3px;"></i> Add entry</button></div>`;
+    // Balance entries are added ONLY by the business login (the business records
+    // its own balances). The owner is view-only here — they review/filter entries
+    // but don't add them. (This is the inverse of the other tabs, where only the
+    // owner adds.) isViewOnly() is true for a business login, false for the owner.
+    const canAddBalance = isViewOnly();
+    const fabHTML = canAddBalance
+      ? `<div class="tab-actions-bar"><button class="btn-primary btn-block tab-add-btn" id="tab-add-btn"><i class="ti ti-plus" style="font-size:15px;vertical-align:-3px;"></i> Add entry</button></div>`
+      : '';
 
     if (!filtered.length) {
-      c.innerHTML = `${fabHTML}<div class="empty-state-inline"><i class="ti ti-wallet"></i><div><div style="font-weight:600;color:var(--text-primary);">No balance entries yet</div><div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">Tap "Add entry" to record balances under a recorder's name.</div></div></div>`;
+      const emptySub = canAddBalance
+        ? 'Tap "Add entry" to record balances under a recorder\'s name.'
+        : 'Balance entries are added by the business login. They\'ll appear here once recorded.';
+      c.innerHTML = `${fabHTML}<div class="empty-state-inline"><i class="ti ti-wallet"></i><div><div style="font-weight:600;color:var(--text-primary);">No balance entries yet</div><div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">${emptySub}</div></div></div>`;
       const ab = $('#tab-add-btn'); if (ab) ab.onclick = () => openBalanceModal();
       return;
     }
@@ -4549,13 +4582,15 @@
 
     // A batch is editable if the viewer may edit ALL of its rows. Business member:
     // only their own business's entries. Owner: any batch NOT created by a member.
+    // Only the business login (view-only session) manages Balance entries. The
+    // owner is view-only here, so cannot edit or delete batches.
     const canEditBatch = (b) => {
-      if (isViewOnly()) return b.items.every(it => itemBizIds(it).includes(state.bizContext));
-      return b.items.every(it => !it.createdByBiz);
+      if (!isViewOnly()) return false;
+      return b.items.every(it => itemBizIds(it).includes(state.bizContext));
     };
     const canDeleteBatch = (b) => {
-      if (isViewOnly()) return b.items.every(it => itemBizIds(it).includes(state.bizContext));
-      return true;
+      if (!isViewOnly()) return false;
+      return b.items.every(it => itemBizIds(it).includes(state.bizContext));
     };
 
     let html = fabHTML;
@@ -4729,6 +4764,10 @@
   // and lets them add multiple rows in one shot via "Add more".
   function openBalanceModal(editId) {
     const tabKey = 'balance';
+    // Balance entries are added/edited ONLY by the business login (a view-only
+    // session). The owner is view-only on Balance, so refuse to open the editor
+    // for them — defense in depth behind the hidden Add button.
+    if (!isViewOnly()) { toast('Balance entries are added by the business login'); return; }
     // editId may be a single item id (legacy) OR a batchId (a whole submission).
     let editingBatch = null;
     let editing = null;
@@ -6912,13 +6951,29 @@
         screenOnb.hidden = false; showOnbSlide(1);
       }
       renderRecentSignins();
-      // If the user just clicked an email confirmation link, greet them on the
-      // sign-in screen and prompt them to sign in (we never auto-login from it).
+      // If the user just clicked an email confirmation link, show a clear
+      // confirmation MESSAGE screen (not a redirect to the login form). They tap
+      // the button when ready to sign in.
       try {
         if (sessionStorage.getItem('infos-just-confirmed')) {
           sessionStorage.removeItem('infos-just-confirmed');
           setAuthMode('signin');
-          setTimeout(() => { try { showAuthError('Email confirmed! Please sign in with your email and password.'); } catch {} }, 300);
+          setTimeout(() => {
+            try {
+              showFullScreenMessage({
+                icon: 'ti-circle-check',
+                title: 'Email confirmed',
+                message: 'Your email has been confirmed. You can now sign in with your email and password.',
+                button: {
+                  label: 'Go to sign in',
+                  onClick: () => {
+                    const fsm = document.getElementById('fullscreen-message'); if (fsm) fsm.remove();
+                    setAuthMode('signin');
+                  }
+                }
+              });
+            } catch {}
+          }, 200);
         }
       } catch {}
     }

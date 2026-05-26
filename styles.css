@@ -174,6 +174,13 @@ kbd { display: inline-block; padding: 1px 6px; background: var(--surface-1); bor
 .field label, .block-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; font-weight: 500; }
 .field-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .field-row label { margin-bottom: 0; }
+/* Password + Confirm password on one row (sign-up). Each field flexes equally.
+   The confirm field is [hidden] in sign-in mode; flexbox then gives Password the
+   full width automatically. Stacks vertically on narrow screens. */
+.pw-pair-row { display: flex; gap: 12px; align-items: flex-start; }
+.pw-pair-row > .field { flex: 1 1 0; min-width: 0; margin-bottom: 0; }
+.pw-pair-row > .field[hidden] { display: none; }
+@media (max-width: 420px) { .pw-pair-row { flex-direction: column; gap: 0; } .pw-pair-row > .field { width: 100%; } }
 
 input[type="text"], input[type="email"], input[type="password"], input[type="number"], input[type="tel"], input[type="search"], textarea {
   width: 100%; padding: 12px 13px; font-size: 15px;

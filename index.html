@@ -158,22 +158,24 @@
             <label>Email</label>
             <input id="auth-email" type="email" placeholder="you@example.com" autocomplete="email" inputmode="email">
           </div>
-          <div class="field">
-            <div class="field-row">
-              <label>Password</label>
-              <button id="forgot-link" type="button" class="btn-link-sm">Forgot?</button>
+          <div class="pw-pair-row">
+            <div class="field">
+              <div class="field-row">
+                <label>Password</label>
+                <button id="forgot-link" type="button" class="btn-link-sm">Forgot?</button>
+              </div>
+              <div class="input-wrap">
+                <input id="auth-password" type="password" placeholder="••••••••" autocomplete="current-password">
+                <button id="auth-pw-toggle" type="button" class="input-icon-btn" data-pw-eye="auth-password" aria-label="Show password"><i class="ti ti-eye"></i></button>
+              </div>
+            <div id="pw-strength" class="pw-bar" hidden><div id="pw-strength-bar"></div></div>
             </div>
-            <div class="input-wrap">
-              <input id="auth-password" type="password" placeholder="••••••••" autocomplete="current-password">
-              <button id="auth-pw-toggle" type="button" class="input-icon-btn" data-pw-eye="auth-password" aria-label="Show password"><i class="ti ti-eye"></i></button>
-            </div>
-          <div id="pw-strength" class="pw-bar" hidden><div id="pw-strength-bar"></div></div>
-          </div>
-          <div class="field" id="field-confirm-pw" hidden>
-            <label>Confirm password</label>
-            <div class="input-wrap">
-              <input id="auth-password2" type="password" placeholder="••••••••" autocomplete="new-password">
-              <button id="auth-pw2-toggle" type="button" class="input-icon-btn" data-pw-eye="auth-password2" aria-label="Show password"><i class="ti ti-eye"></i></button>
+            <div class="field" id="field-confirm-pw" hidden>
+              <label>Confirm password</label>
+              <div class="input-wrap">
+                <input id="auth-password2" type="password" placeholder="••••••••" autocomplete="new-password">
+                <button id="auth-pw2-toggle" type="button" class="input-icon-btn" data-pw-eye="auth-password2" aria-label="Show password"><i class="ti ti-eye"></i></button>
+              </div>
             </div>
           </div>
           <div id="auth-terms-wrap" class="terms-row" hidden>
