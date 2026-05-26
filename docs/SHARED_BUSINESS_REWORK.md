@@ -164,3 +164,25 @@ per-record rows if finer merge is needed later.
   `supabase_realtime` publication).
 - Live-test on two devices: owner shares a business; team signs in on another
   device with the business email+password; both add/edit and see live sync.
+
+### Troubleshooting: a business login shows the OWNER experience
+Symptom: signing in with a business email/password on a fresh browser shows the
+owner's businesses, an owner Profile (Change email/password, Delete account), a
+Businesses tab, and the account switcher lists the owner.
+
+Cause: `getMemberBusiness()` returned nothing, so older builds fell through to the
+owner sign-in path — which then loaded/overwrote owner data under the business
+account (a data leak). This happens when `schema-shared.sql` has NOT been applied
+to the deployed database, so the `business_members` row can't be read.
+
+Fixes in this build:
+1. A HARD GATE: the app now also checks the account's server-stamped metadata
+   (`user_metadata.role === 'member'`, set by `api/create-member.js`). A member
+   account can NEVER fall through to the owner path, even if the table read fails.
+2. `getMembership()` falls back to the metadata `business_id` so the login still
+   resolves its business without the table.
+
+To make shared DATA actually sync (not just route correctly), you MUST run
+`supabase/schema-shared.sql` on the deployed project. Until then, a business login
+gets its own empty, editable, scoped workspace (no owner data) — which is the safe
+behavior.

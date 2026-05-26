@@ -2861,6 +2861,33 @@
         // Is this a business login (a member account linked to a shared
         // business)? If so, load the FULL editable app pointed at the shared
         // cloud row — not a special screen, and not view-only.
+        //
+        // HARD GATE: we first ask whether the account is a member at all (via
+        // server-stamped metadata). A member account must NEVER fall through to
+        // the owner path, because that path would load/overwrite owner data and
+        // leak it to the business login. If the account is a member but we can't
+        // resolve its business, we stop with an error rather than degrade to owner.
+        let memberInfo = { isMember: false, businessId: null };
+        try { memberInfo = await window.InfosSupabase.Auth.memberInfo(); } catch (e) { console.warn('memberInfo failed:', e); }
+        if (memberInfo.isMember) {
+          let biz = null;
+          try { biz = await window.InfosSupabase.Auth.getMemberBusiness(); } catch (e) { console.warn('getMemberBusiness failed:', e); }
+          btn.textContent = original; btn.disabled = false;
+          if (biz) {
+            await enterSharedBusiness(biz, email);
+          } else if (memberInfo.businessId) {
+            // Couldn't read the business row (RLS/schema), but we know the id from
+            // metadata — enter with a minimal business so the login still works.
+            await enterSharedBusiness({ id: memberInfo.businessId, name: 'Shared business', color: '#378ADD' }, email);
+          } else {
+            // It's a member account but we can't determine its business at all.
+            showAuthError('This business login is not fully set up yet. Ask the owner to re-share the business, then try again.');
+            try { await window.InfosSupabase.Auth.signOut(); } catch {}
+          }
+          return;
+        }
+        // Not a member → also check the membership table directly (covers older
+        // member accounts created before role metadata, or if memberInfo missed).
         try {
           const biz = await window.InfosSupabase.Auth.getMemberBusiness();
           if (biz) {
@@ -6627,8 +6654,25 @@
       try {
         const sbUser = await window.InfosSupabase.Auth.currentUser();
         if (sbUser) {
-          // If this session is a business login, load the FULL editable app
-          // against the shared cloud row and skip the owner data load.
+          // HARD GATE: if this Supabase session is a BUSINESS LOGIN (member),
+          // load the shared app and never touch the owner data path — even if the
+          // membership table read fails, the server-stamped metadata tells us.
+          let mInfo = { isMember: false, businessId: null };
+          try { mInfo = await window.InfosSupabase.Auth.memberInfo(); } catch (e) { console.warn('boot memberInfo failed', e); }
+          if (mInfo.isMember) {
+            let biz = null;
+            try { biz = await window.InfosSupabase.Auth.getMemberBusiness(); } catch (e) { console.warn('boot getMemberBusiness failed', e); }
+            if (!biz && mInfo.businessId) biz = { id: mInfo.businessId, name: 'Shared business', color: '#378ADD' };
+            hideBootSplash();
+            if (biz) { await enterSharedBusiness(biz, sbUser.email || ''); return; }
+            // Member account we can't resolve a business for → don't degrade to
+            // owner; send to a clean sign-in.
+            try { await window.InfosSupabase.Auth.signOut(); } catch {}
+            state.user = null; state.accounts = []; state.recentSignins = [];
+            screenMain.classList.remove('screen-active'); screenAuth.classList.add('screen-active');
+            return;
+          }
+          // Older member accounts (no metadata) — check the membership table too.
           try {
             const biz = await window.InfosSupabase.Auth.getMemberBusiness();
             if (biz) {

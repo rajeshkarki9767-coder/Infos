@@ -51,6 +51,16 @@ export default async function handler(req, res) {
     res.status(400).json({ error: 'business_id, member_email and member_password are required' });
     return;
   }
+  // Validate business_id is a UUID (it flows into a REST query) and email looks valid.
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!UUID_RE.test(String(business_id))) {
+    res.status(400).json({ error: 'business_id must be a valid UUID' });
+    return;
+  }
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(member_email))) {
+    res.status(400).json({ error: 'member_email must be a valid email address' });
+    return;
+  }
   if (String(member_password).length < 6) {
     res.status(400).json({ error: 'Member password must be at least 6 characters' });
     return;

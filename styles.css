@@ -189,6 +189,15 @@ textarea { resize: vertical; min-height: 84px; line-height: 1.55; }
 
 .input-wrap { position: relative; }
 .input-wrap input { padding-right: 40px; }
+/* Hide the browser's OWN password-reveal / clear controls (Edge ::-ms-reveal,
+   ::-ms-clear; WebKit strong-password & contacts buttons) so the app's single
+   eye button (.input-icon-btn) isn't doubled up. Applies to every password
+   field in the app. */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear { display: none; }
+input[type="password"]::-webkit-credentials-auto-fill-button,
+input[type="password"]::-webkit-strong-password-auto-fill-button,
+input[type="password"]::-webkit-textfield-decoration-container { visibility: hidden; pointer-events: none; }
 .input-icon-btn { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 32px; height: 32px; background: transparent; border: none; color: var(--text-secondary); border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; }
 .input-icon-btn:hover { background: var(--surface-1); }
 .input-icon-btn i { font-size: 18px; }

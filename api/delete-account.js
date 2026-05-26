@@ -60,7 +60,48 @@ export default async function handler(req, res) {
       return;
     }
 
-    // 2) Delete the user's data row (admin REST call, bypasses RLS but scoped by us).
+    // 1b) A BUSINESS LOGIN (member) must not self-delete the shared account — the
+    //     owner manages those credentials. Refuse and tell them to ask the owner.
+    const md = (user.user_metadata || {});
+    const am = (user.app_metadata || {});
+    if (md.role === 'member' || am.role === 'member') {
+      res.status(403).json({ error: 'A business login cannot be deleted here. Ask the business owner to remove this login.' });
+      return;
+    }
+
+    const adminHeaders = { apikey: SERVICE_ROLE, Authorization: `Bearer ${SERVICE_ROLE}` };
+
+    // 2) Clean up the member auth accounts this OWNER created, so they don't
+    //    orphan when the owner is deleted. We find every business this owner owns,
+    //    then every member_uid linked to those businesses, and delete those auth
+    //    users. (The businesses + shared_state + business_members rows themselves
+    //    cascade-delete when the owner auth user is removed in step 4.)
+    try {
+      const bizRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/businesses?owner_id=eq.${userId}&select=id`,
+        { headers: { ...adminHeaders, 'Content-Type': 'application/json' } }
+      );
+      const businesses = bizRes.ok ? await bizRes.json() : [];
+      const bizIds = Array.isArray(businesses) ? businesses.map(b => b.id) : [];
+      if (bizIds.length) {
+        const inList = bizIds.map(encodeURIComponent).join(',');
+        const memRes = await fetch(
+          `${SUPABASE_URL}/rest/v1/business_members?business_id=in.(${inList})&select=member_uid`,
+          { headers: { ...adminHeaders, 'Content-Type': 'application/json' } }
+        );
+        const members = memRes.ok ? await memRes.json() : [];
+        const memberUids = Array.from(new Set((Array.isArray(members) ? members : []).map(m => m.member_uid).filter(Boolean)));
+        // Delete each hidden member auth account (best-effort; don't fail the whole
+        // request if one delete errors — the owner delete is what matters).
+        for (const uid of memberUids) {
+          try {
+            await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${uid}`, { method: 'DELETE', headers: adminHeaders });
+          } catch (_) { /* best-effort cleanup */ }
+        }
+      }
+    } catch (_) { /* cleanup is best-effort; proceed to delete the owner */ }
+
+    // 3) Delete the user's data row (admin REST call, bypasses RLS but scoped by us).
     await fetch(`${SUPABASE_URL}/rest/v1/app_state?user_id=eq.${userId}`, {
       method: 'DELETE',
       headers: {
@@ -70,7 +111,9 @@ export default async function handler(req, res) {
       }
     });
 
-    // 3) Delete the auth user itself (admin endpoint, requires service_role).
+    // 4) Delete the auth user itself (admin endpoint, requires service_role).
+    //    This cascades to businesses / shared_state / business_members owned by
+    //    this user (on delete cascade in the schema).
     const delRes = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${userId}`, {
       method: 'DELETE',
       headers: { apikey: SERVICE_ROLE, Authorization: `Bearer ${SERVICE_ROLE}` }

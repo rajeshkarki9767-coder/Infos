@@ -163,20 +163,46 @@
       return data?.user || null;
     },
 
-    // ---- STAGE 4: member read path ----
+    // ---- member detection ----
+    // Is the signed-in account a BUSINESS LOGIN (a hidden member account)?
+    // create-member.js stamps user_metadata.role='member' + business_id. That
+    // metadata is set server-side at creation and is a reliable signal that this
+    // account must NEVER be treated as an owner — even if the business_members
+    // table query fails (e.g. schema not yet applied, RLS hiccup). We use it as a
+    // HARD GATE so a business login can never fall through to the owner path and
+    // leak/overwrite owner data. Returns { isMember, businessId } .
+    async memberInfo() {
+      const user = await Auth.currentUser();
+      if (!user) return { isMember: false, businessId: null };
+      const md = (user.user_metadata || user.raw_user_meta_data || {});
+      const am = (user.app_metadata || {});
+      const roleIsMember = md.role === 'member' || am.role === 'member';
+      let businessId = md.business_id || am.business_id || null;
+      return { isMember: !!roleIsMember || !!businessId, businessId };
+    },
+
     // Detect whether the signed-in user is a team MEMBER (a hidden business
-    // login). We don't trust user_metadata alone; the authoritative signal is
-    // having a row in business_members (RLS lets a member read only their own).
+    // login). Authoritative signal: a row in business_members (RLS lets a member
+    // read only their own). Falls back to user metadata if the table read fails.
     async getMembership() {
       const c = getClient(); if (!c) return null;
       const user = await Auth.currentUser();
       if (!user) return null;
-      const { data, error } = await c.from('business_members')
-        .select('business_id, allowed_tabs')
-        .eq('member_uid', user.id);
-      if (error || !data || !data.length) return null;
-      // A member login is linked to exactly one business in this model.
-      return { businessId: data[0].business_id, allowedTabs: data[0].allowed_tabs || [] };
+      try {
+        const { data, error } = await c.from('business_members')
+          .select('business_id, allowed_tabs')
+          .eq('member_uid', user.id);
+        if (!error && data && data.length) {
+          return { businessId: data[0].business_id, allowedTabs: data[0].allowed_tabs || [] };
+        }
+      } catch (_) { /* fall through to metadata */ }
+      // Fallback: recover the business id from the account metadata stamped at
+      // creation, so a business login still resolves even if the table read fails.
+      const md = (user.user_metadata || {});
+      if (md.role === 'member' && md.business_id) {
+        return { businessId: md.business_id, allowedTabs: [] };
+      }
+      return null;
     },
 
     // Fetch the business row (name/color) a member is linked to. RLS scopes the

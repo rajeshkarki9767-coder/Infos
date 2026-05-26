@@ -162,6 +162,31 @@ async function run() {
     check('getMembership returns null for a non-member (owner)', m === null);
   }
 
+  console.log('\nAdapter — memberInfo HARD GATE (prevents owner-path fallthrough):');
+  {
+    // A business login: server-stamped metadata role=member + business_id.
+    const client = makeFakeClient({
+      user: { id: 'mem-uid', email: 'team@acme.com', user_metadata: { role: 'member', business_id: 'biz-A' } },
+      results: { 'business_members:select': [] } // table read FAILS to return rows
+    });
+    const S = loadAdapter(client);
+    const info = await S.Auth.memberInfo();
+    check('memberInfo detects member from metadata even when table read is empty', info.isMember === true && info.businessId === 'biz-A');
+    // getMembership must still resolve via metadata fallback.
+    const m = await S.Auth.getMembership();
+    check('getMembership falls back to metadata business_id', m && m.businessId === 'biz-A');
+  }
+  {
+    // A real owner: no member metadata.
+    const client = makeFakeClient({
+      user: { id: 'owner-uid', email: 'owner@x.com', user_metadata: { name: 'Owner' } },
+      results: { 'business_members:select': [] }
+    });
+    const S = loadAdapter(client);
+    const info = await S.Auth.memberInfo();
+    check('memberInfo returns isMember=false for an owner', info.isMember === false);
+  }
+
   console.log('\nAdapter — old view-only methods are gone:');
   {
     const client = makeFakeClient({});
