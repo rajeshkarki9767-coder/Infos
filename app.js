@@ -97,6 +97,34 @@
       clearTimeout(window.__cloudPushTimer);
       window.__cloudPushTimer = setTimeout(() => { try { window.Sync.pushNow(state); } catch {} }, 1500);
     }
+    // STAGE 5: if any businesses have been shared with a team, re-publish their
+    // allowed items (debounced) so member devices update live via realtime.
+    if (state.bizCloudMap && Object.keys(state.bizCloudMap).length &&
+        window.InfosSupabase && window.InfosSupabase.configured() && !state.__memberMode) {
+      clearTimeout(window.__sharePublishTimer);
+      window.__sharePublishTimer = setTimeout(() => { try { republishSharedBusinesses(); } catch {} }, 1800);
+    }
+  }
+
+  // Re-publish the allowed-tab items for every shared business. Safe to call
+  // often (debounced by persistAll). Skips silently if not signed in to cloud.
+  async function republishSharedBusinesses() {
+    if (!state.bizCloudMap || !window.InfosSupabase || !window.InfosSupabase.configured()) return;
+    for (const localId of Object.keys(state.bizCloudMap)) {
+      const cloudId = state.bizCloudMap[localId];
+      const b = bizById(localId);
+      if (!cloudId || !b) continue;
+      try {
+        const allowed = (state.bizAllowedTabs && state.bizAllowedTabs[localId]) || Object.keys(state.items);
+        const itemsByTab = {};
+        allowed.forEach(tab => {
+          const list = (state.items[tab] || []).filter(it => itemHasBiz(it, localId) && !it.deleted);
+          if (list.length) itemsByTab[tab] = list.map(it => sanitizeShared(it));
+        });
+        await window.InfosSupabase.adapter.publishBusiness({ cloudId, name: b.name, color: b.color });
+        await window.InfosSupabase.adapter.publishItems(cloudId, itemsByTab);
+      } catch (e) { /* leave for next save; not fatal */ }
+    }
   }
 
   // ---------- DOM refs ----------
@@ -168,6 +196,9 @@
     // bizAllowedTabs: { bizId: ['notices','games',...] } — which tabs a business sees when signed in.
     // Missing entry = all tabs allowed (default for new businesses).
     bizAllowedTabs: {},
+    // bizCloudMap: { localBizId: cloudUUID } — maps a local business to its
+    // published cloud row (Stage 4b), so re-sharing updates instead of duplicating.
+    bizCloudMap: {},
     // bizTabOrder: { bizId: ['notices','system',...] } — per-business custom ordering shown to the biz user.
     bizTabOrder: {},
     // Registered owner accounts. { email, name, password, createdAt, termsAcceptedAt }
@@ -195,7 +226,7 @@
   app.classList.remove('collapsed');
   ['user','bizContext','activeBizId','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
    'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked',
-   'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs'].forEach(k => {
+   'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs'].forEach(k => {
     if (prefs[k] !== undefined) state[k] = prefs[k];
   });
 
@@ -1303,6 +1334,79 @@
   }
 
   // ---------- Business modal ----------
+  // STAGE 4b: publish a business + its allowed-tab items to the cloud and
+  // create the hidden member account from the business login, so a team member
+  // can sign in on their own device and see this data live (read-only).
+  async function shareBusinessWithTeam(bizId) {
+    const b = bizById(bizId);
+    if (!b) return;
+    if (!(window.InfosSupabase && window.InfosSupabase.configured())) {
+      toast('Cloud is not configured — cannot share.');
+      return;
+    }
+    // Need the business login email + password to create the member account.
+    let pwPlain = b.password || '';
+    if (!pwPlain && b.passwordEnc) {
+      if (!window.Crypto.isUnlocked()) { toast('Unlock encryption first to share this business'); openCryptoUnlockModal(); return; }
+      try { pwPlain = await window.Crypto.decrypt(b.passwordEnc); } catch { pwPlain = ''; }
+    }
+    if (!b.email || !pwPlain) {
+      toast('Set a business email and password first (in Edit business).');
+      return;
+    }
+    const allowed = (state.bizAllowedTabs && state.bizAllowedTabs[bizId]) || Object.keys(state.items);
+    confirmAction({
+      title: 'Share with team',
+      message: `This publishes "${b.name}" to the cloud so your team can sign in with its email (${b.email}) and password to VIEW the allowed tabs (${allowed.join(', ')}). They cannot edit. Continue?`,
+      confirmLabel: 'Share',
+      onConfirm: async () => {
+        showFullScreenMessage({ icon: 'ti-cloud-share', title: 'Sharing with your team…', message: 'Publishing data and setting up the team login. One moment.', spinner: true });
+        try {
+          const existingCloudId = (state.bizCloudMap && state.bizCloudMap[bizId]) || null;
+          const cloudId = await window.InfosSupabase.adapter.publishBusiness({ cloudId: existingCloudId, name: b.name, color: b.color });
+          if (!state.bizCloudMap) state.bizCloudMap = {};
+          state.bizCloudMap[bizId] = cloudId;
+          // Gather the allowed-tab items for this business.
+          const itemsByTab = {};
+          allowed.forEach(tab => {
+            const list = (state.items[tab] || []).filter(it => itemHasBiz(it, bizId) && !it.deleted);
+            if (list.length) itemsByTab[tab] = list.map(it => sanitizeShared(it));
+          });
+          await window.InfosSupabase.adapter.publishItems(cloudId, itemsByTab);
+          // Create (or refresh) the hidden member account from the business login.
+          let memberMsg = '';
+          try {
+            await window.InfosSupabase.Auth.createMember(cloudId, b.email, pwPlain, allowed);
+            memberMsg = 'A team login was created.';
+          } catch (memErr) {
+            // Most common: the member already exists from a previous share.
+            memberMsg = /already|exists|registered/i.test(String(memErr && memErr.message))
+              ? 'Team login already existed (data updated).'
+              : 'Data published, but team login could not be created: ' + (memErr && memErr.message || 'error');
+          }
+          persistAll();
+          const fsm = document.getElementById('fullscreen-message'); if (fsm) fsm.remove();
+          confirmAction({
+            title: 'Shared with team',
+            message: `"${b.name}" is now shared. ${memberMsg}\n\nYour team can sign in at the app with:\nEmail: ${b.email}\nPassword: (the business password you set)\n\nThey'll see only: ${allowed.join(', ')} — view only.`,
+            confirmLabel: 'Done',
+            onConfirm: () => {}
+          });
+        } catch (e) {
+          const fsm = document.getElementById('fullscreen-message'); if (fsm) fsm.remove();
+          confirmAction({ title: 'Could not share', message: 'Sharing failed: ' + (e && e.message || 'Unknown error') + '\n\nYour local data is unchanged.', confirmLabel: 'OK', onConfirm: () => {} });
+        }
+      }
+    });
+  }
+
+  // Strip anything that shouldn't leave the device into a shared item.
+  function sanitizeShared(it) {
+    const copy = Object.assign({}, it);
+    delete copy.password; delete copy.passwordEnc; delete copy.pin;
+    return copy;
+  }
+
   async function openBusinessModal(editId) {
     if (isViewOnly()) return;
     const editing = editId ? bizById(editId) : null;
@@ -1355,6 +1459,7 @@
       </div>
       <div class="modal-foot">
         <button class="btn-outline" id="m-cancel">Cancel</button>
+        ${editing && window.InfosSupabase && window.InfosSupabase.configured() ? `<button class="btn-outline" id="m-share" style="margin-right:auto;"><i class="ti ti-cloud-share"></i> Share with team</button>` : ''}
         <button class="btn-primary" id="m-save">${editing ? 'Save' : 'Create'}</button>
       </div>
     `);
@@ -1396,6 +1501,7 @@
     $$('.color-swatch').forEach(el => el.onclick = () => setColor(el.dataset.c, 'swatch'));
     $('#m-close').onclick = closeModal;
     $('#m-cancel').onclick = closeModal;
+    if ($('#m-share')) $('#m-share').onclick = () => { closeModal(); shareBusinessWithTeam(editId); };
     $('#m-save').onclick = async () => {
       const name = $('#m-name').value.trim(), email = $('#m-email').value.trim().toLowerCase();
       const pw = $('#m-pw').value, pw2 = $('#m-pw2').value;
@@ -2945,7 +3051,9 @@
     el = document.createElement('div');
     el.id = 'fullscreen-message';
     el.className = 'loading-splash visible';
-    el.style.flexDirection = 'column';
+    // Force fully-opaque + interactive immediately (don't rely on the .visible
+    // CSS transition, which can leave the panel/buttons looking faint).
+    el.style.cssText = 'flex-direction:column;opacity:1;pointer-events:auto;transition:none;';
     const iconHTML = o.icon
       ? `<div style="width:72px;height:72px;border-radius:50%;background:var(--accent-bg);display:flex;align-items:center;justify-content:center;margin-bottom:20px;"><i class="ti ${esc(o.icon)}" style="font-size:34px;color:var(--accent-solid);"></i></div>`
       : '';
@@ -2957,7 +3065,7 @@
         ${iconHTML}
         <div style="font-size:21px;font-weight:700;color:var(--text-primary);line-height:1.3;">${esc(o.title || '')}</div>
         <div style="font-size:14px;line-height:1.6;color:var(--text-secondary);margin-top:12px;">${esc(o.message || '')}</div>
-        ${o.button ? `<button id="fsm-btn" class="btn-primary" style="margin-top:24px;min-width:160px;">${esc(o.button.label || 'OK')}</button>` : ''}
+        ${o.button ? `<button id="fsm-btn" style="margin-top:24px;min-width:160px;padding:12px 20px;font-size:14px;font-weight:600;background:var(--accent-solid);color:#fff;border:none;border-radius:var(--radius-md,10px);cursor:pointer;opacity:1;">${esc(o.button.label || 'OK')}</button>` : ''}
         ${spinnerHTML}
       </div>`;
     document.body.appendChild(el);
@@ -5618,7 +5726,7 @@
           <div class="section-label">Change password</div>
         </div>
         <div class="settings-hint" style="margin-bottom:16px;">Update the password for <strong>${esc(state.user.email)}</strong>. You will stay signed in.</div>
-        <div class="field">
+        <div class="field"${(window.InfosSupabase && window.InfosSupabase.configured()) ? ' hidden' : ''}>
           <label for="cp-old">Current password</label>
           <div class="input-wrap">
             <input id="cp-old" type="password" autocomplete="current-password"/>
@@ -5655,6 +5763,21 @@
       $('#cp-strength').style.width = pct + '%'; $('#cp-strength').style.background = color;
     };
     $('#cp-forgot').onclick = () => {
+      const cloud = !!(window.InfosSupabase && window.InfosSupabase.configured());
+      if (cloud && state.user && state.user.email) {
+        // Send a reset email to the signed-in user WITHOUT signing them out.
+        confirmAction({
+          title: 'Email a reset link?',
+          message: `We'll email a password-reset link to ${state.user.email}. You'll stay signed in here — just open the link when you want to set a new password.`,
+          confirmLabel: 'Send link',
+          onConfirm: async () => {
+            try { await window.InfosSupabase.Auth.resetPassword(state.user.email); toast('Reset link sent — check your email'); }
+            catch (e) { toast('Could not send reset link'); }
+          }
+        });
+        return;
+      }
+      // Local mode: keep the old reset flow.
       confirmAction({
         title: 'Use forgot-password flow?',
         message: "You'll be signed out and taken to the reset flow on the sign-in screen.",
@@ -5663,15 +5786,38 @@
         onConfirm: () => { logout(); setTimeout(() => $('#forgot-link').click(), 200); }
       });
     };
-    $('#cp-save').onclick = () => {
+    $('#cp-save').onclick = async () => {
       const oldPw = $('#cp-old').value, newPw = $('#cp-new').value, confirmPw = $('#cp-confirm').value;
       const err = $('#cp-error'); const fail = m => { err.textContent = m; err.hidden = false; };
       err.hidden = true;
+      if (newPw.length < 6) return fail('New password must be at least 6 characters');
+      if (newPw !== confirmPw) return fail('Passwords do not match');
+      const cloud = !!(window.InfosSupabase && window.InfosSupabase.configured());
+      if (cloud) {
+        // Cloud account: update the password in Supabase (stays signed in).
+        const saveBtn = $('#cp-save'); const orig = saveBtn.textContent;
+        saveBtn.textContent = 'Updating…'; saveBtn.disabled = true;
+        try {
+          await window.InfosSupabase.Auth.updatePassword(newPw);
+          // keep the local mirror in sync if present
+          const acc = (state.accounts || []).find(a => a.email === state.user.email);
+          if (acc) acc.password = newPw;
+          if (state.user) state.user.password = newPw;
+          persistAll();
+          saveBtn.textContent = orig; saveBtn.disabled = false;
+          toast('Password updated');
+          settingsActiveTab = 'appearance';
+          setActive('settings', 'right');
+        } catch (e) {
+          saveBtn.textContent = orig; saveBtn.disabled = false;
+          fail((e && e.message) || 'Could not update password. Try signing out and using "Forgot password".');
+        }
+        return;
+      }
+      // Local mode (no backend): verify against locally stored password.
       const acc = (state.accounts || []).find(a => a.email === state.user.email);
       const currentPw = acc?.password || state.user.password;
       if (currentPw && oldPw !== currentPw) return fail('Current password is incorrect');
-      if (newPw.length < 6) return fail('New password must be at least 6 characters');
-      if (newPw !== confirmPw) return fail('Passwords do not match');
       if (acc) acc.password = newPw;
       state.user.password = newPw;
       persistAll();
@@ -6179,7 +6325,7 @@
     app.classList.remove('collapsed');
     ['user','bizContext','activeBizId','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
      'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked',
-     'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs'].forEach(k => {
+     'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs'].forEach(k => {
       if (p[k] !== undefined) state[k] = p[k];
     });
 

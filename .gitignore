@@ -1,0 +1,29 @@
+# ---- Secrets: NEVER commit these ----
+.env
+.env.*
+*.env
+.env.local
+.env.production
+**/secrets*
+**/*service_role*
+supabase-keys.js
+config.local.js
+
+# ---- Dependencies / build ----
+node_modules/
+.vercel/
+dist/
+build/
+.cache/
+
+# ---- OS / editor noise ----
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+*.swp
+
+# ---- Local app data dumps (if you ever export here) ----
+*.local.json
+local-state/

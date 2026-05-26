@@ -196,9 +196,40 @@
       return { business, allowedTabs: m.allowedTabs, itemsByTab };
     },
 
+    // STAGE 5: subscribe to live changes on a business's shared data so a member
+    // device updates automatically (no manual refresh). Calls `onChange` whenever
+    // shared_items or the business row changes. Returns an unsubscribe function.
+    // RLS still applies to the re-fetch, so members only ever pull their slice.
+    subscribeMemberView(businessId, onChange) {
+      const c = getClient(); if (!c || !businessId) return () => {};
+      let channel;
+      try {
+        channel = c.channel('member-' + businessId)
+          .on('postgres_changes',
+            { event: '*', schema: 'public', table: 'shared_items', filter: `business_id=eq.${businessId}` },
+            () => { try { onChange && onChange(); } catch {} })
+          .on('postgres_changes',
+            { event: '*', schema: 'public', table: 'businesses', filter: `id=eq.${businessId}` },
+            () => { try { onChange && onChange(); } catch {} })
+          .subscribe();
+      } catch (e) {
+        // Realtime unavailable — member view still works, just not live.
+        return () => {};
+      }
+      return () => { try { c.removeChannel(channel); } catch {} };
+    },
+
     async resetPassword(email) {
       const c = getClient(); if (!c) throw new Error('Supabase not configured');
       const { error } = await c.auth.resetPasswordForEmail(email);
+      if (error) throw error;
+      return true;
+    },
+
+    // Change the signed-in user's password directly (no sign-out needed).
+    async updatePassword(newPassword) {
+      const c = getClient(); if (!c) throw new Error('Supabase not configured');
+      const { error } = await c.auth.updateUser({ password: newPassword });
       if (error) throw error;
       return true;
     },
