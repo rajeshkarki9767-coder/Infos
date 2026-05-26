@@ -9,11 +9,13 @@ const suites = [
   ['Adapter (mock Supabase)', 'adapter.test.js'],
   ['API handlers (create-member, delete-account)', 'api.test.js'],
   ['Slice helpers', 'slice.test.js'],
+  ['Cross-tab sync round-trip', 'cross-tab-sync.test.js'],
   ['Persistence (cloud map/versions)', 'persistence.test.js'],
   ['Scroll preservation (Load more)', 'scroll-preserve.test.js'],
   ['Business login mode (view-only + glitch fix)', 'business-login-mode.test.js'],
   ['End-to-end shared flow (pglite)', 'e2e.test.js'],
-  ['DOM smoke (jsdom)', 'smoke.test.js']
+  ['DOM smoke (jsdom)', 'smoke.test.js'],
+  ['Version (About ↔ SW match)', 'version.test.js']
 ];
 
 let allOk = true;

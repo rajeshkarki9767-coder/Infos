@@ -50,6 +50,12 @@ check('no "full app ... sync to everyone" wording in profile card', !/full app a
 
 console.log('\nno orphaned entries — new owner items always get an assignment:');
 check('new non-notices item defaults to assignSelf when no business pre-selected', /tabKey !== 'notices' && chosenBizIds\.length === 0\)/.test(src));
+check('owner Balance entry: auto-assigns active biz or requires a choice (never orphaned)', /Choose which business this balance entry is for/.test(src) && /ownerTarget = \[state\.activeBizId\]/.test(src));
+
+console.log('\naccount switch — leaving a business (shared) session reloads cleanly (no stuck splash):');
+const pas = src.slice(src.indexOf('function performAccountSwitch'), src.indexOf('function performAccountSwitch') + 2200);
+check('performAccountSwitch handles __sharedMode by signing out + reloading', /if \(state\.__sharedMode\)/.test(pas) && /location\.reload\(\)/.test(pas));
+check('shared switch awaits signOut before reload', /await Promise\.race/.test(pas));
 
 console.log('\nview-only gating is driven by bizContext (so it behaves like owner business view):');
 check('isViewOnly() is true when bizContext set', /function isViewOnly\(\)\s*\{\s*return\s*!!state\.bizContext/.test(src));

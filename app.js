@@ -170,6 +170,11 @@
   const pullText = $('#pull-text');
   const shortcutsModal = $('#shortcuts-modal');
 
+  // ---------- App version ----------
+  // Single source of truth for the human-visible version, shown on Settings → About.
+  // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
+  const APP_VERSION = '56.0.0';
+
   // ---------- State ----------
   const state = {
     user: null,
@@ -1393,8 +1398,18 @@
       if (!state.bizCloudVersions) state.bizCloudVersions = {};
       state.bizCloudVersions[cloudId] = v;
       persistAll();
+      state.__cloudShareOk = true;
     } catch (e) {
       console.warn('autoShareBusiness error:', e);
+      // Surface the failure — otherwise sharing silently no-ops and the business
+      // login never receives data, with no clue why. The most common cause is the
+      // shared-access SQL schema not being applied to the deployed database.
+      const msg = String(e && e.message || e || '');
+      const schemaLikely = /relation|does not exist|schema|businesses|shared_state|business_members|404|Not Found|PGRST/i.test(msg);
+      state.__cloudShareErr = schemaLikely
+        ? 'Cloud sharing isn’t set up on the server yet (database schema not applied), so this business can’t sync to its login yet. Your local data is safe.'
+        : ('Couldn’t set up cloud sharing for this business: ' + msg);
+      try { toast(state.__cloudShareErr); } catch {}
       // Non-fatal: local data is intact; will retry on next save.
     }
   }
@@ -3582,6 +3597,41 @@
 
   // Show a 2-second splash, then complete the switch.
   function performAccountSwitch({ email, kind, bizId }) {
+    // If we're currently in a BUSINESS (shared cloud) session, we cannot hot-swap
+    // identities in place — the business holds a live Supabase session and the
+    // owner/other account needs its own real sign-in. Sign out cleanly and reload;
+    // the device restores its own owner state, then the user picks the account.
+    // (Trying to login() over a shared session is what left the switch splash
+    // stuck on "Ready" forever.)
+    if (state.__sharedMode) {
+      showSwitchSplash(kind === 'business' ? (bizById(bizId)?.name || 'Business') : 'your account',
+                       email || '', kind, null);
+      state.__switchInProgress = true;
+      (async () => {
+        try {
+          if (sharedRealtimeUnsub) sharedRealtimeUnsub();
+        } catch {}
+        sharedRealtimeUnsub = null;
+        clearTimeout(sharedSaveTimer);
+        state.__sharedMode = false; state.__sharedBusinessId = null; state.__sharedVersion = 0;
+        try {
+          if (window.InfosSupabase && window.InfosSupabase.Auth) {
+            await Promise.race([
+              window.InfosSupabase.Auth.signOut(),
+              new Promise(r => setTimeout(r, 2500))
+            ]);
+          }
+        } catch {}
+        try {
+          Object.keys(localStorage).forEach(k => {
+            if (/^sb-.*-auth-token$/.test(k) || /supabase\.auth\.token/.test(k)) localStorage.removeItem(k);
+          });
+        } catch {}
+        location.reload();
+      })();
+      return;
+    }
+
     let displayName, sub, switchColor = null;
     if (kind === 'business') {
       const b = bizById(bizId);
@@ -4802,7 +4852,22 @@
       const valid = cleaned.filter(r => r.name && r.balance);
       if (!valid.length) { toast('Enter a name and balance for at least one row'); return; }
       const skipped = cleaned.length - valid.length;
-      const targetBizIds = isBizUser ? [state.bizContext] : ownerChosenBizIds;
+      // Owner must assign the entry to at least one business, otherwise it's
+      // orphaned: it only shows in the "All" view, disappears under any business
+      // filter, and (critically) never syncs to a business login because the
+      // shared slice for a business only includes items assigned to it. If the
+      // owner has businesses but picked none, default to the business they're
+      // currently viewing; if they're in "All", ask them to choose.
+      let ownerTarget = ownerChosenBizIds;
+      if (!isBizUser && state.businesses.length > 0 && ownerTarget.length === 0) {
+        if (state.activeBizId && state.activeBizId !== 'all' && state.activeBizId !== 'none') {
+          ownerTarget = [state.activeBizId];
+        } else {
+          toast('Choose which business this balance entry is for');
+          return;
+        }
+      }
+      const targetBizIds = isBizUser ? [state.bizContext] : ownerTarget;
       const now = Date.now();
       state.__lastBalRecorder = recorder;
 
@@ -5797,9 +5862,14 @@
     c.innerHTML = viewOnlyBanner() + `<div style="max-width:480px;">
       <div style="display:flex;align-items:center;gap:16px;margin-bottom:18px;">
         <svg viewBox="0 0 512 512" width="56" height="56" style="border-radius:14px;"><rect x="0" y="0" width="512" height="512" rx="128" fill="var(--accent-solid)"/><rect x="234" y="148" width="44" height="44" rx="11" fill="#FFFFFF"/><rect x="206" y="220" width="100" height="20" rx="10" fill="#FFFFFF" opacity="0.55"/><rect x="206" y="268" width="100" height="96" rx="18" fill="#FFFFFF"/><rect x="234" y="296" width="44" height="12" rx="6" fill="var(--accent-solid)"/><rect x="234" y="324" width="44" height="12" rx="6" fill="var(--accent-solid)"/></svg>
-        <div><div style="font-size:20px;font-weight:700;color:var(--text-primary);">Infos</div><div style="font-size:13px;color:var(--text-secondary);">A Progressive Web App</div></div>
+        <div>
+          <div style="font-size:20px;font-weight:700;color:var(--text-primary);">Infos</div>
+          <div style="font-size:13px;color:var(--text-secondary);">A Progressive Web App</div>
+          <div style="font-size:12px;color:var(--text-tertiary);margin-top:3px;">Version ${esc(APP_VERSION)}</div>
+        </div>
       </div>
-      <p style="font-size:14px;color:var(--text-secondary);line-height:1.7;">Manage multiple businesses, their notices, credentials, and accounts. View-only sharing for teams. Cloud sync across your devices, secured with per-account data isolation.</p>
+      <p style="font-size:14px;color:var(--text-secondary);line-height:1.7;">Manage multiple businesses, their notices, credentials, and accounts. Business logins can view their business and add balance entries. Cloud sync across your devices, secured with per-account data isolation.</p>
+      <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border);font-size:12px;color:var(--text-tertiary);">Infos v${esc(APP_VERSION)}</div>
     </div>`;
   }
   function renderPrivacy(c) {
