@@ -122,7 +122,11 @@
       items[tab] = (slice.items[tab] || []).slice();
     });
 
-    var bizAllowedTabs = {}; if (slice.allowedTabs) bizAllowedTabs[biz.id] = slice.allowedTabs;
+    // A shared (business) login is a FULL editor of this one business — they get
+    // every tab, editable. The owner's optional allowed-tabs UI-scoping must NOT
+    // hide a member's own data, so we deliberately do NOT populate bizAllowedTabs
+    // here (leaving it empty = all tabs allowed in isTabAllowedForBiz / nav).
+    var bizAllowedTabs = {};
     var bizTabOrder = {};    if (slice.tabOrder)    bizTabOrder[biz.id]    = slice.tabOrder;
     var itemOrder = {};      itemOrder[biz.id] = slice.itemOrder || {};
 

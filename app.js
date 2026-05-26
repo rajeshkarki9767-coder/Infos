@@ -93,6 +93,8 @@
       syncAdapter: state.syncAdapter,
       bizAllowedTabs: state.bizAllowedTabs,
       bizTabOrder: state.bizTabOrder,
+      bizCloudMap: state.bizCloudMap,
+      bizCloudVersions: state.bizCloudVersions,
       accounts: state.accounts,
       recentSignins: state.recentSignins,
       currentTab: state.currentTab,
@@ -241,7 +243,7 @@
   app.classList.remove('collapsed');
   ['user','bizContext','activeBizId','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
    'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked',
-   'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs'].forEach(k => {
+   'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs'].forEach(k => {
     if (prefs[k] !== undefined) state[k] = prefs[k];
   });
 
@@ -568,7 +570,9 @@
     // v12: when viewing as owner, hide items belonging to a biz that has disabled
     // the current tab in its business settings. Items assigned to multiple businesses
     // are kept if at least one of those businesses still has the tab enabled.
-    if (!state.bizContext) {
+    // A SHARED LOGIN is a full editor of its own business, so this UI-scoping must
+    // NOT apply to them — they always see/edit all of their data.
+    if (!state.bizContext && !isSharedLogin()) {
       const curTab = state.currentTab;
       if (curTab && TAB_DEFS[curTab]) {
         out = out.filter(i => {
@@ -2618,6 +2622,15 @@
     state.bizContext = null;
     state.user = { name: (biz.name || 'Business') + ' team', email };
     state.activeBizId = biz.id;
+    // Drop any owner-only collections that the member slice doesn't define, so a
+    // previous owner session on this device leaves nothing in memory during the
+    // business session. (Disk prefs are untouched — see persistAll's shared-mode
+    // branch — so the owner's real data is restored intact on next owner login.)
+    state.accounts = [];
+    state.recentSignins = [];
+    state.globalRenames = state.globalRenames || {};
+    state.cryptoMeta = null;
+    state.hiddenTabs = [];
 
     // Reveal the main app (hide auth/splash), build nav, render.
     try {
@@ -2640,13 +2653,15 @@
   }
 
   // Subscribe to the shared row; on remote change, pull + re-apply without
-  // bouncing the change straight back to the cloud.
+  // bouncing the change straight back to the cloud. The callback is debounced so
+  // a burst of realtime events coalesces into a single refresh (less flicker).
   function subscribeShared(cloudBusinessId) {
     try { if (sharedRealtimeUnsub) sharedRealtimeUnsub(); } catch {}
     sharedRealtimeUnsub = null;
     if (!(window.InfosSupabase && window.InfosSupabase.adapter.subscribeSharedState)) return;
     sharedRealtimeUnsub = window.InfosSupabase.adapter.subscribeSharedState(cloudBusinessId, () => {
-      refreshSharedFromCloud(cloudBusinessId);
+      clearTimeout(window.__sharedRefreshDebounce);
+      window.__sharedRefreshDebounce = setTimeout(() => refreshSharedFromCloud(cloudBusinessId), 250);
     });
   }
 
@@ -2657,6 +2672,15 @@
       if (!snap || !snap.data) return;
       // Ignore our own just-written version (no-op) to avoid render churn.
       if ((snap.version || 0) <= (state.__sharedVersion || 0)) return;
+      // Don't yank the UI out from under an open modal or an in-progress edit —
+      // that's what causes the flicker. Defer the refresh until the user is idle.
+      const modalOpen = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
+      const fsmOpen = !!document.getElementById('fullscreen-message');
+      if (modalOpen || fsmOpen || (typeof sharedSaveTimer !== 'undefined' && sharedSaveTimer)) {
+        clearTimeout(window.__sharedRefreshRetry);
+        window.__sharedRefreshRetry = setTimeout(() => refreshSharedFromCloud(cloudBusinessId), 1200);
+        return;
+      }
       sharedApplyingRemote = true;
       if (state.__sharedMode) {
         const ms = Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail });
@@ -2666,7 +2690,8 @@
         state.__sharedBusinessId = cloudBusinessId;
         state.__sharedVersion = snap.version || 0;
         state.user = state.user || { name: (snap.data.business && snap.data.business.name || 'Business') + ' team', email: state.__sharedEmail };
-        setActive(state.currentTab || 'notices', 'fade');
+        // Silent in-place re-render (no slide/fade) so live updates don't flash.
+        rerenderCurrentTab();
       } else {
         // Owner viewing this shared business: merge the slice into full state.
         // Map the cloud id back to the owner's local business id.
@@ -2680,7 +2705,8 @@
         if (!state.bizCloudVersions) state.bizCloudVersions = {};
         state.bizCloudVersions[cloudBusinessId] = snap.version || 0;
         persistAll();
-        setActive(state.currentTab || 'notices', 'fade');
+        // Silent in-place re-render so the owner's view doesn't flash on updates.
+        rerenderCurrentTab();
       }
     } catch (e) { console.warn('refreshSharedFromCloud failed:', e); }
     finally { sharedApplyingRemote = false; }
@@ -2741,8 +2767,8 @@
         ownerSharedUnsubs.push(unsub);
       } catch {}
     }
-    // Re-render in case the initial pull changed anything.
-    try { if (state.user) setActive(state.currentTab || 'notices', 'fade'); } catch {}
+    // Re-render in case the initial pull changed anything (silent — no flash).
+    try { if (state.user) rerenderCurrentTab(); } catch {}
   }
 
   function mergeCloudState(remote) {
@@ -3213,30 +3239,49 @@
   }
 
   // A full-screen, opaque message overlay (no app content shows behind it).
-  // Used for the account-deletion "thank you" screen and similar moments.
+  // Used for the "check your email" confirmation, password-reset notice, and the
+  // account-deletion "thank you" screen.
   // opts: { icon, title, message, button: {label, onClick}, spinner: bool }
+  //
+  // NOTE: this overlay is appended to document.body, which is OUTSIDE #app. The
+  // accent CSS variables (--accent-solid / --accent-bg) are only defined as
+  // descendants of #app, so they resolve to nothing here. We therefore resolve a
+  // concrete accent color in JS and inline it, so the button + icon are always
+  // visible regardless of where the overlay mounts.
   function showFullScreenMessage(opts) {
     const o = opts || {};
     let el = document.getElementById('fullscreen-message');
     if (el) el.remove();
+    // Resolve a concrete accent color (computed style of #app falls back to blue).
+    let accent = '#378ADD';
+    try {
+      const c = getComputedStyle(app).getPropertyValue('--accent-solid').trim();
+      if (c) accent = c;
+      if (state.customAccent) accent = state.customAccent;
+    } catch {}
+    const accentSoft = hexToRgba(accent, 0.14);
+    const isDark = (typeof isAppDark === 'function') ? isAppDark() : false;
+    const titleColor = isDark ? '#F5F5F2' : '#1A1A17';
+    const subColor = isDark ? '#A8A8A2' : '#6B6B64';
+
     el = document.createElement('div');
     el.id = 'fullscreen-message';
     el.className = 'loading-splash visible';
     // Force fully-opaque + interactive immediately (don't rely on the .visible
     // CSS transition, which can leave the panel/buttons looking faint).
-    el.style.cssText = 'flex-direction:column;opacity:1;pointer-events:auto;transition:none;';
+    el.style.cssText = 'flex-direction:column;opacity:1;pointer-events:auto;transition:none;z-index:2147483600;';
     const iconHTML = o.icon
-      ? `<div style="width:72px;height:72px;border-radius:50%;background:var(--accent-bg);display:flex;align-items:center;justify-content:center;margin-bottom:20px;"><i class="ti ${esc(o.icon)}" style="font-size:34px;color:var(--accent-solid);"></i></div>`
+      ? `<div style="width:72px;height:72px;border-radius:50%;background:${accentSoft};display:flex;align-items:center;justify-content:center;margin-bottom:20px;"><i class="ti ${esc(o.icon)}" style="font-size:34px;color:${accent};"></i></div>`
       : '';
     const spinnerHTML = o.spinner
-      ? `<div style="width:26px;height:26px;margin-top:22px;border-radius:50%;border:3px solid var(--accent-bg);border-top-color:var(--accent-solid);animation:bootspin .8s linear infinite;"></div>`
+      ? `<div style="width:26px;height:26px;margin-top:22px;border-radius:50%;border:3px solid ${accentSoft};border-top-color:${accent};animation:bootspin .8s linear infinite;"></div>`
       : '';
     el.innerHTML = `
       <div style="display:flex;flex-direction:column;align-items:center;text-align:center;padding:32px;max-width:380px;">
         ${iconHTML}
-        <div style="font-size:21px;font-weight:700;color:var(--text-primary);line-height:1.3;">${esc(o.title || '')}</div>
-        <div style="font-size:14px;line-height:1.6;color:var(--text-secondary);margin-top:12px;">${esc(o.message || '')}</div>
-        ${o.button ? `<button id="fsm-btn" style="margin-top:24px;min-width:160px;padding:12px 20px;font-size:14px;font-weight:600;background:var(--accent-solid);color:#fff;border:none;border-radius:var(--radius-md,10px);cursor:pointer;opacity:1;">${esc(o.button.label || 'OK')}</button>` : ''}
+        <div style="font-size:21px;font-weight:700;color:${titleColor};line-height:1.3;">${esc(o.title || '')}</div>
+        <div style="font-size:14px;line-height:1.6;color:${subColor};margin-top:12px;">${esc(o.message || '')}</div>
+        ${o.button ? `<button id="fsm-btn" type="button" style="margin-top:24px;min-width:160px;padding:13px 22px;font-size:14px;font-weight:700;background:${accent};color:#fff;border:none;border-radius:10px;cursor:pointer;opacity:1;box-shadow:0 2px 8px ${hexToRgba(accent,0.35)};">${esc(o.button.label || 'OK')}</button>` : ''}
         ${spinnerHTML}
       </div>`;
     document.body.appendChild(el);
@@ -3245,6 +3290,15 @@
       if (b) b.onclick = () => { try { if (o.button.onClick) o.button.onClick(); } catch {} };
     }
     return el;
+  }
+
+  // Small helper: convert #RRGGBB (or #RGB) to an rgba() string with the given alpha.
+  function hexToRgba(hex, alpha) {
+    let h = String(hex || '').trim().replace('#', '');
+    if (h.length === 3) h = h.split('').map(c => c + c).join('');
+    if (h.length !== 6) return `rgba(55,138,221,${alpha})`;
+    const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
   }
 
   function showLoadingSplash(displayName, opts) {
@@ -3601,6 +3655,10 @@
     // Stop the heartbeat and mark this device's session ended for the biz it was in
     if (state.bizContext) endBizDeviceSessionLocal(state.bizContext);
     if (window.__bizHeartbeatId) { clearInterval(window.__bizHeartbeatId); window.__bizHeartbeatId = null; }
+    // OWNER: tear down any shared-business realtime subscriptions opened for this
+    // owner so they don't leak across sign-out / account switch.
+    try { ownerSharedUnsubs.forEach(fn => { try { fn(); } catch {} }); } catch {}
+    ownerSharedUnsubs = [];
     // A business login holds only the shared business's data in memory; reload to
     // restore this device's own (owner/local) state cleanly from storage.
     if (wasShared) {
@@ -6531,7 +6589,7 @@
     app.classList.remove('collapsed');
     ['user','bizContext','activeBizId','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
      'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked',
-     'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs'].forEach(k => {
+     'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs'].forEach(k => {
       if (p[k] !== undefined) state[k] = p[k];
     });
 

@@ -309,15 +309,24 @@
     },
 
     // Write the live shared snapshot for a business (upsert). RLS lets only the
-    // owner or a linked member write it. `expectedVersion` enables an optional
-    // optimistic-concurrency guard; pass the version you last read. Returns the
-    // new version, or throws { code:'conflict' } if another writer advanced it.
+    // owner or a linked member write it. `expectedVersion` is the version the
+    // caller last observed. To avoid writing a stale-low version (which would
+    // break realtime de-dupe) we read the current row version first and advance
+    // past whichever is higher — so the stored version is monotonic even across
+    // reloads or concurrent writers. (Last-write-wins on data is intentional and
+    // documented; this only keeps the version counter honest.)
     async saveSharedState(businessCloudId, data, expectedVersion) {
       const c = getClient(); if (!c) throw new Error('Supabase not configured');
       const user = await Auth.currentUser();
       if (!user) throw new Error('Not signed in');
       if (!businessCloudId) throw new Error('businessCloudId required');
-      const nextVersion = (Number(expectedVersion) || 0) + 1;
+      let baseVersion = Number(expectedVersion) || 0;
+      try {
+        const { data: cur } = await c.from('shared_state')
+          .select('version').eq('business_cloud_id', businessCloudId).maybeSingle();
+        if (cur && typeof cur.version === 'number' && cur.version > baseVersion) baseVersion = cur.version;
+      } catch (_) { /* if the pre-read fails, fall back to expectedVersion */ }
+      const nextVersion = baseVersion + 1;
       const row = {
         business_cloud_id: businessCloudId,
         data: data || {},

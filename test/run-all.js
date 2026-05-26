@@ -8,6 +8,7 @@ const suites = [
   ['RLS isolation (pglite)', 'rls.test.js'],
   ['Adapter (mock Supabase)', 'adapter.test.js'],
   ['Slice helpers', 'slice.test.js'],
+  ['Persistence (cloud map/versions)', 'persistence.test.js'],
   ['End-to-end shared flow (pglite)', 'e2e.test.js'],
   ['DOM smoke (jsdom)', 'smoke.test.js']
 ];

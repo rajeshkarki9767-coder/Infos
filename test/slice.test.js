@@ -68,7 +68,7 @@ console.log('\nsliceToMemberState:');
   check('member __sharedBusinessId set', ms.__sharedBusinessId === 'b1');
   check('nextItemId beyond max existing id (5 -> 6)', ms.nextItemId === 6);
   check('standard empty tabs present for full app', Array.isArray(ms.items.system) && Array.isArray(ms.items.games));
-  check('bizAllowedTabs mapped under business id', ms.bizAllowedTabs.b1.join(',') === 'notices,balance');
+  check('shared login is NOT tab-restricted (bizAllowedTabs empty = all tabs editable)', !ms.bizAllowedTabs.b1);
 }
 
 console.log('\nmemberStateToSlice (round-trip after a member edit):');

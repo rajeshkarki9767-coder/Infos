@@ -225,7 +225,15 @@ async function run() {
   console.log('\n3) Member edits: renames an entry + adds a new one, pushes back:');
   memberState.items.notices[0].name = 'Welcome (edited by team)';
   memberState.items.notices.push({ id: memberState.nextItemId++, name: 'Added by team', bizIds: [cloudId], deleted: false });
+  // REGRESSION GUARD: the owner only put ['notices','balance'] in allowed_tabs,
+  // but a shared login is a FULL editor — they must be able to add on ANY tab
+  // (e.g. 'games', 'system') and have it survive. Confirm the member state is
+  // NOT tab-restricted, then add a games entry.
+  check('member state is NOT tab-restricted (full editor)', !memberState.bizAllowedTabs || !memberState.bizAllowedTabs[cloudId]);
+  memberState.items.games = memberState.items.games || [];
+  memberState.items.games.push({ id: memberState.nextItemId++, name: 'Game by team', bizIds: [cloudId], deleted: false });
   const backSlice = Slice.memberStateToSlice(memberState);
+  check('member-added games entry is in the pushed slice', backSlice.items.games && backSlice.items.games.some(i => i.name === 'Game by team'));
   const v2 = await S.adapter.saveSharedState(cloudId, backSlice, snap.version);
   check('member write succeeds, version bumped to 2', v2 === 2);
 
@@ -237,6 +245,7 @@ async function run() {
   const notices = ownerState.items.notices;
   check('owner sees the member rename', notices.some(i => i.name === 'Welcome (edited by team)'));
   check('owner sees the member-added entry', notices.some(i => i.name === 'Added by team'));
+  check('owner sees the member-added entry on a NON-allowed tab (games)', (ownerState.items.games || []).some(i => i.name === 'Game by team'));
   check('owner still has the b2-only notice', notices.some(i => i.id === 2 && i.name === 'B2 only'));
   const b1 = ownerState.businesses.find(b => b.id === 'b1');
   check('owner business b1 secrets intact (password/email/devices)',
