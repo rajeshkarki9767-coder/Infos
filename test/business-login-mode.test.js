@@ -38,6 +38,19 @@ const splashFn = src.slice(src.indexOf('function showLoadingSplash'), src.indexO
 check('splash forces opacity:1 immediately (no transparent fade-in)', /el\.style\.opacity\s*=\s*'1'/.test(splashFn));
 check('splash no longer reveals via requestAnimationFrame fade', !/requestAnimationFrame\(\(\)\s*=>\s*el\.classList\.add\('visible'\)\)/.test(splashFn));
 
+console.log('\nlogout fix — business login does NOT auto-re-login:');
+const logoutFn = src.slice(src.indexOf('function logout'), src.indexOf('function logout') + 4200);
+check('logout awaits Supabase signOut before reload', /await Promise\.race\(\[[\s\S]{0,140}Auth\.signOut\(\)/.test(logoutFn));
+check('logout scrubs lingering auth token before reload', /auth-token\$?\/\.test\(k\)|removeItem\(k\)/.test(logoutFn));
+check('reload happens inside the async IIFE (after signOut resolves)', /location\.reload\(\);[\s\S]{0,30}\}\)\(\);/.test(logoutFn));
+
+console.log('\nwording — business name, not "Shared business" / "team":');
+check('profile card label uses the business name, not hardcoded "Shared business"', !/section-label">Shared business</.test(src));
+check('no "full app ... sync to everyone" wording in profile card', !/full app and your changes sync live to everyone/.test(src));
+
+console.log('\nno orphaned entries — new owner items always get an assignment:');
+check('new non-notices item defaults to assignSelf when no business pre-selected', /tabKey !== 'notices' && chosenBizIds\.length === 0\)/.test(src));
+
 console.log('\nview-only gating is driven by bizContext (so it behaves like owner business view):');
 check('isViewOnly() is true when bizContext set', /function isViewOnly\(\)\s*\{\s*return\s*!!state\.bizContext/.test(src));
 // The "New entry" button on list tabs is hidden when isViewOnly() — entries are

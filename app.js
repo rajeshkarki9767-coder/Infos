@@ -1690,7 +1690,16 @@
                                  (state.activeBizId && state.activeBizId !== 'all' && state.activeBizId !== 'none' ? [state.activeBizId] : []);
     let chosenTagIds = editing ? [...(editing.tagIds || [])] : (state.activeTagId ? [state.activeTagId] : []);
     // "Assign to myself" — item belongs to the owner only (no business). Tracked via ownerAssigned.
-    let assignSelf = editing ? !!editing.ownerAssigned : (state.activeBizId === 'none');
+    // DEFAULT FIX: a brand-new item created while NOT scoped to a single business
+    // (e.g. in the "All businesses" view) used to default to NO assignment, so if
+    // the user didn't notice the assignment field it would be saved unassigned and
+    // effectively vanish from every business filter. To prevent silently-orphaned
+    // entries, a new non-notices item with no business pre-selected defaults to
+    // "Myself" (owner-owned, always visible in the All view). The user can still
+    // switch it to a business in the modal before saving.
+    let assignSelf = editing ? !!editing.ownerAssigned
+                             : (state.activeBizId === 'none' ? true
+                                : (tabKey !== 'notices' && chosenBizIds.length === 0));
 
     function renderBizAssign() {
       const wrap = $('#if-biz');
@@ -2702,8 +2711,15 @@
     try {
       const snap = await window.InfosSupabase.adapter.loadSharedState(cloudBusinessId);
       if (!snap || !snap.data) return;
-      // Ignore our own just-written version (no-op) to avoid render churn.
-      if ((snap.version || 0) <= (state.__sharedVersion || 0)) return;
+      // Ignore versions we've already applied (including our OWN just-written
+      // version) to avoid render churn / echo loops. The "last applied version"
+      // lives in different places for the two modes:
+      //   - business login (__sharedMode): state.__sharedVersion
+      //   - owner viewing a shared biz:    state.bizCloudVersions[cloudId]
+      const appliedVersion = state.__sharedMode
+        ? (state.__sharedVersion || 0)
+        : ((state.bizCloudVersions && state.bizCloudVersions[cloudBusinessId]) || 0);
+      if ((snap.version || 0) <= appliedVersion) return;
       // Don't yank the UI out from under an open modal or an in-progress edit —
       // that's what causes the flicker. Defer the refresh until the user is idle.
       const modalOpen = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
@@ -3732,8 +3748,28 @@
     // restore this device's own (owner/local) state cleanly from storage.
     if (wasShared) {
       state.__sharedMode = false; state.__sharedBusinessId = null; state.__sharedVersion = 0;
-      try { window.InfosSupabase && window.InfosSupabase.Auth.signOut().catch(() => {}); } catch {}
-      location.reload();
+      // CRITICAL: actually wait for Supabase to clear its session token BEFORE we
+      // reload. If we reload first, the still-valid session is detected on boot and
+      // the business login is auto-restored — looking like "logged out then logged
+      // back in". Awaiting signOut (with a short safety timeout) prevents that.
+      (async () => {
+        try {
+          if (window.InfosSupabase && window.InfosSupabase.Auth) {
+            await Promise.race([
+              window.InfosSupabase.Auth.signOut(),
+              new Promise(r => setTimeout(r, 2500))
+            ]);
+          }
+        } catch {}
+        // Belt-and-suspenders: scrub any lingering Supabase auth token so boot
+        // can't find a session to restore, even if signOut was slow/failed.
+        try {
+          Object.keys(localStorage).forEach(k => {
+            if (/^sb-.*-auth-token$/.test(k) || /supabase\.auth\.token/.test(k)) localStorage.removeItem(k);
+          });
+        } catch {}
+        location.reload();
+      })();
       return;
     }
     state.user = null; state.bizContext = null; state.activeBizId = 'all'; state.activeTagId = null;
@@ -5843,9 +5879,9 @@
       </div>
       ${shared ? `
         <div class="profile-card">
-          <div class="profile-card-head"><div class="section-label">Shared business</div></div>
+          <div class="profile-card-head"><div class="section-label">${esc(sharedBiz && sharedBiz.name ? sharedBiz.name : displayName)}</div></div>
           <div style="font-size:13px;color:var(--text-secondary);line-height:1.55;">
-            You're signed in to a shared business. You have the full app and your changes sync live to everyone on this business. The business owner manages the login credentials and account.
+            You're signed in to this business. You can view everything assigned to it, live, and add entries on entry tabs like Balance. The business owner manages the login and account.
           </div>
         </div>
       ` : ''}
