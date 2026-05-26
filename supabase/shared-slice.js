@@ -61,8 +61,10 @@
     var canonical = cloudId || bizId;
     var items = state.items || {};
     var sliceItems = {};
+    var TOMBSTONE_MS = 30 * 24 * 60 * 60 * 1000; // keep deletions visible 30 days
+    var now = Date.now();
     Object.keys(items).forEach(function (tab) {
-      var list = (items[tab] || []).filter(function (it) {
+      var live = (items[tab] || []).filter(function (it) {
         return itemHasBiz(it, bizId) && !it.deleted;
       }).map(function (it) {
         var clean = sanitizeItem(it);
@@ -73,6 +75,16 @@
         delete clean.bizId;
         return clean;
       });
+      // Include lightweight TOMBSTONES for recently-deleted items belonging to this
+      // business, so the non-destructive merge on the other side can honor the
+      // deletion (otherwise a deleted item would silently come back). Old
+      // tombstones expire so the slice doesn't grow forever.
+      var tombs = (items[tab] || []).filter(function (it) {
+        return itemHasBiz(it, bizId) && it.deleted && (now - (it.deletedAt || 0) < TOMBSTONE_MS);
+      }).map(function (it) {
+        return { id: it.id, deleted: true, deletedAt: it.deletedAt || now, bizIds: [canonical] };
+      });
+      var list = live.concat(tombs);
       if (list.length) sliceItems[tab] = list;
     });
 
@@ -119,7 +131,9 @@
       'idpass-system': [], 'idpass-accounts': []
     };
     Object.keys(slice.items || {}).forEach(function (tab) {
-      items[tab] = (slice.items[tab] || []).slice();
+      // Exclude tombstones (items marked deleted) — they exist in the slice only
+      // to propagate deletions, and must not appear as live entries.
+      items[tab] = (slice.items[tab] || []).filter(function (it) { return !it || !it.deleted; });
     });
 
     // A shared (business) login is a FULL editor of this one business — they get
@@ -194,13 +208,38 @@
     Object.keys(state.items).forEach(function (t) { tabs[t] = true; });
     Object.keys(slice.items || {}).forEach(function (t) { tabs[t] = true; });
     Object.keys(tabs).forEach(function (tab) {
-      var existing = (state.items[tab] || []).filter(function (it) {
-        // Keep items NOT belonging to this business, and keep trashed ones
-        // (trash is owner-local and not shared).
-        return !itemHasBiz(it, localId) || it.deleted;
-      });
       var incoming = (slice.items[tab] || []).map(remapItem);
-      state.items[tab] = existing.concat(incoming);
+      var incomingById = {};
+      var tombstoned = {};
+      incoming.forEach(function (it) {
+        if (it && it.id != null) {
+          incomingById[String(it.id)] = it;
+          if (it.deleted) tombstoned[String(it.id)] = true;
+        }
+      });
+
+      // NON-DESTRUCTIVE merge by id. An existing owner item is removed ONLY if the
+      // incoming slice explicitly tombstones it (it.deleted). We never silently
+      // drop an owner item just because a partial slice omits it — that omission
+      // was the cause of entries "disappearing after some time".
+      var result = [];
+      var seen = {};
+      (state.items[tab] || []).forEach(function (it) {
+        if (!it || it.id == null) { result.push(it); return; }
+        var key = String(it.id);
+        if (tombstoned[key]) { seen[key] = true; return; } // explicitly deleted remotely
+        var inc = incomingById[key];
+        if (inc && !inc.deleted) { result.push(inc); seen[key] = true; } // newer cloud copy
+        else { result.push(it); } // keep — not in incoming slice, don't lose it
+      });
+      // Add brand-new incoming items (skip pure tombstones).
+      incoming.forEach(function (it) {
+        if (it && it.id != null && !it.deleted && !seen[String(it.id)]) {
+          var existsAlready = (state.items[tab] || []).some(function (e) { return e && String(e.id) === String(it.id); });
+          if (!existsAlready) result.push(it);
+        }
+      });
+      state.items[tab] = result;
     });
 
     // Update the business record (name/color/logo) from the shared copy, keyed

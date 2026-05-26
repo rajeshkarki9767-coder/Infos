@@ -52,6 +52,15 @@
   function loadPrefs() { return cachedPrefs; }
   function savePrefs(patch) {
     cachedPrefs = { ...cachedPrefs, ...patch };
+    // Synchronous boot hint: the real state lives in IndexedDB (async to read),
+    // so on refresh the auth screen would briefly flash before the async load
+    // finishes. Write a tiny instantly-readable flag to localStorage marking
+    // whether someone is signed in, so boot can show the main screen immediately.
+    try {
+      const signedIn = !!(cachedPrefs.user || cachedPrefs.bizContext || state.__sharedMode);
+      if (signedIn) localStorage.setItem('infos-boot-hint', '1');
+      else localStorage.removeItem('infos-boot-hint');
+    } catch {}
     // Debounce — many calls during interactions
     clearTimeout(saveTimer);
     saveTimer = setTimeout(async () => {
@@ -117,7 +126,12 @@
     }
     // OWNER: if any of the owner's businesses are shared with a team, mirror
     // their slices to the shared cloud rows (debounced) so members see edits.
-    if (!state.__sharedMode && state.bizCloudMap && Object.keys(state.bizCloudMap).length &&
+    // BUT skip this when we're applying a remote update — otherwise the owner
+    // immediately echoes the business's own change back to the cloud, which can
+    // advance the version and cause the NEXT real business update to be skipped
+    // by the version guard (i.e. live updates silently stop arriving).
+    if (!state.__sharedMode && !(typeof sharedApplyingRemote !== 'undefined' && sharedApplyingRemote) &&
+        state.bizCloudMap && Object.keys(state.bizCloudMap).length &&
         window.InfosSupabase && window.InfosSupabase.configured()) {
       clearTimeout(window.__sharePublishTimer);
       window.__sharePublishTimer = setTimeout(() => { try { pushOwnerSharedBusinesses(); } catch {} }, 1500);
@@ -173,7 +187,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '60.0.0';
+  const APP_VERSION = '65.0.0';
 
   // ---------- State ----------
   const state = {
@@ -430,6 +444,11 @@
   // Notices itself is excluded (it has its own kind of "what" — the reminder content).
   function recordGlobalActivity(tabKey, action, item) {
     if (!tabKey || tabKey === 'notices') return;
+    // The activity log records CHANGES to existing data — edits and deletions —
+    // not the creation of brand-new entries. New entries are visible on their own
+    // tab; logging every creation just makes the log noisy. (Restores are kept
+    // since they represent recovering previously-deleted data.)
+    if (action === 'created') return;
     if (!state.globalActivity) state.globalActivity = [];
     const title = item?.title || item?.name || item?.label || 'Untitled';
     const tabName = tabDisp(tabKey).name;
@@ -1396,6 +1415,11 @@
       state.bizCloudVersions[cloudId] = v;
       persistAll();
       state.__cloudShareOk = true;
+      // Start (or restart) the owner's live subscription to this business's shared
+      // row NOW, so business-login entries appear in real time without the owner
+      // needing to reload. Without this, a business shared mid-session had no live
+      // subscription until the next app boot.
+      try { startOwnerSharedSync(); } catch {}
     } catch (e) {
       console.warn('autoShareBusiness error:', e);
       // Surface the failure — otherwise sharing silently no-ops and the business
@@ -1528,10 +1552,8 @@
         </div>
         <div class="field" style="margin-bottom:10px;"><label>Business name</label><input id="m-name" placeholder="e.g. Acme Corp" value="${editing ? esc(editing.name) : ''}"/></div>
         <div class="field" style="margin-bottom:10px;"><label>Email</label><input id="m-email" type="email" placeholder="team@example.com" value="${editing ? esc(editing.email) : ''}"/></div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-          <div class="field"><label>Password</label><div class="input-wrap"><input id="m-pw" type="password" value="${editing ? esc(editingPwPlain) : ''}"/><button type="button" class="input-icon-btn" data-pw-eye="m-pw" aria-label="Show password"><i class="ti ti-eye"></i></button></div></div>
-          <div class="field"><label>Confirm</label><div class="input-wrap"><input id="m-pw2" type="password" value="${editing ? esc(editingPwPlain) : ''}"/><button type="button" class="input-icon-btn" data-pw-eye="m-pw2" aria-label="Show password"><i class="ti ti-eye"></i></button></div></div>
-        </div>
+        <div class="field" style="margin-bottom:10px;"><label>Password</label><div class="input-wrap"><input id="m-pw" type="password" value="${editing ? esc(editingPwPlain) : ''}"/><button type="button" class="input-icon-btn" data-pw-eye="m-pw" aria-label="Show password"><i class="ti ti-eye"></i></button></div></div>
+        <div class="field" style="margin-bottom:10px;"><label>Confirm password</label><div class="input-wrap"><input id="m-pw2" type="password" value="${editing ? esc(editingPwPlain) : ''}"/><button type="button" class="input-icon-btn" data-pw-eye="m-pw2" aria-label="Show password"><i class="ti ti-eye"></i></button></div></div>
         <div class="field" style="margin-bottom:12px;">
           <label>Brand color</label>
           <div class="color-picker-row">
@@ -2715,7 +2737,8 @@
     subscribeShared(biz.id);
 
     if (!state.__switchInProgress) {
-      setTimeout(() => { hideLoadingSplash(); toast(`Signed in to ${biz.name || 'your business'}`); }, 500);
+      const shownName = (state.businesses && state.businesses[0] && state.businesses[0].name) || biz.name || 'your business';
+      setTimeout(() => { hideLoadingSplash(); toast(`Signed in to ${shownName}`); }, 250);
     }
   }
 
@@ -2941,22 +2964,28 @@
         // the owner path, because that path would load/overwrite owner data and
         // leak it to the business login. If the account is a member but we can't
         // resolve its business, we stop with an error rather than degrade to owner.
-        let memberInfo = { isMember: false, businessId: null };
-        try { memberInfo = await window.InfosSupabase.Auth.memberInfo(); } catch (e) { console.warn('memberInfo failed:', e); }
+        // FAST PATH: signIn already returned the user object, which carries the
+        // member metadata. Compute member status from it directly — no extra
+        // auth.getUser() round-trip. If it's a member, enter the shared session
+        // immediately using the business id from metadata; the business name/color
+        // arrive with the shared-state load inside enterSharedBusiness. We avoid
+        // the separate business_members + businesses queries on the sign-in
+        // critical path (they were 2 extra sequential round-trips).
+        const memberInfo = window.InfosSupabase.Auth.memberInfoFromUser(sbUser);
         if (memberInfo.isMember) {
-          let biz = null;
-          try { biz = await window.InfosSupabase.Auth.getMemberBusiness(); } catch (e) { console.warn('getMemberBusiness failed:', e); }
           btn.textContent = original; btn.disabled = false;
-          if (biz) {
-            await enterSharedBusiness(biz, email);
-          } else if (memberInfo.businessId) {
-            // Couldn't read the business row (RLS/schema), but we know the id from
-            // metadata — enter with a minimal business so the login still works.
-            await enterSharedBusiness({ id: memberInfo.businessId, name: 'Shared business', color: '#378ADD' }, email);
+          if (memberInfo.businessId) {
+            await enterSharedBusiness({ id: memberInfo.businessId, name: '', color: '#378ADD' }, email);
           } else {
-            // It's a member account but we can't determine its business at all.
-            showAuthError('This business login is not fully set up yet. Ask the owner to re-share the business, then try again.');
-            try { await window.InfosSupabase.Auth.signOut(); } catch {}
+            // Member flag but no business id in metadata — fall back to the table
+            // lookup once; if that also fails, stop (don't degrade to owner).
+            let biz = null;
+            try { biz = await window.InfosSupabase.Auth.getMemberBusiness(); } catch {}
+            if (biz) { await enterSharedBusiness(biz, email); }
+            else {
+              showAuthError('This business login is not fully set up yet. Ask the owner to re-share the business, then try again.');
+              try { await window.InfosSupabase.Auth.signOut(); } catch {}
+            }
           }
           return;
         }
@@ -3780,6 +3809,9 @@
   }
 
   function logout() {
+    // Clear the synchronous boot hint so a refresh after logout correctly shows
+    // the sign-in screen (not a flash of the app).
+    try { localStorage.removeItem('infos-boot-hint'); } catch {}
     // SHARED ACCESS: tear down the shared session cleanly. Flush any pending
     // edit to the shared row FIRST, then stop realtime and clear shared flags so
     // the emptied state isn't pushed up and local owner data isn't touched.
@@ -4580,16 +4612,17 @@
     });
     batches.sort((a, b) => (b.created - a.created) || (b.sumIndex - a.sumIndex));
 
-    // A batch is editable if the viewer may edit ALL of its rows. Business member:
-    // only their own business's entries. Owner: any batch NOT created by a member.
-    // Only the business login (view-only session) manages Balance entries. The
-    // owner is view-only here, so cannot edit or delete batches.
+    // Balance permissions:
+    //  - Business login (view-only session): manages its own entries — edit + delete.
+    //  - Owner: view-only for EDITING (cannot edit business-entered balances), but
+    //    CAN DELETE them. So the owner reviews business entries and can remove them,
+    //    but not change their contents.
     const canEditBatch = (b) => {
-      if (!isViewOnly()) return false;
+      if (!isViewOnly()) return false; // owner never edits Balance entries
       return b.items.every(it => itemBizIds(it).includes(state.bizContext));
     };
     const canDeleteBatch = (b) => {
-      if (!isViewOnly()) return false;
+      if (!isViewOnly()) return true; // owner CAN delete (any business's entries)
       return b.items.every(it => itemBizIds(it).includes(state.bizContext));
     };
 
@@ -4885,7 +4918,7 @@
 
     document.getElementById('bal-save').onclick = () => {
       const recorder = (document.getElementById('bal-recorder')?.value || '').trim();
-      if (!recorder) { toast('Enter who is recording this'); return; }
+      if (!recorder) { toast('Recorded by field is empty'); document.getElementById('bal-recorder')?.focus(); return; }
       // Validate: every row must have a name AND a balance
       const cleaned = rows.map(r => ({ name: (r.name || '').trim(), balance: (r.balance || '').trim() }));
       const valid = cleaned.filter(r => r.name && r.balance);
@@ -6780,10 +6813,22 @@
         sessionStorage.setItem('infos-just-confirmed', '1');
       }
     } catch {}
-    // If we had a user before, show a skeleton immediately to avoid blank flash
+    // If we had a user before, show a skeleton immediately to avoid an auth-screen
+    // flash. The real state is in IndexedDB (async), so we rely on a synchronous
+    // localStorage hint written by savePrefs. Also check for a Supabase auth token
+    // (a business login's session) which likewise means "show the app, not login".
     try {
-      const quickPeek = JSON.parse(localStorage.getItem('infos-state-v2') || localStorage.getItem('infos-state-v3-fallback') || 'null');
-      if (quickPeek?.user) {
+      let wasSignedIn = localStorage.getItem('infos-boot-hint') === '1';
+      if (!wasSignedIn) {
+        const quickPeek = JSON.parse(localStorage.getItem('infos-state-v2') || localStorage.getItem('infos-state-v3-fallback') || 'null');
+        wasSignedIn = !!(quickPeek && quickPeek.user);
+      }
+      if (!wasSignedIn) {
+        // A signed-in Supabase session (e.g. a business login) lives in an
+        // sb-*-auth-token localStorage key — its presence also means "show app".
+        try { wasSignedIn = Object.keys(localStorage).some(k => /^sb-.*-auth-token$/.test(k)); } catch {}
+      }
+      if (wasSignedIn) {
         screenAuth.classList.remove('screen-active');
         screenMain.classList.add('screen-active');
         showSkeleton(4);
@@ -6844,18 +6889,21 @@
         const sbUser = await window.InfosSupabase.Auth.currentUser();
         if (sbUser) {
           // HARD GATE: if this Supabase session is a BUSINESS LOGIN (member),
-          // load the shared app and never touch the owner data path — even if the
-          // membership table read fails, the server-stamped metadata tells us.
-          let mInfo = { isMember: false, businessId: null };
-          try { mInfo = await window.InfosSupabase.Auth.memberInfo(); } catch (e) { console.warn('boot memberInfo failed', e); }
+          // load the shared app and never touch the owner data path. Compute
+          // member status from the user we ALREADY fetched (no extra round-trip),
+          // and enter directly from the metadata business id when present.
+          const mInfo = window.InfosSupabase.Auth.memberInfoFromUser(sbUser);
           if (mInfo.isMember) {
-            let biz = null;
-            try { biz = await window.InfosSupabase.Auth.getMemberBusiness(); } catch (e) { console.warn('boot getMemberBusiness failed', e); }
-            if (!biz && mInfo.businessId) biz = { id: mInfo.businessId, name: 'Shared business', color: '#378ADD' };
             hideBootSplash();
+            if (mInfo.businessId) {
+              await enterSharedBusiness({ id: mInfo.businessId, name: '', color: '#378ADD' }, sbUser.email || '');
+              return;
+            }
+            // Member flag but no business id — one fallback table lookup.
+            let biz = null;
+            try { biz = await window.InfosSupabase.Auth.getMemberBusiness(); } catch {}
             if (biz) { await enterSharedBusiness(biz, sbUser.email || ''); return; }
-            // Member account we can't resolve a business for → don't degrade to
-            // owner; send to a clean sign-in.
+            // Can't resolve a business → don't degrade to owner; clean sign-in.
             try { await window.InfosSupabase.Auth.signOut(); } catch {}
             state.user = null; state.accounts = []; state.recentSignins = [];
             screenMain.classList.remove('screen-active'); screenAuth.classList.add('screen-active');

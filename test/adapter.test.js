@@ -186,6 +186,16 @@ async function run() {
     const info = await S.Auth.memberInfo();
     check('memberInfo returns isMember=false for an owner', info.isMember === false);
   }
+  {
+    // Fast path used at sign-in: compute from an already-fetched user, NO network.
+    const S = loadAdapter(makeFakeClient({}));
+    const m1 = S.Auth.memberInfoFromUser({ id: 'm', user_metadata: { role: 'member', business_id: 'biz-9' } });
+    check('memberInfoFromUser (sync) detects member from metadata', m1.isMember === true && m1.businessId === 'biz-9');
+    const m2 = S.Auth.memberInfoFromUser({ id: 'o', user_metadata: { name: 'Owner' } });
+    check('memberInfoFromUser (sync) returns false for an owner', m2.isMember === false);
+    const m3 = S.Auth.memberInfoFromUser(null);
+    check('memberInfoFromUser (sync) handles null user', m3.isMember === false && m3.businessId === null);
+  }
 
   console.log('\nAdapter — old view-only methods are gone:');
   {

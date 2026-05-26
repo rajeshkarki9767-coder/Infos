@@ -167,7 +167,66 @@ console.log('\ncloud-id normalization (owner local id <-> cloud id):');
   const n = owner.items.notices;
   check('owner-applied member-new item carries LOCAL id b1', n.find(i => i.name === 'Member new').bizIds.join(',') === 'b1');
   check('owner-applied multi item has b1 (local) and b2', (() => { const m = n.find(i => i.id === 3); return m.bizIds.includes('b1') && m.bizIds.includes('b2'); })());
-  check('owner business b1 keeps its LOCAL id after apply', owner.businesses.find(b => b.id === 'b1') && !owner.businesses.find(b => b.id === 'CLOUD-1'));
+  check('owner business b1 keeps its LOCAL id after apply', owner.businesses.find(b => b.id === 'CLOUD-1') === undefined && !!owner.businesses.find(b => b.id === 'b1'));
+}
+
+console.log('\nNON-DESTRUCTIVE merge — entries do NOT disappear when slice is partial:');
+{
+  // Owner has 3 notices for business b1. A partial incoming slice (e.g. from a
+  // business login whose state was incomplete) contains only ONE of them.
+  // The other two must SURVIVE (this was the "entries disappear" bug).
+  const owner = {
+    items: { notices: [
+      { id: 11, name: 'Keep A', bizIds: ['b1'] },
+      { id: 12, name: 'Keep B', bizIds: ['b1'] },
+      { id: 13, name: 'Updated C', bizIds: ['b1'] }
+    ] },
+    businesses: [{ id: 'b1', name: 'Acme', password: 'x', email: 'e', devices: [] }]
+  };
+  const partialSlice = {
+    business: { id: 'CLOUD-1', localId: 'b1', name: 'Acme' },
+    items: { notices: [ { id: 13, name: 'Updated C (edited)', bizIds: ['CLOUD-1'] } ] }
+  };
+  S.applySliceToOwnerState(owner, partialSlice, 'b1');
+  const ids = owner.items.notices.map(i => i.id).sort();
+  check('partial slice does NOT drop omitted owner items (11 & 12 survive)', ids.includes(11) && ids.includes(12));
+  check('partial slice DOES apply the updated item (13 edited)', owner.items.notices.find(i => i.id === 13).name === 'Updated C (edited)');
+}
+{
+  // A TOMBSTONE (explicit deletion) in the slice DOES remove the item.
+  const owner = {
+    items: { notices: [
+      { id: 21, name: 'Stays', bizIds: ['b1'] },
+      { id: 22, name: 'Gets deleted', bizIds: ['b1'] }
+    ] },
+    businesses: [{ id: 'b1', name: 'Acme', password: 'x', email: 'e', devices: [] }]
+  };
+  const sliceWithTomb = {
+    business: { id: 'CLOUD-1', localId: 'b1', name: 'Acme' },
+    items: { notices: [
+      { id: 21, name: 'Stays', bizIds: ['CLOUD-1'] },
+      { id: 22, deleted: true, deletedAt: Date.now(), bizIds: ['CLOUD-1'] }
+    ] }
+  };
+  S.applySliceToOwnerState(owner, sliceWithTomb, 'b1');
+  const ids = owner.items.notices.map(i => i.id);
+  check('tombstone removes the explicitly-deleted item (22 gone)', !ids.includes(22));
+  check('non-deleted item stays (21 present)', ids.includes(21));
+}
+{
+  // buildSharedSlice should EMIT a tombstone for a recently-deleted item so the
+  // deletion can propagate.
+  const state = {
+    items: { notices: [
+      { id: 31, name: 'Live', bizIds: ['b1'] },
+      { id: 32, name: 'Dead', bizIds: ['b1'], deleted: true, deletedAt: Date.now() }
+    ] },
+    businesses: [{ id: 'b1', name: 'Acme' }]
+  };
+  const sl = S.buildSharedSlice(state, 'b1', 'CLOUD-1');
+  const dead = (sl.items.notices || []).find(i => i.id === 32);
+  check('buildSharedSlice emits a tombstone for a recent deletion', !!dead && dead.deleted === true);
+  check('buildSharedSlice still includes the live item', (sl.items.notices || []).some(i => i.id === 31 && !i.deleted));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

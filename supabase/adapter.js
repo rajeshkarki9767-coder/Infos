@@ -173,11 +173,18 @@
     // leak/overwrite owner data. Returns { isMember, businessId } .
     async memberInfo() {
       const user = await Auth.currentUser();
+      return Auth.memberInfoFromUser(user);
+    },
+
+    // Synchronous version: compute member status from an ALREADY-FETCHED user
+    // object (e.g. the one signIn() just returned), avoiding an extra network
+    // round-trip to auth.getUser(). This is the fast path used at sign-in.
+    memberInfoFromUser(user) {
       if (!user) return { isMember: false, businessId: null };
       const md = (user.user_metadata || user.raw_user_meta_data || {});
       const am = (user.app_metadata || {});
       const roleIsMember = md.role === 'member' || am.role === 'member';
-      let businessId = md.business_id || am.business_id || null;
+      const businessId = md.business_id || am.business_id || null;
       return { isMember: !!roleIsMember || !!businessId, businessId };
     },
 

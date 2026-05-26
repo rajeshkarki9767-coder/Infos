@@ -54,8 +54,8 @@ check('new non-notices item defaults to assignSelf when no business pre-selected
 console.log('\nBALANCE: only the business login adds; owner is view-only on Balance:');
 check('Balance "Add entry" button only shown to business login (canAddBalance = isViewOnly())', /const canAddBalance = isViewOnly\(\)/.test(src));
 check('openBalanceModal refuses the owner (hard gate)', /Balance entries are added by the business login'\); return; \}/.test(src));
-check('owner cannot edit Balance batches', /const canEditBatch = \(b\) => \{\s*if \(!isViewOnly\(\)\) return false;/.test(src));
-check('owner cannot delete Balance batches', /const canDeleteBatch = \(b\) => \{\s*if \(!isViewOnly\(\)\) return false;/.test(src));
+check('owner cannot EDIT Balance batches', /const canEditBatch = \(b\) => \{\s*if \(!isViewOnly\(\)\) return false;/.test(src));
+check('owner CAN DELETE Balance batches (view + delete, no edit)', /const canDeleteBatch = \(b\) => \{\s*if \(!isViewOnly\(\)\) return true;/.test(src));
 check('Cmd+N on Balance restricted to business login', /state\.items\.balance && isViewOnly\(\)\) openBalanceModal\(\)/.test(src));
 
 console.log('\naccount switch — leaving a business (shared) session reloads cleanly (no stuck splash):');
@@ -103,6 +103,12 @@ check('login(): splash shown BEFORE main screen becomes active', splashIdx < scr
 const esbSplash = esb.indexOf('showLoadingSplash');
 const esbSetActive = esb.indexOf("setActive('notices')");
 check('enterSharedBusiness: splash shown before dashboard render', esbSplash !== -1 && esbSetActive !== -1 && esbSplash < esbSetActive);
+
+console.log('\nactivity log + owner real-time Balance (v63+):');
+check('activity log skips "created" (only edits/deletes/restores logged)', /if \(action === 'created'\) return;/.test(src));
+check('owner does NOT echo-push while applying a remote update (prevents missed live updates)', /!state\.__sharedMode && !\(typeof sharedApplyingRemote !== 'undefined' && sharedApplyingRemote\)/.test(src));
+check('autoShareBusiness starts owner live sync after sharing (real-time without reload)', /__cloudShareOk = true;[\s\S]{0,320}startOwnerSharedSync\(\)/.test(src));
+check('owner CAN delete Balance entries but cannot edit them', /canDeleteBatch = \(b\) => \{\s*if \(!isViewOnly\(\)\) return true;/.test(src) && /canEditBatch = \(b\) => \{\s*if \(!isViewOnly\(\)\) return false;/.test(src));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -232,8 +232,14 @@ async function run() {
   check('member state is NOT tab-restricted (full editor)', !memberState.bizAllowedTabs || !memberState.bizAllowedTabs[cloudId]);
   memberState.items.games = memberState.items.games || [];
   memberState.items.games.push({ id: memberState.nextItemId++, name: 'Game by team', bizIds: [cloudId], deleted: false });
+  // The business login records a BALANCE entry — this is the exact scenario the
+  // owner must see (view-only, deletable, not editable) on their Balance tab.
+  memberState.items.balance = memberState.items.balance || [];
+  memberState.items.balance.push({ id: memberState.nextItemId++, name: 'Cash drawer', balance: '500',
+    recordedBy: 'Team Cashier', batchId: 'teambatch1', bizIds: [cloudId], createdByBiz: cloudId, deleted: false });
   const backSlice = Slice.memberStateToSlice(memberState);
   check('member-added games entry is in the pushed slice', backSlice.items.games && backSlice.items.games.some(i => i.name === 'Game by team'));
+  check('member-added BALANCE entry is in the pushed slice', backSlice.items.balance && backSlice.items.balance.some(i => i.name === 'Cash drawer'));
   const v2 = await S.adapter.saveSharedState(cloudId, backSlice, snap.version);
   check('member write succeeds, version bumped to 2', v2 === 2);
 
@@ -246,6 +252,16 @@ async function run() {
   check('owner sees the member rename', notices.some(i => i.name === 'Welcome (edited by team)'));
   check('owner sees the member-added entry', notices.some(i => i.name === 'Added by team'));
   check('owner sees the member-added entry on a NON-allowed tab (games)', (ownerState.items.games || []).some(i => i.name === 'Game by team'));
+  // The owner MUST see the business-entered Balance entry on their Balance tab.
+  check('owner sees the business-entered BALANCE entry', (ownerState.items.balance || []).some(i => i.name === 'Cash drawer' && i.recordedBy === 'Team Cashier'));
+  // It must be remapped to the owner's LOCAL business id (b1), not the cloud id,
+  // so it shows under the b1 filter on the owner's Balance tab.
+  {
+    const teamBal = (ownerState.items.balance || []).find(i => i.name === 'Cash drawer');
+    const bizIds = teamBal && (Array.isArray(teamBal.bizIds) ? teamBal.bizIds : []);
+    check('business Balance entry is assigned to the owner local biz id (b1)', !!bizIds && bizIds.includes('b1'));
+    check('business Balance entry carries createdByBiz (marks it business-entered)', !!teamBal && !!teamBal.createdByBiz);
+  }
   check('owner still has the b2-only notice', notices.some(i => i.id === 2 && i.name === 'B2 only'));
   const b1 = ownerState.businesses.find(b => b.id === 'b1');
   check('owner business b1 secrets intact (password/email/devices)',
