@@ -8,10 +8,9 @@ It's an **opt-in layer**: the app keeps working locally as-is until you turn thi
 > snapshot per user, protected by Row-Level Security so nobody can read anyone
 > else's data. It gives you **real authentication, secure password storage
 > (handled by Supabase, not plaintext), and cross-device sync.**
-> It does **not** yet give live multi-user collaboration on the same business —
-> for that you migrate to the normalized tables sketched at the bottom of
-> `supabase/schema.sql`. Build that when you actually need members editing
-> concurrently.
+> For **shared business access** — where a business login gets the full app on
+> the same live data as the owner — also run `supabase/schema-shared.sql`
+> (Step 2b). That adds the per-business shared row + RLS that powers it.
 
 ---
 
@@ -26,6 +25,18 @@ It's an **opt-in layer**: the app keeps working locally as-is until you turn thi
    policies so each user can only ever read/write their own row. This is what
    prevents one user from accessing another's data — it's enforced by the
    database server, not the browser.
+
+## Step 2b — Enable shared business access
+1. New query → paste the entire contents of **`supabase/schema-shared.sql`** → **Run**.
+2. This adds `businesses`, `business_members`, and the shared `shared_state`
+   table, with RLS so the owner AND linked business logins read+write the same
+   per-business row (delete is owner-only). It also adds those tables to the
+   realtime publication so edits sync live.
+3. (Older deployments only) If you previously ran `schema-members.sql`, you can
+   drop the now-unused `shared_items` table — see the commented cleanup block at
+   the bottom of `schema-shared.sql`.
+4. To verify isolation locally without touching production, run
+   `node test/run-all.js` (uses an in-memory Postgres).
 
 ## Step 3 — Get your keys
 1. **Project Settings → API.**

@@ -1,6 +1,15 @@
-# Infos v15
+# Infos v16
 
-A Progressive Web App for managing multiple businesses, with view-only sharing for teammates. Local-first, installable, optional end-to-end encryption.
+A Progressive Web App for managing multiple businesses, with **shared business access** for teammates. Local-first, installable, optional end-to-end encryption.
+
+## What's new in v16
+
+### Shared business access (replaces view-only sharing)
+- A **business login** (email + password the owner sets) now gives the **full editable app** — not a read-only screen. Anyone with the login can sign in on any device and add/edit entries (balance, items, everything), just like the owner.
+- **Shared, live-synced data.** The owner and all business-login users edit the **same** data for that business. Changes sync live across every device via Supabase realtime.
+- **Per-business shared row.** Each shared business's data lives in one cloud row (`shared_state`), keyed by the business, that the owner and its team members all read and write. Row-Level Security guarantees a member can only touch their own business's data (cross-business access is blocked; delete is owner-only).
+- A business login gets every data tab fully editable, but not owner-account administration (managing other businesses, account delete/email/password, encryption/backup) — that stays with the owner.
+- The old published-copy / view-only member screen has been removed. See `docs/SHARED_BUSINESS_REWORK.md` and run `npm test` for the proof suite.
 
 ## What's new in v15
 
@@ -298,7 +307,7 @@ Then open http://localhost:8080.
 ## Sign-in
 
 - **Owner**: any email + 6+ character password (sign up — no demo)
-- **Business view-only**: email + password matching a business you created. Read-only access.
+- **Business (shared access)**: email + password the owner set for a business. Gives the full editable app on that business's shared, live-synced data.
 
 ## Allowed tabs
 

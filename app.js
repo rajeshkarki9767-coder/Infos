@@ -68,6 +68,15 @@
     }, 250);
   }
   function persistAll() {
+    // SHARED ACCESS: a business login's data lives ONLY in the shared cloud row,
+    // never in this device's local prefs (which may belong to an owner account
+    // on the same device). Persist just the lightweight device prefs locally and
+    // push the real data to the shared row.
+    if (state.__sharedMode) {
+      savePrefs({ theme: app.dataset.theme, accent: app.dataset.accent, customAccent: state.customAccent });
+      if (state.__sharedBusinessId) pushSharedState(false);
+      return;
+    }
     savePrefs({
       theme: app.dataset.theme, accent: app.dataset.accent,
       sidebarCollapsed: state.sidebarCollapsed,
@@ -93,36 +102,42 @@
       __lastBalRecorder: state.__lastBalRecorder
     });
     // If cloud sync is on, debounce-push the snapshot (avoids a request per keystroke).
-    if (window.Sync && window.Sync.status && window.Sync.status().enabled) {
+    // For a business login, the personal app_state is NOT used — its data lives
+    // in the shared row, pushed via pushSharedState below.
+    if (window.Sync && window.Sync.status && window.Sync.status().enabled && !state.__sharedMode) {
       clearTimeout(window.__cloudPushTimer);
       window.__cloudPushTimer = setTimeout(() => { try { window.Sync.pushNow(state); } catch {} }, 1500);
     }
-    // STAGE 5: if any businesses have been shared with a team, re-publish their
-    // allowed items (debounced) so member devices update live via realtime.
-    if (state.bizCloudMap && Object.keys(state.bizCloudMap).length &&
-        window.InfosSupabase && window.InfosSupabase.configured() && !state.__memberMode) {
+    // SHARED ACCESS: a business login writes every change to the shared cloud
+    // row so the owner and all other devices stay in sync (debounced).
+    if (state.__sharedMode && state.__sharedBusinessId) {
+      pushSharedState(false);
+    }
+    // OWNER: if any of the owner's businesses are shared with a team, mirror
+    // their slices to the shared cloud rows (debounced) so members see edits.
+    if (!state.__sharedMode && state.bizCloudMap && Object.keys(state.bizCloudMap).length &&
+        window.InfosSupabase && window.InfosSupabase.configured()) {
       clearTimeout(window.__sharePublishTimer);
-      window.__sharePublishTimer = setTimeout(() => { try { republishSharedBusinesses(); } catch {} }, 1800);
+      window.__sharePublishTimer = setTimeout(() => { try { pushOwnerSharedBusinesses(); } catch {} }, 1500);
     }
   }
 
-  // Re-publish the allowed-tab items for every shared business. Safe to call
-  // often (debounced by persistAll). Skips silently if not signed in to cloud.
-  async function republishSharedBusinesses() {
+  // OWNER side: for each shared business, push its current slice to the shared
+  // cloud row. Safe to call often (debounced). Skips when not cloud-connected.
+  async function pushOwnerSharedBusinesses() {
+    if (state.__sharedMode) return;
     if (!state.bizCloudMap || !window.InfosSupabase || !window.InfosSupabase.configured()) return;
+    if (typeof sharedApplyingRemote !== 'undefined' && sharedApplyingRemote) return;
+    const Slice = window.InfosSharedSlice;
     for (const localId of Object.keys(state.bizCloudMap)) {
       const cloudId = state.bizCloudMap[localId];
-      const b = bizById(localId);
-      if (!cloudId || !b) continue;
+      if (!cloudId || !bizById(localId)) continue;
       try {
-        const allowed = (state.bizAllowedTabs && state.bizAllowedTabs[localId]) || Object.keys(state.items);
-        const itemsByTab = {};
-        allowed.forEach(tab => {
-          const list = (state.items[tab] || []).filter(it => itemHasBiz(it, localId) && !it.deleted);
-          if (list.length) itemsByTab[tab] = list.map(it => sanitizeShared(it));
-        });
-        await window.InfosSupabase.adapter.publishBusiness({ cloudId, name: b.name, color: b.color });
-        await window.InfosSupabase.adapter.publishItems(cloudId, itemsByTab);
+        const slice = Slice.buildSharedSlice(state, localId, cloudId);
+        const expected = (state.bizCloudVersions && state.bizCloudVersions[cloudId]) || 0;
+        const v = await window.InfosSupabase.adapter.saveSharedState(cloudId, slice, expected);
+        if (!state.bizCloudVersions) state.bizCloudVersions = {};
+        state.bizCloudVersions[cloudId] = v;
       } catch (e) { /* leave for next save; not fatal */ }
     }
   }
@@ -273,6 +288,13 @@
 
   // ---------- Helpers ----------
   function isViewOnly() { return !!state.bizContext; }
+  // A SHARED LOGIN is a business-login user: full editable app, but scoped to
+  // one shared business. They get every DATA tab (and can add/edit/reorder), but
+  // not owner-account surfaces (managing other businesses, owner profile/delete).
+  function isSharedLogin() { return !!state.__sharedMode; }
+  // "Restricted" = either a legacy view-only biz session OR a shared login, for
+  // the purpose of hiding owner-account-management tabs (Businesses, etc.).
+  function hideOwnerOnly() { return isViewOnly() || isSharedLogin(); }
   function isTabAllowed(key) {
     if (!isViewOnly()) return true;
     const allowed = state.bizAllowedTabs && state.bizAllowedTabs[state.bizContext];
@@ -661,7 +683,7 @@
       // Owner-hidden (deleted) built-in tabs are skipped. businesses/trash can't be hidden.
       if (!isBiz && (state.hiddenTabs || []).includes(key) && key !== 'businesses' && key !== 'trash') return;
       const def = getTabDef(key); if (!def) return;
-      if (def.ownerOnly && isBiz) return;
+      if (def.ownerOnly && (isBiz || isSharedLogin())) return;
       const disp = tabDisp(key);
       if (def.expandable) {
         // v14: render as a flat single row, no expandable children.
@@ -752,7 +774,7 @@
   function setActive(tab, direction, ctx) {
     if (tab === 'logout') return doLogout();
     const def = getTabDef(tab); if (!def) return;
-    if (def.ownerOnly && isViewOnly()) { toast('Not available in view-only mode'); return; }
+    if (def.ownerOnly && hideOwnerOnly()) { toast('Not available for a business login'); return; }
 
     exitBulkMode();
 
@@ -1334,9 +1356,10 @@
   }
 
   // ---------- Business modal ----------
-  // Automatically publish a business to the cloud + ensure its team login exists.
-  // Called silently after saving a business (when cloud is configured). Safe to
-  // call repeatedly — if the member account already exists, it just updates data.
+  // Automatically set up SHARED ACCESS for a business: register its cloud row,
+  // ensure the team login (hidden Supabase account) exists, and push the current
+  // slice to the shared row. Called silently after saving a business (when cloud
+  // is configured). Safe to call repeatedly — idempotent on the member account.
   async function autoShareBusiness(b, plainPw) {
     if (!b || !window.InfosSupabase || !window.InfosSupabase.configured()) return;
     let pwPlain = plainPw || b.password || '';
@@ -1346,18 +1369,11 @@
     if (!b.email || !pwPlain) return; // need both to create the login
     try {
       const existingCloudId = (state.bizCloudMap && state.bizCloudMap[b.id]) || null;
-      const cloudId = await window.InfosSupabase.adapter.publishBusiness({ cloudId: existingCloudId, name: b.name, color: b.color });
+      const cloudId = await window.InfosSupabase.adapter.ensureSharedBusiness({ cloudId: existingCloudId, name: b.name, color: b.color });
       if (!state.bizCloudMap) state.bizCloudMap = {};
       state.bizCloudMap[b.id] = cloudId;
-      // Publish allowed-tab items.
-      const allowed = (state.bizAllowedTabs && state.bizAllowedTabs[b.id]) || Object.keys(state.items);
-      const itemsByTab = {};
-      allowed.forEach(tab => {
-        const list = (state.items[tab] || []).filter(it => itemHasBiz(it, b.id) && !it.deleted);
-        if (list.length) itemsByTab[tab] = list.map(it => sanitizeShared(it));
-      });
-      await window.InfosSupabase.adapter.publishItems(cloudId, itemsByTab);
       // Ensure the hidden member account exists (idempotent — ignore "already exists").
+      const allowed = (state.bizAllowedTabs && state.bizAllowedTabs[b.id]) || Object.keys(state.items);
       try {
         await window.InfosSupabase.Auth.createMember(cloudId, b.email, pwPlain, allowed);
       } catch (memErr) {
@@ -1365,6 +1381,13 @@
         if (!/already|exists|registered|duplicate/i.test(msg)) throw memErr;
         // Already exists — that's fine. (Password changes are handled separately.)
       }
+      // Push the current shared slice so the team login has live data to load.
+      const Slice = window.InfosSharedSlice;
+      const slice = Slice.buildSharedSlice(state, b.id, cloudId);
+      const expected = (state.bizCloudVersions && state.bizCloudVersions[cloudId]) || 0;
+      const v = await window.InfosSupabase.adapter.saveSharedState(cloudId, slice, expected);
+      if (!state.bizCloudVersions) state.bizCloudVersions = {};
+      state.bizCloudVersions[cloudId] = v;
       persistAll();
     } catch (e) {
       console.warn('autoShareBusiness error:', e);
@@ -1372,9 +1395,10 @@
     }
   }
 
-  // STAGE 4b: publish a business + its allowed-tab items to the cloud and
-  // create the hidden member account from the business login, so a team member
-  // can sign in on their own device and see this data live (read-only).
+  // Explicit "Share with team" action: set up SHARED EDITING for a business so
+  // the team can sign in on their own devices and get the FULL app on the SAME
+  // live data (not view-only). Registers the cloud row, creates the team login,
+  // and pushes the current slice.
   async function shareBusinessWithTeam(bizId) {
     const b = bizById(bizId);
     if (!b) return;
@@ -1392,26 +1416,19 @@
       toast('Set a business email and password first (in Edit business).');
       return;
     }
-    const allowed = (state.bizAllowedTabs && state.bizAllowedTabs[bizId]) || Object.keys(state.items);
     confirmAction({
       title: 'Share with team',
-      message: `This publishes "${b.name}" to the cloud so your team can sign in with its email (${b.email}) and password to VIEW the allowed tabs (${allowed.join(', ')}). They cannot edit. Continue?`,
+      message: `This shares "${b.name}" with your team. Anyone you give the email (${b.email}) and password to can sign in on their own device and get the FULL app on the same live data — they can add and edit entries together with you, and changes sync to everyone. Continue?`,
       confirmLabel: 'Share',
       onConfirm: async () => {
-        showFullScreenMessage({ icon: 'ti-cloud-share', title: 'Sharing with your team…', message: 'Publishing data and setting up the team login. One moment.', spinner: true });
+        showFullScreenMessage({ icon: 'ti-cloud-share', title: 'Setting up shared access…', message: 'Publishing data and setting up the team login. One moment.', spinner: true });
         try {
           const existingCloudId = (state.bizCloudMap && state.bizCloudMap[bizId]) || null;
-          const cloudId = await window.InfosSupabase.adapter.publishBusiness({ cloudId: existingCloudId, name: b.name, color: b.color });
+          const cloudId = await window.InfosSupabase.adapter.ensureSharedBusiness({ cloudId: existingCloudId, name: b.name, color: b.color });
           if (!state.bizCloudMap) state.bizCloudMap = {};
           state.bizCloudMap[bizId] = cloudId;
-          // Gather the allowed-tab items for this business.
-          const itemsByTab = {};
-          allowed.forEach(tab => {
-            const list = (state.items[tab] || []).filter(it => itemHasBiz(it, bizId) && !it.deleted);
-            if (list.length) itemsByTab[tab] = list.map(it => sanitizeShared(it));
-          });
-          await window.InfosSupabase.adapter.publishItems(cloudId, itemsByTab);
           // Create (or refresh) the hidden member account from the business login.
+          const allowed = (state.bizAllowedTabs && state.bizAllowedTabs[bizId]) || Object.keys(state.items);
           let memberMsg = '';
           try {
             await window.InfosSupabase.Auth.createMember(cloudId, b.email, pwPlain, allowed);
@@ -1420,13 +1437,20 @@
             // Most common: the member already exists from a previous share.
             memberMsg = /already|exists|registered/i.test(String(memErr && memErr.message))
               ? 'Team login already existed (data updated).'
-              : 'Data published, but team login could not be created: ' + (memErr && memErr.message || 'error');
+              : 'Set up, but team login could not be created: ' + (memErr && memErr.message || 'error');
           }
+          // Push the current shared slice up.
+          const Slice = window.InfosSharedSlice;
+          const slice = Slice.buildSharedSlice(state, bizId, cloudId);
+          const expected = (state.bizCloudVersions && state.bizCloudVersions[cloudId]) || 0;
+          const v = await window.InfosSupabase.adapter.saveSharedState(cloudId, slice, expected);
+          if (!state.bizCloudVersions) state.bizCloudVersions = {};
+          state.bizCloudVersions[cloudId] = v;
           persistAll();
           const fsm = document.getElementById('fullscreen-message'); if (fsm) fsm.remove();
           confirmAction({
             title: 'Shared with team',
-            message: `"${b.name}" is now shared. ${memberMsg}\n\nYour team can sign in at the app with:\nEmail: ${b.email}\nPassword: (the business password you set)\n\nThey'll see only: ${allowed.join(', ')} — view only.`,
+            message: `"${b.name}" is now a shared workspace. ${memberMsg}\n\nYour team can sign in at the app with:\nEmail: ${b.email}\nPassword: (the business password you set)\n\nThey get the full app on the same live data — add, edit, everything — synced to everyone.`,
             confirmLabel: 'Done',
             onConfirm: () => {}
           });
@@ -1436,13 +1460,6 @@
         }
       }
     });
-  }
-
-  // Strip anything that shouldn't leave the device into a shared item.
-  function sanitizeShared(it) {
-    const copy = Object.assign({}, it);
-    delete copy.password; delete copy.passwordEnc; delete copy.pin;
-    return copy;
   }
 
   async function openBusinessModal(editId) {
@@ -1572,7 +1589,7 @@
       // Automatically publish this business to the cloud so the team can sign in
       // with its email + password — no separate "Share" step needed. Runs in the
       // background; failures are non-fatal (local data is unaffected).
-      if (savedBiz && window.InfosSupabase && window.InfosSupabase.configured() && !state.__memberMode) {
+      if (savedBiz && window.InfosSupabase && window.InfosSupabase.configured() && !state.__sharedMode) {
         autoShareBusiness(savedBiz, pw).catch(e => console.warn('Auto-share failed:', e));
       }
     };
@@ -2305,7 +2322,7 @@
   // ---------- Export / Import ----------
   function exportAll() {
     const payload = {
-      _meta: { app: 'Infos', version: 15, exportedAt: Date.now() },
+      _meta: { app: 'Infos', version: 16, exportedAt: Date.now() },
       businesses: state.businesses,
       customTabs: state.customTabs,
       tabOrder: state.tabOrder,
@@ -2555,83 +2572,177 @@
   function pwVis(s) { return { pct: [0,25,50,75,100][s], color: ['#888780','#E24B4A','#EF9F27','#97C459','#1D9E75'][s] }; }
   $('#auth-password').oninput = () => { if (authMode !== 'signup') return; const { pct, color } = pwVis(pwScore($('#auth-password').value)); $('#pw-strength-bar').style.width = pct + '%'; $('#pw-strength-bar').style.background = color; };
   function showAuthError(m) { $('#auth-error').textContent = m; $('#auth-error').hidden = false; }
-  // Merge a pulled cloud snapshot into local state. Cloud is authoritative for
-  // user data; we keep device-local prefs (theme, etc.) as-is. Last-write-wins
-  // at the snapshot level (documented limitation of the snapshot sync model).
-  // STAGE 4: render a simple, read-only view for a signed-in team member.
-  // Members don't get the full owner app — just the business + allowed-tab
-  // items the owner shared with them, live from the cloud.
-  let memberRealtimeUnsub = null;
-  function enterMemberView(view, email) {
-    if (!view) {
-      showAuthError('No shared data found for this login yet. Ask the business owner to share data with you.');
-      try { window.InfosSupabase.Auth.signOut(); } catch {}
+  // ============================================================================
+  //  SHARED BUSINESS ACCESS  (replaces the old view-only member screen)
+  // ----------------------------------------------------------------------------
+  //  A business login is a real (hidden) Supabase account linked to one business.
+  //  When it signs in, we DON'T show a special screen — we load the FULL app
+  //  pointed at that business's SHARED cloud row. The member can add/edit
+  //  everything; saves write the shared row; realtime keeps every device live.
+  //  The owner edits the same row for that business, so it's one shared workspace.
+  // ============================================================================
+  const Slice = window.InfosSharedSlice;
+  let sharedRealtimeUnsub = null;     // realtime subscription teardown
+  let sharedApplyingRemote = false;   // guard: don't echo a remote apply back up
+  let sharedSaveTimer = null;
+
+  // Enter the full app as a business-login user, backed by the shared cloud row.
+  // `biz` = { id (cloud uuid), name, color, allowedTabs }. Loads the shared
+  // snapshot, hydrates state, renders the normal app, and goes live.
+  async function enterSharedBusiness(biz, email) {
+    if (!biz || !biz.id) {
+      showAuthError('This business login is not linked to any data yet. Ask the owner to set it up.');
+      try { await window.InfosSupabase.Auth.signOut(); } catch {}
       return;
     }
-    state.__memberMode = true;
-    state.__memberEmail = email;
-    // Hide everything else so only the member view shows (no overlap with the
-    // auth screen, main app, or any open modal).
+    let snap = null;
+    try { snap = await window.InfosSupabase.adapter.loadSharedState(biz.id); } catch (e) { console.warn('loadSharedState failed:', e); }
+
+    // First-ever sign-in before the owner has pushed anything: start from an
+    // empty slice carrying just the business identity, so the member still gets
+    // a working (empty) app and can add entries that sync up.
+    const slice = (snap && snap.data && snap.data.business)
+      ? snap.data
+      : { schema: Slice.SCHEMA, business: { id: biz.id, name: biz.name || 'Shared business', color: biz.color || '#378ADD' },
+          items: {}, itemOrder: {}, allowedTabs: biz.allowedTabs || null, tabOrder: null, customTabs: [], activity: [] };
+
+    // Hydrate the full local state from the slice and mark this session shared.
+    const ms = Slice.sliceToMemberState(slice, { email });
+    Object.assign(state, ms);
+    state.__sharedMode = true;
+    state.__sharedBusinessId = biz.id;
+    state.__sharedVersion = (snap && snap.version) || 0;
+    state.__sharedEmail = email;
+    // A business login is NOT bizContext (that was the old view-only flag) — it's
+    // a full editor scoped to one business. We surface it via __sharedMode.
+    state.bizContext = null;
+    state.user = { name: (biz.name || 'Business') + ' team', email };
+    state.activeBizId = biz.id;
+
+    // Reveal the main app (hide auth/splash), build nav, render.
     try {
       const auth = document.getElementById('screen-auth'); if (auth) auth.classList.remove('screen-active');
-      const main = document.getElementById('screen-main'); if (main) main.classList.remove('screen-active');
-      if (typeof closeModal === 'function') closeModal();
-      const modalContent = document.getElementById('modal-content');
-      if (modalContent) modalContent.innerHTML = '';
-      const modalEl = document.getElementById('modal'); if (modalEl) modalEl.hidden = true;
-      // Remove the boot splash if still up.
       const bs = document.getElementById('boot-splash'); if (bs) bs.remove();
     } catch {}
-    renderMemberView(view);
-    // STAGE 5 hook: subscribe to live updates (added in Stage 5).
-    try { if (window.InfosSupabase.Auth.subscribeMemberView) {
-      memberRealtimeUnsub = window.InfosSupabase.Auth.subscribeMemberView(view.business.id, () => {
-        window.InfosSupabase.Auth.fetchMemberView().then(v => { if (v) renderMemberView(v); }).catch(()=>{});
-      });
-    } } catch {}
+    screenMain.classList.add('screen-active');
+    state.history = [];
+    recordSignin({ email, name: state.user.name, kind: 'business', bizId: biz.id });
+    buildNav(); updateActiveBizDisplay();
+    setActive('notices');
+
+    // Go live: any change to the shared row re-hydrates this device.
+    subscribeShared(biz.id);
+
+    if (!state.__switchInProgress) {
+      showLoadingSplash(biz.name || 'Business', { action: 'signing-in', subtitle: `Signing in to ${biz.name || 'your business'}`, color: biz.color || null });
+      setTimeout(() => { hideLoadingSplash(); toast(`Signed in to ${biz.name || 'your business'}`); }, 1500);
+    }
   }
 
-  function renderMemberView(view) {
-    let main = document.getElementById('member-view-root');
-    if (!main) {
-      main = document.createElement('div');
-      main.id = 'member-view-root';
-      main.style.cssText = 'position:fixed;inset:0;z-index:2147483600;overflow:auto;background:var(--bg-primary,#FAFAF7);';
-      document.body.appendChild(main);
-    }
-    const b = view.business || {};
-    const tabs = view.allowedTabs || [];
-    const itemsByTab = view.itemsByTab || {};
-    const tint = b.color || '#378ADD';
-    const tabHTML = tabs.length ? tabs.map(t => {
-      const items = itemsByTab[t] || [];
-      const rows = items.length
-        ? items.map(it => {
-            const title = esc(String(it.name || it.title || it.recordedBy || 'Item'));
-            const sub = esc(String(it.notes || it.amount || it.value || ''));
-            return `<div class="member-item"><div class="member-item-title">${title}</div>${sub ? `<div class="member-item-sub">${sub}</div>` : ''}</div>`;
-          }).join('')
-        : `<div class="member-empty">No entries in ${esc(t)} yet.</div>`;
-      return `<section class="member-tab"><h2 class="member-tab-title">${esc(t)}</h2>${rows}</section>`;
-    }).join('') : `<div class="member-empty">No tabs have been shared with you yet.</div>`;
-    main.innerHTML = `
-      <div class="member-view" style="--member-tint:${tint};">
-        <header class="member-head">
-          <div class="member-biz">${esc(b.name || 'Shared business')}</div>
-          <div class="member-badge">View only</div>
-          <button id="member-signout" class="btn-outline btn-sm">Sign out</button>
-        </header>
-        <div class="member-body">${tabHTML}</div>
-        <div class="member-foot">You're viewing data shared by the business owner. Updates appear automatically.</div>
-      </div>`;
-    const so = $('#member-signout');
-    if (so) so.onclick = async () => {
-      try { if (memberRealtimeUnsub) memberRealtimeUnsub(); } catch {}
-      memberRealtimeUnsub = null;
-      try { await window.InfosSupabase.Auth.signOut(); } catch {}
-      state.__memberMode = false;
-      location.reload();
+  // Subscribe to the shared row; on remote change, pull + re-apply without
+  // bouncing the change straight back to the cloud.
+  function subscribeShared(cloudBusinessId) {
+    try { if (sharedRealtimeUnsub) sharedRealtimeUnsub(); } catch {}
+    sharedRealtimeUnsub = null;
+    if (!(window.InfosSupabase && window.InfosSupabase.adapter.subscribeSharedState)) return;
+    sharedRealtimeUnsub = window.InfosSupabase.adapter.subscribeSharedState(cloudBusinessId, () => {
+      refreshSharedFromCloud(cloudBusinessId);
+    });
+  }
+
+  // Pull the latest shared snapshot and re-render. Used by realtime + on resume.
+  async function refreshSharedFromCloud(cloudBusinessId) {
+    try {
+      const snap = await window.InfosSupabase.adapter.loadSharedState(cloudBusinessId);
+      if (!snap || !snap.data) return;
+      // Ignore our own just-written version (no-op) to avoid render churn.
+      if ((snap.version || 0) <= (state.__sharedVersion || 0)) return;
+      sharedApplyingRemote = true;
+      if (state.__sharedMode) {
+        const ms = Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail });
+        // Preserve view position; swap data underneath.
+        Object.assign(state, ms);
+        state.__sharedMode = true;
+        state.__sharedBusinessId = cloudBusinessId;
+        state.__sharedVersion = snap.version || 0;
+        state.user = state.user || { name: (snap.data.business && snap.data.business.name || 'Business') + ' team', email: state.__sharedEmail };
+        setActive(state.currentTab || 'notices', 'fade');
+      } else {
+        // Owner viewing this shared business: merge the slice into full state.
+        // Map the cloud id back to the owner's local business id.
+        let localBizId = null;
+        if (state.bizCloudMap) {
+          for (const lid of Object.keys(state.bizCloudMap)) {
+            if (state.bizCloudMap[lid] === cloudBusinessId) { localBizId = lid; break; }
+          }
+        }
+        Slice.applySliceToOwnerState(state, snap.data, localBizId);
+        if (!state.bizCloudVersions) state.bizCloudVersions = {};
+        state.bizCloudVersions[cloudBusinessId] = snap.version || 0;
+        persistAll();
+        setActive(state.currentTab || 'notices', 'fade');
+      }
+    } catch (e) { console.warn('refreshSharedFromCloud failed:', e); }
+    finally { sharedApplyingRemote = false; }
+  }
+
+  // Push the current shared-business slice up to the cloud (debounced). Called
+  // from persistAll when in shared mode, or by the owner after editing a shared
+  // business. Last-write-wins on the version (documented).
+  function pushSharedState(immediate) {
+    if (sharedApplyingRemote) return;            // don't echo a remote apply
+    if (!(window.InfosSupabase && window.InfosSupabase.configured())) return;
+    clearTimeout(sharedSaveTimer);
+    const doPush = async () => {
+      try {
+        if (state.__sharedMode) {
+          const slice = Slice.memberStateToSlice(state);
+          if (!slice) return;
+          const v = await window.InfosSupabase.adapter.saveSharedState(
+            state.__sharedBusinessId, slice, state.__sharedVersion || 0);
+          state.__sharedVersion = v;
+        }
+      } catch (e) { console.warn('pushSharedState failed:', e); }
     };
+    if (immediate) doPush(); else sharedSaveTimer = setTimeout(doPush, 900);
+  }
+
+  // OWNER side: subscribe to live changes on every business the owner has shared
+  // and pull their current shared rows once, so the owner's app reflects members'
+  // edits live. Called after owner sign-in / boot when cloud is configured.
+  let ownerSharedUnsubs = [];
+  async function startOwnerSharedSync() {
+    // Tear down any prior subscriptions first.
+    ownerSharedUnsubs.forEach(fn => { try { fn(); } catch {} });
+    ownerSharedUnsubs = [];
+    if (state.__sharedMode) return; // a business login handles its own sync
+    if (!(window.InfosSupabase && window.InfosSupabase.configured())) return;
+    if (!state.bizCloudMap) return;
+    for (const localId of Object.keys(state.bizCloudMap)) {
+      const cloudId = state.bizCloudMap[localId];
+      if (!cloudId || !bizById(localId)) continue;
+      // Initial pull: apply whatever members have done since we were last on.
+      try {
+        const snap = await window.InfosSupabase.adapter.loadSharedState(cloudId);
+        if (snap && snap.data && (snap.version || 0) > ((state.bizCloudVersions && state.bizCloudVersions[cloudId]) || 0)) {
+          sharedApplyingRemote = true;
+          Slice.applySliceToOwnerState(state, snap.data, localId);
+          if (!state.bizCloudVersions) state.bizCloudVersions = {};
+          state.bizCloudVersions[cloudId] = snap.version || 0;
+          sharedApplyingRemote = false;
+          persistAll();
+        }
+      } catch (e) { sharedApplyingRemote = false; }
+      // Live subscription.
+      try {
+        const unsub = window.InfosSupabase.adapter.subscribeSharedState(cloudId, () => {
+          refreshSharedFromCloud(cloudId);
+        });
+        ownerSharedUnsubs.push(unsub);
+      } catch {}
+    }
+    // Re-render in case the initial pull changed anything.
+    try { if (state.user) setActive(state.currentTab || 'notices', 'fade'); } catch {}
   }
 
   function mergeCloudState(remote) {
@@ -2721,18 +2832,18 @@
           btn.textContent = original; btn.disabled = false;
           return;
         }
-        // STAGE 4: is this a TEAM MEMBER (business login)? If so, render the
-        // read-only member view from the cloud instead of the owner experience.
+        // Is this a business login (a member account linked to a shared
+        // business)? If so, load the FULL editable app pointed at the shared
+        // cloud row — not a special screen, and not view-only.
         try {
-          const membership = await window.InfosSupabase.Auth.getMembership();
-          if (membership) {
-            const view = await window.InfosSupabase.Auth.fetchMemberView();
+          const biz = await window.InfosSupabase.Auth.getMemberBusiness();
+          if (biz) {
             btn.textContent = original; btn.disabled = false;
-            enterMemberView(view, email);
+            await enterSharedBusiness(biz, email);
             return;
           }
         } catch (memErr) {
-          console.warn('Member check failed, continuing as owner:', memErr);
+          console.warn('Business-login check failed, continuing as owner:', memErr);
         }
         // Turn on sync and pull any existing cloud state for this user.
         try {
@@ -2962,6 +3073,11 @@
     screenAuth.classList.remove('screen-active');
     screenMain.classList.add('screen-active');
     state.history = [];
+    // OWNER: if this is a cloud owner with shared businesses, go live on their
+    // shared rows so members' edits appear without a manual refresh.
+    if (!asBizId && window.InfosSupabase && window.InfosSupabase.configured()) {
+      try { startOwnerSharedSync(); } catch {}
+    }
     // Record this sign-in for the quick-switch list on the auth screen.
     recordSignin({ email, name, kind: asBizId ? 'business' : 'owner', bizId: asBizId || null });
     if (asBizId) recordActivity(bizById(asBizId), 'signin', `${name} signed in`);
@@ -3464,10 +3580,20 @@
   }
 
   function logout() {
+    // SHARED ACCESS: tear down the shared session cleanly. Flush any pending
+    // edit to the shared row FIRST, then stop realtime and clear shared flags so
+    // the emptied state isn't pushed up and local owner data isn't touched.
+    const wasShared = !!state.__sharedMode;
+    if (wasShared) {
+      try { pushSharedState(true); } catch {}
+      try { if (sharedRealtimeUnsub) sharedRealtimeUnsub(); } catch {}
+      sharedRealtimeUnsub = null;
+      clearTimeout(sharedSaveTimer);
+    }
     // Push any final local changes to the cloud, then sign out of Supabase.
     if (window.InfosSupabase && window.InfosSupabase.configured()) {
       try {
-        if (window.Sync && Sync.status().enabled) { Sync.pushNow(state).catch(() => {}); }
+        if (!wasShared && window.Sync && Sync.status().enabled) { Sync.pushNow(state).catch(() => {}); }
         window.InfosSupabase.Auth.signOut().catch(() => {});
         if (window.Sync) Sync.disable();
       } catch {}
@@ -3475,6 +3601,14 @@
     // Stop the heartbeat and mark this device's session ended for the biz it was in
     if (state.bizContext) endBizDeviceSessionLocal(state.bizContext);
     if (window.__bizHeartbeatId) { clearInterval(window.__bizHeartbeatId); window.__bizHeartbeatId = null; }
+    // A business login holds only the shared business's data in memory; reload to
+    // restore this device's own (owner/local) state cleanly from storage.
+    if (wasShared) {
+      state.__sharedMode = false; state.__sharedBusinessId = null; state.__sharedVersion = 0;
+      try { window.InfosSupabase && window.InfosSupabase.Auth.signOut().catch(() => {}); } catch {}
+      location.reload();
+      return;
+    }
     state.user = null; state.bizContext = null; state.activeBizId = 'all'; state.activeTagId = null;
     state.history = [];
     headerBadge.hidden = true;
@@ -5562,17 +5696,31 @@
   function profileBodyHTML() {
     if (!state.user) return '';
     const bizCtx = state.bizContext ? bizById(state.bizContext) : null;
-    const displayName = bizCtx ? (bizCtx.name + ' team') : state.user.name;
+    const shared = isSharedLogin();
+    // The signed-in business name for a shared login (its single business).
+    const sharedBiz = shared ? (state.businesses && state.businesses[0]) : null;
+    const displayName = bizCtx ? (bizCtx.name + ' team')
+                      : shared ? ((sharedBiz && sharedBiz.name ? sharedBiz.name : 'Business') + ' team')
+                      : state.user.name;
     const displayEmail = state.user.email;
+    const showOwnerAccount = !bizCtx && !shared;
     return `
       <div class="profile-head">
-        ${bizCtx ? bizAvatarHTML(bizCtx, 64) : `<div class="profile-avatar">${displayName.charAt(0).toUpperCase()}</div>`}
+        ${bizCtx ? bizAvatarHTML(bizCtx, 64) : sharedBiz ? bizAvatarHTML(sharedBiz, 64) : `<div class="profile-avatar">${displayName.charAt(0).toUpperCase()}</div>`}
         <div style="flex:1;min-width:0;">
           <div class="profile-name">${esc(displayName)}</div>
           <div class="profile-email">${esc(displayEmail)}</div>
         </div>
       </div>
-      ${!bizCtx ? `
+      ${shared ? `
+        <div class="profile-card">
+          <div class="profile-card-head"><div class="section-label">Shared business</div></div>
+          <div style="font-size:13px;color:var(--text-secondary);line-height:1.55;">
+            You're signed in to a shared business. You have the full app and your changes sync live to everyone on this business. The business owner manages the login credentials and account.
+          </div>
+        </div>
+      ` : ''}
+      ${showOwnerAccount ? `
         <div class="profile-card">
           <div class="profile-card-head"><div class="section-label">Your name</div></div>
           <div class="field">
@@ -5623,7 +5771,7 @@
     const bizCtx = state.bizContext ? bizById(state.bizContext) : null;
     const signout = c.querySelector('#profile-signout');
     if (signout) signout.onclick = () => doLogout();
-    if (bizCtx) return;
+    if (bizCtx || isSharedLogin()) return;
     const nameSave = c.querySelector('#pp-name-save');
     if (nameSave) nameSave.onclick = () => {
       const newName = c.querySelector('#pp-name').value.trim();
@@ -5888,7 +6036,10 @@
 
   function renderSettings(c) {
     const bizCtx = state.bizContext ? bizById(state.bizContext) : null;
-    const isViewer = isViewOnly();
+    // A legacy view-only business session OR a shared business login gets the
+    // restricted Settings (Appearance + About) — no owner-level Management/Backup
+    // (encryption, export/import/clear) that would act on the shared data.
+    const isViewer = isViewOnly() || isSharedLogin();
     // Business users get only Profile and About
     const tabs = isViewer
       ? [['appearance','Profile','user'], ['about','About','info-circle']]
@@ -6418,17 +6569,16 @@
       try {
         const sbUser = await window.InfosSupabase.Auth.currentUser();
         if (sbUser) {
-          // STAGE 4: if this session is a team member, render the member view
-          // and skip the owner data load entirely.
+          // If this session is a business login, load the FULL editable app
+          // against the shared cloud row and skip the owner data load.
           try {
-            const membership = await window.InfosSupabase.Auth.getMembership();
-            if (membership) {
-              const view = await window.InfosSupabase.Auth.fetchMemberView();
+            const biz = await window.InfosSupabase.Auth.getMemberBusiness();
+            if (biz) {
               hideBootSplash();
-              enterMemberView(view, sbUser.email || '');
+              await enterSharedBusiness(biz, sbUser.email || '');
               return;
             }
-          } catch (memErr) { console.warn('Member bootstrap check failed:', memErr); }
+          } catch (memErr) { console.warn('Business-login bootstrap check failed:', memErr); }
           try { const sub = document.getElementById('boot-splash-sub'); if (sub) sub.textContent = 'Syncing your data…'; } catch {}
           await window.Sync.enable('supabase');
           state.syncAdapter = 'supabase';
@@ -6442,6 +6592,8 @@
             state.accounts.push({ email, name: nm, cloud: true, createdAt: Date.now() });
           }
           if (!state.user && email) state.user = { name: nm, email };
+          // OWNER: go live on any shared businesses so members' edits appear.
+          try { await startOwnerSharedSync(); } catch (e) { console.warn('owner shared sync start failed', e); }
         } else {
           // CLOUD MODE, NO VALID SESSION → the user is NOT logged in. The Supabase
           // session is the source of truth here, so we must clear any stale local

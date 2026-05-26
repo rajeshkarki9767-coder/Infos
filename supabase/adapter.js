@@ -179,44 +179,16 @@
       return { businessId: data[0].business_id, allowedTabs: data[0].allowed_tabs || [] };
     },
 
-    // Fetch the business + shared items a member is allowed to read. RLS scopes
-    // this to exactly their allowed business/tabs, so even a crafted query can't
-    // over-read. Returns { business, itemsByTab } or null.
-    async fetchMemberView() {
+    // Fetch the business row (name/color) a member is linked to. RLS scopes the
+    // read to exactly the member's business. Returns { id, name, color } or null.
+    async getMemberBusiness() {
       const c = getClient(); if (!c) return null;
       const m = await Auth.getMembership();
       if (!m) return null;
       const { data: bizRows } = await c.from('businesses')
         .select('id, name, color').eq('id', m.businessId);
       const business = (bizRows && bizRows[0]) || { id: m.businessId, name: 'Shared business', color: '#378ADD' };
-      const { data: itemRows } = await c.from('shared_items')
-        .select('tab, data').eq('business_id', m.businessId);
-      const itemsByTab = {};
-      (itemRows || []).forEach(r => { (itemsByTab[r.tab] = itemsByTab[r.tab] || []).push(r.data); });
-      return { business, allowedTabs: m.allowedTabs, itemsByTab };
-    },
-
-    // STAGE 5: subscribe to live changes on a business's shared data so a member
-    // device updates automatically (no manual refresh). Calls `onChange` whenever
-    // shared_items or the business row changes. Returns an unsubscribe function.
-    // RLS still applies to the re-fetch, so members only ever pull their slice.
-    subscribeMemberView(businessId, onChange) {
-      const c = getClient(); if (!c || !businessId) return () => {};
-      let channel;
-      try {
-        channel = c.channel('member-' + businessId)
-          .on('postgres_changes',
-            { event: '*', schema: 'public', table: 'shared_items', filter: `business_id=eq.${businessId}` },
-            () => { try { onChange && onChange(); } catch {} })
-          .on('postgres_changes',
-            { event: '*', schema: 'public', table: 'businesses', filter: `id=eq.${businessId}` },
-            () => { try { onChange && onChange(); } catch {} })
-          .subscribe();
-      } catch (e) {
-        // Realtime unavailable — member view still works, just not live.
-        return () => {};
-      }
-      return () => { try { c.removeChannel(channel); } catch {} };
+      return { ...business, allowedTabs: m.allowedTabs };
     },
 
     async resetPassword(email) {
@@ -299,11 +271,11 @@
       return true;
     },
 
-    // ---- STAGE 3: owner publishes the view-only slice for team members ----
-    // Create or update a cloud `businesses` row for one of the owner's
-    // businesses. Returns the cloud UUID (caller stores it to map local→cloud).
-    // `cloudId` is the existing UUID if we've published this biz before.
-    async publishBusiness({ cloudId, name, color }) {
+    // ---- SHARED BUSINESS ACCESS: register + read + write the shared row ----
+    // The owner registers a business in the cloud (creates the `businesses` row)
+    // so it can be shared. Returns the cloud UUID. `cloudId` updates an existing
+    // row (rename/recolor) instead of creating a duplicate.
+    async ensureSharedBusiness({ cloudId, name, color }) {
       const c = getClient(); if (!c) throw new Error('Supabase not configured');
       const user = await Auth.currentUser();
       if (!user) throw new Error('Not signed in');
@@ -321,37 +293,74 @@
       return data.id;
     },
 
-    // Replace the published items for a business's allowed tabs. We delete the
-    // existing shared_items for this business then insert the current allowed
-    // slice — simple and correct (members are read-only; volume is small).
-    // `itemsByTab` = { notices: [ {..}, ... ], balance: [...] } (allowed tabs only)
-    async publishItems(cloudBusinessId, itemsByTab) {
+    // Read the live shared snapshot for a business. RLS lets only the owner or a
+    // linked member read it. Returns { data, version, updatedAt } or null if no
+    // row exists yet. Works for both owner and member callers.
+    async loadSharedState(businessCloudId) {
+      const c = getClient(); if (!c) throw new Error('Supabase not configured');
+      if (!businessCloudId) throw new Error('businessCloudId required');
+      const { data, error } = await c.from('shared_state')
+        .select('data, version, updated_at')
+        .eq('business_cloud_id', businessCloudId)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return null;
+      return { data: data.data || {}, version: data.version || 0, updatedAt: data.updated_at || null };
+    },
+
+    // Write the live shared snapshot for a business (upsert). RLS lets only the
+    // owner or a linked member write it. `expectedVersion` enables an optional
+    // optimistic-concurrency guard; pass the version you last read. Returns the
+    // new version, or throws { code:'conflict' } if another writer advanced it.
+    async saveSharedState(businessCloudId, data, expectedVersion) {
       const c = getClient(); if (!c) throw new Error('Supabase not configured');
       const user = await Auth.currentUser();
       if (!user) throw new Error('Not signed in');
-      // Clear existing published items for this business (RLS scopes to owner).
-      const { error: delErr } = await c.from('shared_items').delete().eq('business_id', cloudBusinessId);
-      if (delErr) throw delErr;
-      const rows = [];
-      Object.keys(itemsByTab || {}).forEach(tab => {
-        (itemsByTab[tab] || []).forEach(item => {
-          rows.push({ business_id: cloudBusinessId, tab, data: item });
-        });
-      });
-      if (rows.length) {
-        const { error: insErr } = await c.from('shared_items').insert(rows);
-        if (insErr) throw insErr;
-      }
-      return rows.length;
+      if (!businessCloudId) throw new Error('businessCloudId required');
+      const nextVersion = (Number(expectedVersion) || 0) + 1;
+      const row = {
+        business_cloud_id: businessCloudId,
+        data: data || {},
+        version: nextVersion,
+        updated_at: new Date().toISOString(),
+        updated_by: user.id
+      };
+      const { error } = await c.from('shared_state').upsert(row, { onConflict: 'business_cloud_id' });
+      if (error) throw error;
+      return nextVersion;
     },
 
-    // Remove a published business (and its items/members cascade) from the cloud.
-    async unpublishBusiness(cloudBusinessId) {
+    // Live updates: subscribe to the shared row for a business. `onChange` fires
+    // (with the new row payload when available) whenever the shared snapshot or
+    // the business record changes. Returns an unsubscribe function. RLS still
+    // applies to the realtime stream, so only authorized devices receive events.
+    subscribeSharedState(businessCloudId, onChange) {
+      const c = getClient(); if (!c || !businessCloudId) return () => {};
+      let channel;
+      try {
+        channel = c.channel('shared-' + businessCloudId)
+          .on('postgres_changes',
+            { event: '*', schema: 'public', table: 'shared_state', filter: `business_cloud_id=eq.${businessCloudId}` },
+            (payload) => { try { onChange && onChange(payload && payload.new); } catch {} })
+          .on('postgres_changes',
+            { event: '*', schema: 'public', table: 'businesses', filter: `id=eq.${businessCloudId}` },
+            () => { try { onChange && onChange(null); } catch {} })
+          .subscribe();
+      } catch (e) {
+        // Realtime unavailable — shared access still works, just not live.
+        return () => {};
+      }
+      return () => { try { c.removeChannel(channel); } catch {} };
+    },
+
+    // Remove a shared business from the cloud (owner only; cascades to
+    // shared_state + business_members). Used when the owner unshares/deletes.
+    async removeSharedBusiness(businessCloudId) {
       const c = getClient(); if (!c) throw new Error('Supabase not configured');
       const user = await Auth.currentUser();
       if (!user) throw new Error('Not signed in');
       const { error } = await c.from('businesses').delete()
-        .eq('id', cloudBusinessId).eq('owner_id', user.id);
+        .eq('id', businessCloudId).eq('owner_id', user.id);
       if (error) throw error;
       return true;
     }

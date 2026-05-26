@@ -1,0 +1,19 @@
+{
+  "name": "infos",
+  "version": "16.0.0",
+  "private": true,
+  "description": "Infos PWA — multi-business info manager with shared business access (full editable app on shared, live-synced data).",
+  "scripts": {
+    "test": "node test/run-all.js",
+    "test:rls": "node test/rls.test.js",
+    "test:adapter": "node test/adapter.test.js",
+    "test:slice": "node test/slice.test.js",
+    "test:e2e": "node test/e2e.test.js",
+    "test:smoke": "node test/smoke.test.js",
+    "serve": "python3 -m http.server 8080"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.4.6",
+    "jsdom": "^29.1.1"
+  }
+}

@@ -1,5 +1,11 @@
 # Infos — Member Cloud Sync: Build Spec
 
+> **SUPERSEDED.** This document describes the original VIEW-ONLY member design
+> (published-copy `shared_items` model). That approach was replaced by SHARED
+> EDITING — see `docs/SHARED_BUSINESS_REWORK.md` and `supabase/schema-shared.sql`.
+> Business logins now get the full editable app on shared, live-synced data.
+> Kept for historical context only.
+
 This document is the plan for adding **always-live cloud sync for business (team) logins**.
 Hand this to a fresh chat to start the build cleanly, or follow it stage by stage.
 

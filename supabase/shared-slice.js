@@ -1,0 +1,256 @@
+// ============================================================================
+//  Infos — shared business slice helpers
+// ----------------------------------------------------------------------------
+//  Pure functions (no DOM, no globals) that convert between the app's local
+//  `state` and the per-business SHARED snapshot stored in the `shared_state`
+//  cloud row. Kept dependency-free so they can be unit-tested in Node and
+//  reused by app.js (loaded as a normal <script>, attaches to window).
+//
+//  THE SHARED SNAPSHOT SHAPE  (one per business, the live shared row's `data`)
+//    {
+//      schema: 1,
+//      business: { id, name, color, logo? },     // the business record (sans secrets)
+//      items:    { tabKey: [ item, ... ] },       // ONLY items assigned to this biz
+//      itemOrder:    { tabKey: [itemId,...] },     // this biz's per-tab ordering
+//      allowedTabs:  [ ... ] | null,               // optional UI scoping (not security)
+//      tabOrder:     [ ... ] | null,               // this biz's tab ordering
+//      customTabs:   [ ... ],                       // custom tab defs used by this biz
+//      activity:     [ ... ]                        // activity entries touching this biz
+//    }
+//
+//  WHY a per-business slice (not the owner's whole state): the owner may own
+//  many businesses in one personal app_state; only ONE business's data is
+//  shared with a given team. The slice is the unit both owner and members edit.
+// ============================================================================
+
+(function (root) {
+  'use strict';
+
+  var SCHEMA = 1;
+
+  function itemBizIds(it) {
+    if (!it) return [];
+    if (Array.isArray(it.bizIds)) return it.bizIds;
+    if (it.bizId) return [it.bizId];
+    return [];
+  }
+  function itemHasBiz(it, bizId) { return itemBizIds(it).indexOf(bizId) !== -1; }
+
+  // Strip secrets that must never travel to the cloud.
+  function sanitizeItem(it) {
+    var copy = Object.assign({}, it);
+    delete copy.password; delete copy.passwordEnc; delete copy.pin;
+    return copy;
+  }
+  function sanitizeBusiness(b) {
+    var copy = Object.assign({}, b);
+    delete copy.password; delete copy.passwordEnc;
+    // devices/heartbeat are owner-side bookkeeping; not needed in the shared slice.
+    delete copy.devices;
+    return copy;
+  }
+
+  // Build the shared snapshot for ONE business out of the full local `state`.
+  // `bizId` is the LOCAL business id. `cloudId` (optional) is the business's
+  // cloud uuid; when given, item assignments and the business id are normalized
+  // to the cloud id so the slice is portable across devices (the owner's local
+  // id and the member's view of the same business must agree). Defaults to the
+  // local id when no cloudId is provided (e.g. member-side rebuilds).
+  function buildSharedSlice(state, bizId, cloudId) {
+    state = state || {};
+    var canonical = cloudId || bizId;
+    var items = state.items || {};
+    var sliceItems = {};
+    Object.keys(items).forEach(function (tab) {
+      var list = (items[tab] || []).filter(function (it) {
+        return itemHasBiz(it, bizId) && !it.deleted;
+      }).map(function (it) {
+        var clean = sanitizeItem(it);
+        // Normalize this business's assignment to the canonical (cloud) id while
+        // preserving any OTHER business assignments the item may carry.
+        var others = itemBizIds(it).filter(function (id) { return id !== bizId && id !== canonical; });
+        clean.bizIds = others.concat([canonical]);
+        delete clean.bizId;
+        return clean;
+      });
+      if (list.length) sliceItems[tab] = list;
+    });
+
+    var bizSrc = (state.businesses || []).filter(function (b) { return b.id === bizId; })[0] || { id: bizId };
+    var biz = sanitizeBusiness(bizSrc);
+    biz.id = canonical;            // the slice always identifies the business by its cloud id
+    biz.localId = bizId;           // hint for the owner's apply (ignored by members)
+
+    var activity = (state.globalActivity || []).filter(function (ev) {
+      if (!ev) return false;
+      var bids = ev.bizIds || (ev.bizId ? [ev.bizId] : []);
+      return bids.indexOf(bizId) !== -1;
+    }).map(function (ev) {
+      var copy = Object.assign({}, ev);
+      copy.bizIds = (ev.bizIds || (ev.bizId ? [ev.bizId] : [])).map(function (id) { return id === bizId ? canonical : id; });
+      return copy;
+    });
+
+    return {
+      schema: SCHEMA,
+      business: biz,
+      items: sliceItems,
+      itemOrder: remapOrder((state.itemOrder && state.itemOrder[bizId]) || {}, bizId, canonical),
+      allowedTabs: (state.bizAllowedTabs && state.bizAllowedTabs[bizId]) || null,
+      tabOrder: (state.bizTabOrder && state.bizTabOrder[bizId]) || null,
+      customTabs: (state.customTabs || []).slice(),
+      activity: activity
+    };
+  }
+
+  // itemOrder is keyed by tab -> [itemId,...]; ids are unaffected by biz id, so
+  // this is a pass-through today, kept as a hook if ordering ever embeds biz ids.
+  function remapOrder(order /*, fromId, toId */) { return order || {}; }
+
+  // Turn a shared snapshot into a FULL local `state` for a business-login user.
+  // The member runs the normal app against this state: one business, its items,
+  // its ordering. `email`/`name` describe the signed-in member for display.
+  function sliceToMemberState(slice, opts) {
+    slice = slice || {};
+    opts = opts || {};
+    var biz = slice.business || { id: slice.businessId || 'shared', name: 'Shared business', color: '#378ADD' };
+    var items = {
+      notices: [], system: [], games: [], schedule: [], balance: [],
+      'idpass-system': [], 'idpass-accounts': []
+    };
+    Object.keys(slice.items || {}).forEach(function (tab) {
+      items[tab] = (slice.items[tab] || []).slice();
+    });
+
+    var bizAllowedTabs = {}; if (slice.allowedTabs) bizAllowedTabs[biz.id] = slice.allowedTabs;
+    var bizTabOrder = {};    if (slice.tabOrder)    bizTabOrder[biz.id]    = slice.tabOrder;
+    var itemOrder = {};      itemOrder[biz.id] = slice.itemOrder || {};
+
+    // Highest item id present, so new local entries don't collide.
+    var maxId = 0;
+    Object.keys(items).forEach(function (tab) {
+      items[tab].forEach(function (it) {
+        var n = parseInt(String(it.id).replace(/\D/g, ''), 10);
+        if (!isNaN(n) && n > maxId) maxId = n;
+      });
+    });
+
+    return {
+      businesses: [biz],
+      items: items,
+      itemOrder: itemOrder,
+      bizAllowedTabs: bizAllowedTabs,
+      bizTabOrder: bizTabOrder,
+      customTabs: (slice.customTabs || []).slice(),
+      globalActivity: (slice.activity || []).slice(),
+      nextItemId: maxId + 1,
+      // The member is "signed into" this one business — full edit, scoped to it.
+      activeBizId: biz.id,
+      __sharedBusinessId: biz.id
+    };
+  }
+
+  // Merge a member's full edited state BACK into a shared slice for upload.
+  // The member state holds exactly one business keyed by the CLOUD id, so we
+  // re-extract with that id as both the local and canonical id.
+  function memberStateToSlice(state) {
+    var bizId = state && (state.__sharedBusinessId ||
+      (state.businesses && state.businesses[0] && state.businesses[0].id));
+    if (!bizId) return null;
+    return buildSharedSlice(state, bizId, bizId);
+  }
+
+  // Merge a freshly-pulled shared slice into an OWNER's full state in place:
+  // replace that business's items across tabs with the shared copy, update the
+  // business record, ordering, and merge activity. Returns the mutated state.
+  // This is how the owner sees members' live edits to a shared business.
+  //
+  // The slice identifies the business by its CLOUD id. `localBizId` is the
+  // owner's local id for the same business; incoming items/business are remapped
+  // from the cloud id back to the local id. If omitted, falls back to
+  // slice.business.localId, then to the cloud id itself.
+  function applySliceToOwnerState(state, slice, localBizId) {
+    if (!state || !slice) return state;
+    var biz = slice.business || {};
+    var cloudId = biz.id;
+    if (!cloudId) return state;
+    var localId = localBizId || biz.localId || cloudId;
+
+    function remapItem(it) {
+      var copy = Object.assign({}, it);
+      var ids = itemBizIds(it).map(function (id) { return id === cloudId ? localId : id; });
+      // de-dupe in case both ids were present
+      copy.bizIds = ids.filter(function (id, i) { return ids.indexOf(id) === i; });
+      delete copy.bizId;
+      return copy;
+    }
+
+    state.items = state.items || {};
+    var tabs = {};
+    Object.keys(state.items).forEach(function (t) { tabs[t] = true; });
+    Object.keys(slice.items || {}).forEach(function (t) { tabs[t] = true; });
+    Object.keys(tabs).forEach(function (tab) {
+      var existing = (state.items[tab] || []).filter(function (it) {
+        // Keep items NOT belonging to this business, and keep trashed ones
+        // (trash is owner-local and not shared).
+        return !itemHasBiz(it, localId) || it.deleted;
+      });
+      var incoming = (slice.items[tab] || []).map(remapItem);
+      state.items[tab] = existing.concat(incoming);
+    });
+
+    // Update the business record (name/color/logo) from the shared copy, keyed
+    // by the owner's LOCAL id, preserving owner-only secrets.
+    state.businesses = state.businesses || [];
+    var idx = -1;
+    for (var i = 0; i < state.businesses.length; i++) { if (state.businesses[i].id === localId) { idx = i; break; } }
+    if (idx >= 0) {
+      var keep = {
+        id: localId,
+        password: state.businesses[idx].password,
+        passwordEnc: state.businesses[idx].passwordEnc,
+        email: state.businesses[idx].email,
+        devices: state.businesses[idx].devices
+      };
+      var incomingBiz = Object.assign({}, biz); delete incomingBiz.localId;
+      state.businesses[idx] = Object.assign({}, state.businesses[idx], incomingBiz, keep);
+    }
+
+    // Ordering + activity (activity bizIds remapped to local id).
+    if (slice.itemOrder) { state.itemOrder = state.itemOrder || {}; state.itemOrder[localId] = slice.itemOrder; }
+    if (Array.isArray(slice.activity)) {
+      var remappedActivity = slice.activity.map(function (ev) {
+        var c = Object.assign({}, ev);
+        if (Array.isArray(ev.bizIds)) c.bizIds = ev.bizIds.map(function (id) { return id === cloudId ? localId : id; });
+        return c;
+      });
+      state.globalActivity = mergeActivity(state.globalActivity || [], remappedActivity);
+    }
+    return state;
+  }
+
+  // Merge two activity arrays, de-duped by id, newest first (by ts).
+  function mergeActivity(a, b) {
+    var byId = {};
+    (a || []).concat(b || []).forEach(function (ev) {
+      if (!ev) return;
+      var key = ev.id != null ? ('id:' + ev.id) : ('ts:' + ev.ts + ':' + (ev.verb || '') + ':' + (ev.itemId || ''));
+      if (!byId[key] || (ev.ts || 0) > (byId[key].ts || 0)) byId[key] = ev;
+    });
+    return Object.keys(byId).map(function (k) { return byId[k]; })
+      .sort(function (x, y) { return (y.ts || 0) - (x.ts || 0); });
+  }
+
+  var api = {
+    SCHEMA: SCHEMA,
+    buildSharedSlice: buildSharedSlice,
+    sliceToMemberState: sliceToMemberState,
+    memberStateToSlice: memberStateToSlice,
+    applySliceToOwnerState: applySliceToOwnerState,
+    mergeActivity: mergeActivity,
+    _itemHasBiz: itemHasBiz
+  };
+
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.InfosSharedSlice = api;
+})(typeof window !== 'undefined' ? window : null);

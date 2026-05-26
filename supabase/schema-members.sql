@@ -1,6 +1,13 @@
 -- ============================================================================
 --  Infos — Member Cloud Sync : Stage 1 schema + RLS
 -- ----------------------------------------------------------------------------
+--  *** SUPERSEDED — DO NOT RUN FOR NEW SETUPS ***
+--  This is the OLD view-only model (published-copy `shared_items`). It has been
+--  replaced by the SHARED EDITING model in `schema-shared.sql`, where the owner
+--  and business logins read+write one shared row per business. Use that file
+--  instead. This is kept only so existing deployments can locate/drop the old
+--  `shared_items` table (see the cleanup block in `schema-shared.sql`).
+-- ----------------------------------------------------------------------------
 --  Run AFTER the base schema.sql. Safe & re-runnable (drop-then-create).
 --  This adds normalized tables so a TEAM MEMBER (a hidden Supabase auth
 --  account behind a "business login") can read ONLY their allowed slice of an
