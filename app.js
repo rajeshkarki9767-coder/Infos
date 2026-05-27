@@ -187,7 +187,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '65.0.0';
+  const APP_VERSION = '67.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2669,7 +2669,9 @@
   // Enter the full app as a business-login user, backed by the shared cloud row.
   // `biz` = { id (cloud uuid), name, color, allowedTabs }. Loads the shared
   // snapshot, hydrates state, renders the normal app, and goes live.
-  async function enterSharedBusiness(biz, email) {
+  async function enterSharedBusiness(biz, email, opts) {
+    opts = opts || {};
+    const isBootRestore = !!opts.bootRestore;
     if (!biz || !biz.id) {
       showAuthError('This business login is not linked to any data yet. Ask the owner to set it up.');
       try { await window.InfosSupabase.Auth.signOut(); } catch {}
@@ -2721,7 +2723,7 @@
     try {
       const bs = document.getElementById('boot-splash'); if (bs) bs.remove();
     } catch {}
-    if (!state.__switchInProgress) {
+    if (!state.__switchInProgress && !isBootRestore) {
       showLoadingSplash(biz.name || 'Business', { action: 'signing-in', subtitle: `Signing in to ${biz.name || 'your business'}`, color: biz.color || null });
     }
     try {
@@ -2736,7 +2738,7 @@
     // Go live: any change to the shared row re-hydrates this device.
     subscribeShared(biz.id);
 
-    if (!state.__switchInProgress) {
+    if (!state.__switchInProgress && !isBootRestore) {
       const shownName = (state.businesses && state.businesses[0] && state.businesses[0].name) || biz.name || 'your business';
       setTimeout(() => { hideLoadingSplash(); toast(`Signed in to ${shownName}`); }, 250);
     }
@@ -2864,6 +2866,22 @@
         ownerSharedUnsubs.push(unsub);
       } catch {}
     }
+    // POLLING FALLBACK: realtime websockets don't always deliver (table not in the
+    // realtime publication, free-tier limits, dropped sockets, backgrounded tab).
+    // Poll each shared business every few seconds so the owner sees business
+    // entries "without a refresh" even when realtime is silent. refreshSharedFromCloud
+    // is cheap (version-guarded: it no-ops when nothing changed).
+    try { clearInterval(window.__ownerSharedPoll); } catch {}
+    window.__ownerSharedPoll = setInterval(() => {
+      if (state.__sharedMode) return;
+      if (!state.bizCloudMap) return;
+      if (document.hidden) return; // don't poll a backgrounded tab
+      Object.keys(state.bizCloudMap).forEach(lid => {
+        const cid = state.bizCloudMap[lid];
+        if (cid && bizById(lid)) { try { refreshSharedFromCloud(cid); } catch {} }
+      });
+    }, 5000);
+    ownerSharedUnsubs.push(() => { try { clearInterval(window.__ownerSharedPoll); } catch {} });
     // Re-render in case the initial pull changed anything (silent — no flash).
     try { if (state.user) rerenderCurrentTab(); } catch {}
   }
@@ -4413,8 +4431,8 @@
     })();
     c.innerHTML = `
       <div class="idpass-segtabs" role="tablist" aria-label="Notices view">
-        <button class="${active === 'reminders' ? 'active' : ''}" data-notices-sub="reminders" role="tab"><i class="ti ti-bell"></i> Reminder${remindCount ? ` <span class="seg-count">${remindCount}</span>` : ''}</button>
-        <button class="${active === 'activity' ? 'active' : ''}" data-notices-sub="activity" role="tab"><i class="ti ti-history"></i> Activity Log${activityCount ? ` <span class="seg-count">${activityCount}</span>` : ''}</button>
+        <button class="${active === 'reminders' ? 'active' : ''}" data-notices-sub="reminders" role="tab"><i class="ti ti-bell"></i> Reminder</button>
+        <button class="${active === 'activity' ? 'active' : ''}" data-notices-sub="activity" role="tab"><i class="ti ti-history"></i> Activity Log</button>
       </div>
       <div id="notices-sub-container"></div>
     `;
@@ -6359,6 +6377,7 @@
       <div class="settings-tab-body">
         ${renderSettingsBody(settingsActiveTab, bizCtx, isViewer)}
       </div>
+      <div class="settings-version-footer" style="margin-top:22px;padding-top:14px;border-top:1px solid var(--border);text-align:center;font-size:12px;color:var(--text-tertiary);">Infos · Version ${esc(APP_VERSION)}</div>
     `;
     c.innerHTML = html;
     // Tab switcher
@@ -6896,13 +6915,13 @@
           if (mInfo.isMember) {
             hideBootSplash();
             if (mInfo.businessId) {
-              await enterSharedBusiness({ id: mInfo.businessId, name: '', color: '#378ADD' }, sbUser.email || '');
+              await enterSharedBusiness({ id: mInfo.businessId, name: '', color: '#378ADD' }, sbUser.email || '', { bootRestore: true });
               return;
             }
             // Member flag but no business id — one fallback table lookup.
             let biz = null;
             try { biz = await window.InfosSupabase.Auth.getMemberBusiness(); } catch {}
-            if (biz) { await enterSharedBusiness(biz, sbUser.email || ''); return; }
+            if (biz) { await enterSharedBusiness(biz, sbUser.email || '', { bootRestore: true }); return; }
             // Can't resolve a business → don't degrade to owner; clean sign-in.
             try { await window.InfosSupabase.Auth.signOut(); } catch {}
             state.user = null; state.accounts = []; state.recentSignins = [];
@@ -6914,7 +6933,7 @@
             const biz = await window.InfosSupabase.Auth.getMemberBusiness();
             if (biz) {
               hideBootSplash();
-              await enterSharedBusiness(biz, sbUser.email || '');
+              await enterSharedBusiness(biz, sbUser.email || '', { bootRestore: true });
               return;
             }
           } catch (memErr) { console.warn('Business-login bootstrap check failed:', memErr); }

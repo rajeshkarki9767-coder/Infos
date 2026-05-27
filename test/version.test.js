@@ -14,6 +14,7 @@ const swV = (sw.match(/infos-v([0-9.]+)/) || [])[1];
 console.log('\nversion is defined and shown on About:');
 check('APP_VERSION constant exists in app.js', !!appV);
 check('About page renders the version', /Version \$\{esc\(APP_VERSION\)\}/.test(app) || /v\$\{esc\(APP_VERSION\)\}/.test(app));
+check('Settings page shows an always-visible version footer', /settings-version-footer[\s\S]{0,200}APP_VERSION/.test(app));
 check('SW CACHE_VERSION exists', !!swV);
 check(`APP_VERSION (${appV}) matches SW CACHE_VERSION (${swV})`, appV && swV && appV === swV);
 
