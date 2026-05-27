@@ -153,17 +153,25 @@ export default async function handler(req, res) {
     }
     if (!memberUid) { res.status(500).json({ error: 'Member created but id missing' }); return; }
 
-    // 5) Link the member to the business with allowed tabs (idempotent upsert so
-    //    re-sharing an existing member doesn't fail on a duplicate link).
-    const linkRes = await fetch(`${SUPABASE_URL}/rest/v1/business_members`, {
+    // 5) Link the member to the business with allowed tabs. Use an upsert keyed
+    //    on the (business_id, member_uid) unique constraint so re-sharing doesn't
+    //    fail on a duplicate. If the row already exists, that's success (the link
+    //    is what we wanted). Update allowed_tabs on conflict.
+    const linkRes = await fetch(`${SUPABASE_URL}/rest/v1/business_members?on_conflict=business_id,member_uid`, {
       method: 'POST',
       headers: { ...adminHeaders, Prefer: 'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({ business_id, member_uid: memberUid, allowed_tabs })
     });
     if (!linkRes.ok) {
       const detail = await linkRes.text();
-      res.status(500).json({ error: 'Could not link member to business', detail });
-      return;
+      // If it failed because the link already exists, that's fine — the member is
+      // linked, which is the goal. Only treat genuine errors as failures.
+      if (/duplicate|already exists|conflict/i.test(detail)) {
+        // already linked — proceed
+      } else {
+        res.status(500).json({ error: 'Could not link member to business', detail });
+        return;
+      }
     }
 
     res.status(200).json({ created: true, member_uid: memberUid });

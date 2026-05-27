@@ -134,7 +134,10 @@
         })
       });
       const out = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(out.error || 'Could not create member');
+      if (!res.ok) {
+        const detail = out.detail ? (' — ' + String(out.detail).slice(0, 300)) : '';
+        throw new Error((out.error || 'Could not create member') + detail);
+      }
       return out.member_uid;
     },
 

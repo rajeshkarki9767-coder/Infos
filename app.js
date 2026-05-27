@@ -195,7 +195,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '70.0.0';
+  const APP_VERSION = '71.0.0';
 
   // ---------- State ----------
   const state = {
@@ -336,28 +336,20 @@
   function bizPasswordPlain(b) {
     if (!b) return null;
     if (b.password !== undefined && b.password !== null) return b.password;
-    return null; // encrypted (b.passwordEnc) — need to call bizPasswordDecrypt async
-  }
-  async function bizPasswordDecrypt(b) {
-    if (!b) return null;
-    if (b.password) return b.password;
-    if (b.passwordEnc && window.Crypto.isUnlocked()) {
-      try { return await window.Crypto.decrypt(b.passwordEnc); } catch { return null; }
-    }
     return null;
   }
+  async function bizPasswordDecrypt(b) {
+    // Encryption removed — passwords are stored as plaintext and always readable.
+    if (!b) return null;
+    return b.password != null ? b.password : null;
+  }
   async function bizSetPassword(b, plaintext) {
-    if (state.cryptoMeta && window.Crypto.isUnlocked()) {
-      b.passwordEnc = await window.Crypto.encrypt(plaintext);
-      delete b.password;
-    } else {
-      b.password = plaintext;
-      delete b.passwordEnc;
-    }
+    // Always store plaintext (encryption feature removed).
+    b.password = plaintext;
+    delete b.passwordEnc;
   }
   function bizPasswordMasked(b) {
     if (b.password) return '•'.repeat(Math.min(b.password.length, 10));
-    if (b.passwordEnc) return '••••••••';
     return '';
   }
   function tagById(biz, tagId) { return biz?.tags.find(t => t.id === tagId); }
@@ -1398,9 +1390,6 @@
   async function autoShareBusiness(b, plainPw) {
     if (!b || !window.InfosSupabase || !window.InfosSupabase.configured()) return;
     let pwPlain = plainPw || b.password || '';
-    if (!pwPlain && b.passwordEnc) {
-      try { if (window.Crypto.isUnlocked()) pwPlain = await window.Crypto.decrypt(b.passwordEnc); } catch {}
-    }
     if (!b.email || !pwPlain) return; // need both to create the login
     try {
       const existingCloudId = (state.bizCloudMap && state.bizCloudMap[b.id]) || null;
@@ -1469,10 +1458,6 @@
     }
     // Need the business login email + password to create the member account.
     let pwPlain = b.password || '';
-    if (!pwPlain && b.passwordEnc) {
-      if (!window.Crypto.isUnlocked()) { toast('Unlock encryption first to share this business'); openCryptoUnlockModal(); return; }
-      try { pwPlain = await window.Crypto.decrypt(b.passwordEnc); } catch { pwPlain = ''; }
-    }
     if (!b.email || !pwPlain) {
       toast('Set a business email and password first (in Edit business).');
       return;
@@ -1532,15 +1517,7 @@
     // If encrypted-and-locked, prompt user to unlock first
     let editingPwPlain = '';
     if (editing) {
-      if (editing.password) editingPwPlain = editing.password;
-      else if (editing.passwordEnc) {
-        if (!window.Crypto.isUnlocked()) {
-          toast('Unlock encryption first to edit this business');
-          openCryptoUnlockModal();
-          return;
-        }
-        try { editingPwPlain = await window.Crypto.decrypt(editing.passwordEnc); } catch { editingPwPlain = ''; }
-      }
+      editingPwPlain = editing.password || '';
     }
     openModal(`
       <div class="modal-head"><h3>${editing ? 'Edit business' : 'New business'}</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
@@ -5112,7 +5089,7 @@
     state.businesses.forEach(b => {
       const el = document.createElement('div');
       el.className = 'card-row clickable';
-      el.innerHTML = `<div style="display:flex;align-items:flex-start;gap:12px;">${bizAvatarHTML(b, 44)}<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;margin-bottom:4px;color:var(--text-primary);">${esc(b.name)}</div><div style="font-size:12px;color:var(--text-secondary);line-height:1.7;"><div><i class="ti ti-mail" style="font-size:12px;vertical-align:-1px;"></i> ${esc(b.email)}</div><div><i class="ti ti-lock" style="font-size:12px;vertical-align:-1px;"></i> ${bizPasswordMasked(b)}${b.passwordEnc ? ' <span style="font-size:10px;color:var(--accent-text);background:var(--accent-bg);padding:1px 6px;border-radius:8px;margin-left:4px;">encrypted</span>' : ''}</div></div></div><i class="ti ti-chevron-right" style="font-size:16px;color:var(--text-tertiary);margin-top:12px;"></i></div>`;
+      el.innerHTML = `<div style="display:flex;align-items:flex-start;gap:12px;">${bizAvatarHTML(b, 44)}<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;margin-bottom:4px;color:var(--text-primary);">${esc(b.name)}</div><div style="font-size:12px;color:var(--text-secondary);line-height:1.7;"><div><i class="ti ti-mail" style="font-size:12px;vertical-align:-1px;"></i> ${esc(b.email)}</div><div><i class="ti ti-lock" style="font-size:12px;vertical-align:-1px;"></i> ${bizPasswordMasked(b)}</div></div></div><i class="ti ti-chevron-right" style="font-size:16px;color:var(--text-tertiary);margin-top:12px;"></i></div>`;
       el.onclick = () => setActive('biz-detail','right',{bizId:b.id,title:b.name,sub:b.email});
       wrap.appendChild(el);
     });
@@ -5322,8 +5299,7 @@
         el.textContent = bizPasswordMasked(b);
       } else {
         const plain = await bizPasswordDecrypt(b);
-        if (plain === null) { toast('Unlock encryption first'); el.dataset.show = '0'; return; }
-        el.textContent = plain;
+        el.textContent = (plain != null && plain !== '') ? plain : bizPasswordMasked(b);
       }
       pwToggleBtn.innerHTML = `<i class="ti ${showing ? 'ti-eye' : 'ti-eye-off'}"></i>`;
       window.__InfosIcons?.replaceIcons(pwToggleBtn);
@@ -6488,21 +6464,6 @@
             })()}
           </div>
           ${state.customTabs.length === 0 ? '<div class="settings-hint" style="margin-top:8px;">Tip: use “New tab” to add your own tabs (they get rename, reorder, and delete here too).</div>' : ''}
-        </div>
-        <div class="settings-section">
-          <div class="section-label" style="margin-bottom:6px;">Encryption</div>
-          <div class="settings-hint" style="margin-bottom:10px;">${window.Crypto && window.Crypto.isAvailable() ? 'End-to-end encrypt business passwords. Master password is never stored.' : 'Web Crypto not available in this environment.'}</div>
-          ${window.Crypto && window.Crypto.isAvailable() ? `
-            ${state.cryptoMeta ? `
-              <div style="display:flex;flex-direction:column;gap:8px;">
-                <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:${window.Crypto.isUnlocked() ? 'var(--success-fg)' : 'var(--text-secondary)'};"><i class="ti ti-${window.Crypto.isUnlocked() ? 'lock-open' : 'lock'}" style="font-size:14px;"></i><strong>${window.Crypto.isUnlocked() ? 'Unlocked for this session' : 'Locked'}</strong></div>
-                <div style="display:flex;flex-wrap:wrap;gap:8px;">
-                  ${window.Crypto.isUnlocked() ? '<button class="btn-outline btn-sm" id="crypto-lock"><i class="ti ti-lock" style="font-size:13px;vertical-align:-2px;"></i> Lock</button>' : '<button class="btn-outline btn-sm" id="crypto-unlock"><i class="ti ti-lock-open" style="font-size:13px;vertical-align:-2px;"></i> Unlock</button>'}
-                  <button class="btn-danger" id="crypto-disable" style="font-size:12px;"><i class="ti ti-x" style="font-size:13px;vertical-align:-2px;"></i> Disable encryption</button>
-                </div>
-              </div>
-            ` : `<button class="btn-outline btn-sm" id="crypto-enable"><i class="ti ti-shield-lock" style="font-size:13px;vertical-align:-2px;"></i> Enable encryption</button>`}
-          ` : ''}
         </div>
       `;
     }
