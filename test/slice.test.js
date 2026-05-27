@@ -228,6 +228,26 @@ console.log('\nNON-DESTRUCTIVE merge — entries do NOT disappear when slice is 
   check('buildSharedSlice emits a tombstone for a recent deletion', !!dead && dead.deleted === true);
   check('buildSharedSlice still includes the live item', (sl.items.notices || []).some(i => i.id === 31 && !i.deleted));
 }
+{
+  // Business deletes a BALANCE entry (soft-delete) → tombstone in slice →
+  // owner pulls → entry disappears on owner. This is the "deleted entry still
+  // shows on owner dashboard" bug.
+  const member = {
+    __sharedBusinessId: 'CLOUD-1',
+    businesses: [{ id: 'CLOUD-1', name: 'Acme' }],
+    items: { balance: [
+      { id: 'bal9', name: 'Cash', balance: '100', recordedBy: 'Joe', batchId: 'bat9', bizIds: ['CLOUD-1'], createdByBiz: 'CLOUD-1', deleted: true, deletedAt: Date.now() }
+    ] },
+    nextItemId: 2
+  };
+  const sl = S.memberStateToSlice(member);
+  check('business balance deletion emits a tombstone in the slice', (sl.items.balance || []).some(i => i.id === 'bal9' && i.deleted === true));
+  const owner = { items: { balance: [
+    { id: 'bal9', name: 'Cash', balance: '100', recordedBy: 'Joe', batchId: 'bat9', bizIds: ['b1'], createdByBiz: 'CLOUD-1' }
+  ] }, businesses: [{ id: 'b1', name: 'Acme', password: 'x', email: 'e', devices: [] }] };
+  S.applySliceToOwnerState(owner, sl, 'b1');
+  check('owner removes the balance entry after receiving the deletion', !(owner.items.balance || []).some(i => i.id === 'bal9' && !i.deleted));
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -60,6 +60,14 @@
       const signedIn = !!(cachedPrefs.user || cachedPrefs.bizContext || state.__sharedMode);
       if (signedIn) localStorage.setItem('infos-boot-hint', '1');
       else localStorage.removeItem('infos-boot-hint');
+      // Also remember the current tab synchronously, so a refresh keeps the user
+      // on the tab they were on (System, Games, etc.) instead of snapping back to
+      // Notices. The async IndexedDB write may not have flushed yet on a quick
+      // refresh; this localStorage value is read instantly at boot.
+      const t = state.currentTab;
+      if (t && !['item-detail','biz-detail','change-password','idpass-system','idpass-accounts'].includes(t)) {
+        localStorage.setItem('infos-last-tab', t);
+      }
     } catch {}
     // Debounce — many calls during interactions
     clearTimeout(saveTimer);
@@ -187,7 +195,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '68.0.0';
+  const APP_VERSION = '70.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2719,7 +2727,14 @@
     state.history = [];
     recordSignin({ email, name: state.user.name, kind: 'business', bizId: biz.id });
     buildNav(); updateActiveBizDisplay();
-    setActive('notices');
+    let bizRestoreTab = null;
+    if (isBootRestore) { try { bizRestoreTab = localStorage.getItem('infos-last-tab'); } catch {} }
+    // A business login can't see owner-only tabs (Businesses); guard the restore.
+    if (bizRestoreTab && getTabDef(bizRestoreTab) && !(getTabDef(bizRestoreTab).ownerOnly)) {
+      setActive(bizRestoreTab);
+    } else {
+      setActive('notices');
+    }
 
     // Go live: any change to the shared row re-hydrates this device.
     subscribeShared(biz.id);
@@ -3825,6 +3840,7 @@
     // Clear the synchronous boot hint so a refresh after logout correctly shows
     // the sign-in screen (not a flash of the app).
     try { localStorage.removeItem('infos-boot-hint'); } catch {}
+    try { localStorage.removeItem('infos-last-tab'); } catch {}
     // SHARED ACCESS: tear down the shared session cleanly. Flush any pending
     // edit to the shared row FIRST, then stop realtime and clear shared flags so
     // the emptied state isn't pushed up and local owner data isn't touched.
@@ -4716,7 +4732,15 @@
           const ids = new Set(b.items.map(i => i.id));
           const touched = new Set(); b.items.forEach(it => itemBizIds(it).forEach(x => touched.add(x)));
           b.items.forEach(it => recordGlobalActivity(tabKey, 'trashed', it));
-          state.items[tabKey] = state.items[tabKey].filter(x => !ids.has(x.id));
+          // SOFT-delete (not a hard array removal). buildSharedSlice emits a
+          // tombstone for items with deleted=true, which is how the deletion
+          // propagates to the other side (owner ↔ business). A hard removal would
+          // just make the item ABSENT from the slice, and the non-destructive
+          // merge would keep it — so the entry would linger on the other device.
+          const now = Date.now();
+          state.items[tabKey].forEach(x => {
+            if (ids.has(x.id)) { x.deleted = true; x.deletedAt = now; x.deletedFromTab = tabKey; }
+          });
           touched.forEach(bid => { const biz = bizById(bid); if (biz) recordActivity(biz, 'deleted', `Deleted balance entry by ${b.recorder}`); });
           persistAll();
           state.history.pop(); setActive(tabKey, 'fade');
@@ -6983,7 +7007,14 @@
       screenAuth.classList.remove('screen-active');
       screenMain.classList.add('screen-active');
       buildNav(); updateActiveBizDisplay();
-      setActive(state.currentTab || 'notices');
+      let restoreTab = state.currentTab;
+      if (!restoreTab) { try { restoreTab = localStorage.getItem('infos-last-tab'); } catch {} }
+      setActive(restoreTab || 'notices');
+      // Safety re-render: if the very first paint happened a beat before state
+      // fully settled (async storage / initial cloud pull), re-render the current
+      // tab once shortly after so the user never sees a blank tab that "needs a
+      // few refreshes". Cheap and idempotent.
+      setTimeout(() => { try { rerenderCurrentTab(); } catch {} }, 400);
       handleShareTarget();
       handleLaunchParams();
       // Heartbeat: mark this device "active now" every 30 seconds while a business session is open.
