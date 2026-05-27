@@ -335,10 +335,22 @@
     async loadSharedState(businessCloudId) {
       const c = getClient(); if (!c) throw new Error('Supabase not configured');
       if (!businessCloudId) throw new Error('businessCloudId required');
-      const { data, error } = await c.from('shared_state')
+      // Hard timeout — never let a hung cloud query freeze the boot or business
+      // login. If it doesn't respond in 4s, return null and let the app proceed
+      // with the empty/cached state; the next poll or realtime event will hydrate.
+      const _setTimeout = (typeof setTimeout !== 'undefined') ? setTimeout
+                          : (typeof globalThis !== 'undefined' && globalThis.setTimeout) ? globalThis.setTimeout
+                          : null;
+      const query = c.from('shared_state')
         .select('data, version, updated_at')
         .eq('business_cloud_id', businessCloudId)
         .maybeSingle();
+      const result = _setTimeout ? await Promise.race([
+        query,
+        new Promise(resolve => _setTimeout(() => resolve({ data: null, error: null, __timedOut: true }), 4000))
+      ]) : await query;
+      if (result && result.__timedOut) { try { console.warn('loadSharedState timed out'); } catch {} return null; }
+      const { data, error } = result;
       if (error) throw error;
       if (!data) return null;
       return { data: data.data || {}, version: data.version || 0, updatedAt: data.updated_at || null };
