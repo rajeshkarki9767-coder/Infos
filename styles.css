@@ -80,6 +80,12 @@
 #app[data-accent="coral"]  { --accent-solid: #D85A30; }
 #app[data-accent="amber"]  { --accent-solid: #BA7517; }
 #app[data-accent="pink"]   { --accent-solid: #D4537E; }
+#app[data-accent="navy"]    { --accent-solid: #2A4A7F; }
+#app[data-accent="maroon"]  { --accent-solid: #7E3045; }
+#app[data-accent="darkred"] { --accent-solid: #B23A2E; }
+#app[data-accent="emerald"] { --accent-solid: #0E7C5A; }
+#app[data-accent="slate"]   { --accent-solid: #4A5568; }
+#app[data-accent="indigo"]  { --accent-solid: #4F46B5; }
 
 #app[data-theme="light"][data-accent="blue"], #app[data-theme="auto"][data-accent="blue"]     { --accent-bg: #E6F1FB; --accent-text: #185FA5; }
 #app[data-theme="light"][data-accent="teal"], #app[data-theme="auto"][data-accent="teal"]     { --accent-bg: #E1F5EE; --accent-text: #085041; }
@@ -87,12 +93,24 @@
 #app[data-theme="light"][data-accent="coral"], #app[data-theme="auto"][data-accent="coral"]   { --accent-bg: #FAECE7; --accent-text: #712B13; }
 #app[data-theme="light"][data-accent="amber"], #app[data-theme="auto"][data-accent="amber"]   { --accent-bg: #FAEEDA; --accent-text: #633806; }
 #app[data-theme="light"][data-accent="pink"], #app[data-theme="auto"][data-accent="pink"]     { --accent-bg: #FBEAF0; --accent-text: #72243E; }
+#app[data-theme="light"][data-accent="navy"], #app[data-theme="auto"][data-accent="navy"]       { --accent-bg: #E7ECF5; --accent-text: #1E365C; }
+#app[data-theme="light"][data-accent="maroon"], #app[data-theme="auto"][data-accent="maroon"]   { --accent-bg: #F6E8EC; --accent-text: #5A2231; }
+#app[data-theme="light"][data-accent="darkred"], #app[data-theme="auto"][data-accent="darkred"] { --accent-bg: #FAE7E4; --accent-text: #7E281F; }
+#app[data-theme="light"][data-accent="emerald"], #app[data-theme="auto"][data-accent="emerald"] { --accent-bg: #E0F3EC; --accent-text: #0A5840; }
+#app[data-theme="light"][data-accent="slate"], #app[data-theme="auto"][data-accent="slate"]     { --accent-bg: #EBEDF1; --accent-text: #353D4A; }
+#app[data-theme="light"][data-accent="indigo"], #app[data-theme="auto"][data-accent="indigo"]   { --accent-bg: #EAE9F8; --accent-text: #383085; }
 #app[data-theme="dark"][data-accent="blue"]   { --accent-bg: #0C447C; --accent-text: #B5D4F4; }
 #app[data-theme="dark"][data-accent="teal"]   { --accent-bg: #085041; --accent-text: #9FE1CB; }
 #app[data-theme="dark"][data-accent="purple"] { --accent-bg: #3C3489; --accent-text: #CECBF6; }
 #app[data-theme="dark"][data-accent="coral"]  { --accent-bg: #712B13; --accent-text: #F5C4B3; }
 #app[data-theme="dark"][data-accent="amber"]  { --accent-bg: #633806; --accent-text: #FAC775; }
 #app[data-theme="dark"][data-accent="pink"]   { --accent-bg: #72243E; --accent-text: #F4C0D1; }
+#app[data-theme="dark"][data-accent="navy"]    { --accent-bg: #1E365C; --accent-text: #AFC2E2; }
+#app[data-theme="dark"][data-accent="maroon"]  { --accent-bg: #5A2231; --accent-text: #E9B4C1; }
+#app[data-theme="dark"][data-accent="darkred"] { --accent-bg: #7E281F; --accent-text: #F2B5AD; }
+#app[data-theme="dark"][data-accent="emerald"] { --accent-bg: #0A5840; --accent-text: #97DBBF; }
+#app[data-theme="dark"][data-accent="slate"]   { --accent-bg: #353D4A; --accent-text: #C2C9D4; }
+#app[data-theme="dark"][data-accent="indigo"]  { --accent-bg: #383085; --accent-text: #C5C1F2; }
 @media (prefers-color-scheme: dark) {
   #app[data-theme="auto"][data-accent="blue"]   { --accent-bg: #0C447C; --accent-text: #B5D4F4; }
   #app[data-theme="auto"][data-accent="teal"]   { --accent-bg: #085041; --accent-text: #9FE1CB; }
@@ -100,6 +118,12 @@
   #app[data-theme="auto"][data-accent="coral"]  { --accent-bg: #712B13; --accent-text: #F5C4B3; }
   #app[data-theme="auto"][data-accent="amber"]  { --accent-bg: #633806; --accent-text: #FAC775; }
   #app[data-theme="auto"][data-accent="pink"]   { --accent-bg: #72243E; --accent-text: #F4C0D1; }
+  #app[data-theme="auto"][data-accent="navy"]    { --accent-bg: #1E365C; --accent-text: #AFC2E2; }
+  #app[data-theme="auto"][data-accent="maroon"]  { --accent-bg: #5A2231; --accent-text: #E9B4C1; }
+  #app[data-theme="auto"][data-accent="darkred"] { --accent-bg: #7E281F; --accent-text: #F2B5AD; }
+  #app[data-theme="auto"][data-accent="emerald"] { --accent-bg: #0A5840; --accent-text: #97DBBF; }
+  #app[data-theme="auto"][data-accent="slate"]   { --accent-bg: #353D4A; --accent-text: #C2C9D4; }
+  #app[data-theme="auto"][data-accent="indigo"]  { --accent-bg: #383085; --accent-text: #C5C1F2; }
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }

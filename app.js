@@ -195,7 +195,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '71.0.0';
+  const APP_VERSION = '72.0.0';
 
   // ---------- State ----------
   const state = {
@@ -274,8 +274,8 @@
     if (prefs[k] !== undefined) state[k] = prefs[k];
   });
 
-  // Apply custom accent if set
-  if (state.customAccent) applyCustomAccent(state.customAccent);
+  // Custom accent colors removed — migrate any existing value off.
+  if (state.customAccent) { state.customAccent = null; try { clearCustomAccent(); } catch {} }
 
   // v10 migration: ensure 'schedule' (now displayed as Attachments) is in tabOrder + items map
   // for users coming from earlier versions. The internal key stays 'schedule' for data compatibility.
@@ -3239,7 +3239,7 @@
       const subtitle = action === 'creating'
         ? "Setting up your workspace"
         : asBizId ? `Signing in to ${bizById(asBizId)?.name}` : `Welcome, ${name}`;
-      const splashColor = asBizId ? (bizById(asBizId)?.color || null) : (state.customAccent || null);
+      const splashColor = asBizId ? (bizById(asBizId)?.color || null) : null;
       showLoadingSplash(displayName, { action, subtitle, color: splashColor });
     }
     screenAuth.classList.remove('screen-active');
@@ -3453,8 +3453,17 @@
       (action === 'creating' ? 'Setting up your private workspace' :
        action === 'switching' ? 'Preparing your view' :
        'Loading your workspace');
-    // Tint the splash with the selected business/user color (falls back to the app accent)
-    const tint = o.color || getComputedStyle(document.documentElement).getPropertyValue('--accent-solid').trim() || '#378ADD';
+    // Splash tint follows the current theme's accent color. The overlay lives on
+    // <body> (outside #app where the accent var is defined), so read the accent
+    // from #app's computed style. A business/owner color override may be passed in.
+    let tint = o.color;
+    if (!tint) {
+      try {
+        const appEl = document.getElementById('app');
+        tint = (appEl ? getComputedStyle(appEl).getPropertyValue('--accent-solid').trim() : '') ||
+               getComputedStyle(document.documentElement).getPropertyValue('--accent-solid').trim() || '#378ADD';
+      } catch { tint = '#378ADD'; }
+    }
     el.style.setProperty('--splash-tint', tint);
 
     // Stage messages that advance during the load — feels like progress is happening
@@ -6403,16 +6412,8 @@
       </div>
       <div class="settings-section">
         <div class="section-label" style="margin-bottom:10px;">Accent color</div>
-        <div class="accent-row">${[['blue','#378ADD'],['teal','#1D9E75'],['purple','#7F77DD'],['coral','#D85A30'],['amber','#BA7517'],['pink','#D4537E']].map(([n,col]) => `<div class="accent-swatch" data-accent="${n}" style="background:${col};"></div>`).join('')}</div>
-        <div class="settings-hint" style="margin-bottom:10px;">When a business is filtered, the app tints to its brand color automatically.</div>
-        <div class="section-label" style="margin-top:14px;margin-bottom:8px;font-size:11px;">Custom color</div>
-        <div class="color-picker-row">
-          <div class="color-picker-preview" id="custom-accent-preview" style="background:${esc(state.customAccent || 'var(--accent-solid)')};"></div>
-          <input id="custom-accent-picker" type="color" value="${esc(state.customAccent || '#378ADD')}" aria-label="Pick a color"/>
-          <input id="custom-accent-hex" type="text" value="${esc(state.customAccent || '#378ADD')}" maxlength="7" placeholder="#3B82F6"/>
-          <button class="btn-primary btn-sm" id="custom-accent-apply" type="button">Apply</button>
-        </div>
-        <div class="settings-hint">Pick any color or paste a hex code. The preview updates as you change it. Stored per device.</div>
+        <div class="accent-row">${[['blue','#378ADD'],['teal','#1D9E75'],['emerald','#0E7C5A'],['purple','#7F77DD'],['indigo','#4F46B5'],['navy','#2A4A7F'],['coral','#D85A30'],['darkred','#B23A2E'],['maroon','#7E3045'],['amber','#BA7517'],['pink','#D4537E'],['slate','#4A5568']].map(([n,col]) => `<div class="accent-swatch" data-accent="${n}" style="background:${col};" title="${n}"></div>`).join('')}</div>
+        <div class="settings-hint">When a business is filtered, the app tints to its brand color automatically.</div>
       </div>
       <div class="settings-section">
         <div class="section-label" style="margin-bottom:10px;">Notifications</div>
@@ -6565,46 +6566,12 @@
     const updS = () => sw.forEach(s => s.classList.toggle('selected', s.dataset.accent === app.dataset.accent && !state.customAccent));
     updS();
     sw.forEach(s => s.onclick = () => {
-      // Preset wins: clear any custom accent.
       state.customAccent = null;
       clearCustomAccent();
       app.dataset.accent = s.dataset.accent;
       updS();
       persistAll();
     });
-    // Custom accent picker
-    const cAccPick = $('#custom-accent-picker');
-    const cAccHex = $('#custom-accent-hex');
-    const cAccApply = $('#custom-accent-apply');
-    const cAccPreview = $('#custom-accent-preview');
-    const updPreview = (hex) => { if (cAccPreview && /^#[0-9a-fA-F]{6}$/.test(hex)) cAccPreview.style.background = hex; };
-    if (cAccPick && cAccHex) {
-      cAccPick.oninput = e => {
-        const v = e.target.value.toUpperCase();
-        cAccHex.value = v;
-        updPreview(v);
-      };
-      cAccHex.oninput = e => {
-        let v = e.target.value.trim();
-        if (v[0] !== '#') v = '#' + v;
-        if (/^#[0-9a-fA-F]{6}$/.test(v)) {
-          cAccPick.value = v.toLowerCase();
-          updPreview(v);
-        }
-      };
-      cAccApply.onclick = () => {
-        let v = (cAccHex.value || '').trim();
-        if (v[0] !== '#') v = '#' + v;
-        if (/^#[0-9a-fA-F]{3}$/.test(v)) v = '#' + v[1]+v[1] + v[2]+v[2] + v[3]+v[3];
-        if (!/^#[0-9a-fA-F]{6}$/.test(v)) { toast('Enter a valid hex color (e.g. #3B82F6)'); return; }
-        state.customAccent = v.toUpperCase();
-        applyCustomAccent(state.customAccent);
-        updPreview(state.customAccent);
-        updS();
-        persistAll();
-        toast('Accent updated');
-      };
-    }
     const ep = $('#enable-push');
     if (ep) ep.onclick = requestPushPermission;
   }
@@ -6854,7 +6821,10 @@
     });
 
     // Re-apply custom accent now that state is hydrated
-    if (state.customAccent) applyCustomAccent(state.customAccent);
+    // Custom accent colors have been removed in favor of the preset accent
+    // swatches. Migrate any existing custom value away so the user falls back to
+    // their chosen accent cleanly.
+    if (state.customAccent) { state.customAccent = null; try { clearCustomAccent(); } catch {} }
 
     // Re-run trash purge and item migration after real load
     Object.keys(state.items).forEach(k => {
