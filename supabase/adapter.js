@@ -409,6 +409,20 @@
               { event: '*', schema: 'public', table: 'businesses' },
               () => { try { onChange && onChange(null); } catch {} })
             .subscribe((status) => {
+              // status: SUBSCRIBED | CHANNEL_ERROR | TIMED_OUT | CLOSED
+              try {
+                // Surface the realtime status to the page so we can see whether
+                // live sync is actually connected (vs silently falling back to
+                // polling). Only the live state is informative; we don't show
+                // every transient state.
+                if (typeof window !== 'undefined') {
+                  if (status === 'SUBSCRIBED') {
+                    if (window.__InfosRealtimeStatus) window.__InfosRealtimeStatus('live');
+                  } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+                    if (window.__InfosRealtimeStatus) window.__InfosRealtimeStatus('error');
+                  }
+                }
+              } catch (e) {}
               if (status === 'SUBSCRIBED') {
                 try { onChange && onChange(null); } catch {}
               } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {

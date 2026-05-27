@@ -34,6 +34,27 @@
     } catch (e) {}
   }
 
+  // Live indicator: tiny dot in the corner that says whether the realtime
+  // websocket is actually connected. Green = live sync is on; gray = falling back
+  // to polling only. Hidden if the cloud isn't configured. This makes it obvious
+  // whether updates SHOULD appear instantly or only after the next poll.
+  window.__InfosRealtimeStatus = function (state) {
+    try {
+      var id = 'infos-rt-status';
+      var dot = document.getElementById(id);
+      if (!dot) {
+        dot = document.createElement('div');
+        dot.id = id;
+        dot.style.cssText = 'position:fixed;right:8px;bottom:8px;z-index:99998;width:10px;height:10px;border-radius:50%;background:#9aa0a6;box-shadow:0 1px 3px rgba(0,0,0,.3);opacity:.75;';
+        dot.title = 'Realtime: connecting…';
+        (document.body || document.documentElement).appendChild(dot);
+      }
+      if (state === 'live') { dot.style.background = '#1D9E75'; dot.title = 'Realtime: live (instant sync)'; }
+      else if (state === 'error') { dot.style.background = '#D85A30'; dot.title = 'Realtime: not connected — using polling fallback'; }
+      else { dot.style.background = '#9aa0a6'; dot.title = 'Realtime: connecting…'; }
+    } catch (e) {}
+  };
+
   // Keep v7 key — v8 adds the optional `recentSignins` field but is otherwise shape-compatible
   // with v7, so we want existing users to keep their data.
   const STORAGE_KEY = 'infos-state-v7';
@@ -228,7 +249,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '79.0.0';
+  const APP_VERSION = '81.0.0';
 
   // ---------- State ----------
   const state = {
@@ -5162,7 +5183,7 @@
     state.businesses.forEach(b => {
       const el = document.createElement('div');
       el.className = 'card-row clickable';
-      el.innerHTML = `<div style="display:flex;align-items:flex-start;gap:12px;">${bizAvatarHTML(b, 44)}<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;margin-bottom:4px;color:var(--text-primary);">${esc(b.name)}</div><div style="font-size:12px;color:var(--text-secondary);line-height:1.7;"><div><i class="ti ti-mail" style="font-size:12px;vertical-align:-1px;"></i> ${esc(b.email)}</div><div><i class="ti ti-lock" style="font-size:12px;vertical-align:-1px;"></i> ${bizPasswordMasked(b)}</div></div></div><i class="ti ti-chevron-right" style="font-size:16px;color:var(--text-tertiary);margin-top:12px;"></i></div>`;
+      el.innerHTML = `<div style="display:flex;align-items:flex-start;gap:12px;">${bizAvatarHTML(b, 44)}<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;margin-bottom:4px;color:var(--text-primary);">${esc(b.name)}</div><div style="font-size:12px;color:var(--text-secondary);line-height:1.7;"><div><i class="ti ti-mail" style="font-size:12px;vertical-align:-1px;"></i> ${esc(b.email)}</div><div><i class="ti ti-lock" style="font-size:12px;vertical-align:-1px;"></i> ${b.password ? esc(b.password) : (b.__needsPasswordReset ? '<span style="color:var(--danger-fg);">Re-set password (was encrypted)</span>' : '—')}</div></div></div><i class="ti ti-chevron-right" style="font-size:16px;color:var(--text-tertiary);margin-top:12px;"></i></div>`;
       el.onclick = () => setActive('biz-detail','right',{bizId:b.id,title:b.name,sub:b.email});
       wrap.appendChild(el);
     });
@@ -6864,11 +6885,18 @@
         showSkeleton(4);
       }
     } catch {}
-    // Wait for Storage to be ready, then load prefs into cachedPrefs
+    // Wait for Storage to be ready, then load prefs into cachedPrefs. Both calls
+    // are hard-capped at 2 seconds total: if IndexedDB is hung (e.g. blocked by
+    // another tab of this app on an older schema), we proceed with whatever we
+    // have rather than leaving the user staring at a skeleton for 30+ seconds.
     if (window.Storage) {
       try {
-        await window.Storage.ready();
-        cachedPrefs = await window.Storage.load() || {};
+        const withTimeout = (p, ms, fallback) => Promise.race([
+          p,
+          new Promise(res => setTimeout(() => res(fallback), ms))
+        ]);
+        await withTimeout(window.Storage.ready(), 1500, null);
+        cachedPrefs = (await withTimeout(window.Storage.load(), 1500, {})) || {};
       } catch (e) { console.warn('Storage init failed:', e); cachedPrefs = {}; }
     }
     // Re-apply prefs now that they're loaded
@@ -6888,6 +6916,23 @@
     // plain object/array without .has() and crash card rendering).
     if (!state.bulkSelected || typeof state.bulkSelected.has !== 'function') {
       state.bulkSelected = new Set();
+    }
+
+    // Legacy passwordEnc cleanup: encryption was removed, so any business that
+    // still has an encrypted password but no plaintext one needs to have its
+    // password re-set by the owner (we can't decrypt it without the master key,
+    // which is gone). Strip the dead field so the UI clearly shows "no password
+    // — re-set it" rather than acting like one exists.
+    if (Array.isArray(state.businesses)) {
+      state.businesses.forEach(function (b) {
+        if (b && b.passwordEnc && !b.password) {
+          delete b.passwordEnc;
+          b.__needsPasswordReset = true;
+        } else if (b && b.passwordEnc) {
+          // We have both — keep the plaintext, drop the encrypted leftover.
+          delete b.passwordEnc;
+        }
+      });
     }
 
     // Re-apply custom accent now that state is hydrated

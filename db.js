@@ -25,14 +25,23 @@
   function openDB() {
     return new Promise((resolve, reject) => {
       if (!('indexedDB' in window)) return reject(new Error('no-idb'));
+      // HARD TIMEOUT: if IDB doesn't open within 1.5s (another tab is blocking
+      // it, or it's stuck), give up and fall back to localStorage. Without this
+      // the boot would hang indefinitely on a skeleton screen.
+      let settled = false;
+      const tid = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error('idb-timeout'));
+      }, 1500);
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = (e) => {
         const d = e.target.result;
         if (!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE);
       };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error || new Error('idb-open-failed'));
-      req.onblocked = () => reject(new Error('idb-blocked'));
+      req.onsuccess = () => { if (settled) return; settled = true; clearTimeout(tid); resolve(req.result); };
+      req.onerror = () => { if (settled) return; settled = true; clearTimeout(tid); reject(req.error || new Error('idb-open-failed')); };
+      req.onblocked = () => { if (settled) return; settled = true; clearTimeout(tid); reject(new Error('idb-blocked')); };
     });
   }
 
