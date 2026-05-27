@@ -1,6 +1,39 @@
 (function() {
   'use strict';
 
+  // Global error catcher: surfaces otherwise-silent runtime errors (render or
+  // click-handler exceptions) as a small on-screen banner, so problems that only
+  // happen on a real device can be reported precisely instead of failing quietly.
+  try {
+    window.addEventListener('error', function (ev) {
+      try {
+        var msg = (ev && ev.message) ? ev.message : 'Unknown error';
+        var where = (ev && ev.filename ? (' @ ' + String(ev.filename).split('/').pop()) : '') + (ev && ev.lineno ? (':' + ev.lineno) : '');
+        showRuntimeError('Error: ' + msg + where);
+      } catch (e) {}
+    });
+    window.addEventListener('unhandledrejection', function (ev) {
+      try {
+        var r = ev && ev.reason;
+        showRuntimeError('Async error: ' + (r && r.message ? r.message : String(r)));
+      } catch (e) {}
+    });
+  } catch (e) {}
+  function showRuntimeError(text) {
+    try {
+      var id = 'infos-runtime-error';
+      var box = document.getElementById(id);
+      if (!box) {
+        box = document.createElement('div');
+        box.id = id;
+        box.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:99999;background:#7E281F;color:#fff;font:12px/1.4 system-ui,sans-serif;padding:10px 12px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.3);max-height:40vh;overflow:auto;';
+        box.onclick = function () { box.remove(); };
+        (document.body || document.documentElement).appendChild(box);
+      }
+      box.textContent = text + '  (tap to dismiss)';
+    } catch (e) {}
+  }
+
   // Keep v7 key — v8 adds the optional `recentSignins` field but is otherwise shape-compatible
   // with v7, so we want existing users to keep their data.
   const STORAGE_KEY = 'infos-state-v7';
@@ -195,7 +228,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '75.0.0';
+  const APP_VERSION = '76.0.0';
 
   // ---------- State ----------
   const state = {
