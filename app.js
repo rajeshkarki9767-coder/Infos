@@ -228,7 +228,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '77.0.0';
+  const APP_VERSION = '79.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2775,7 +2775,7 @@
     window.__sharedPoll = setInterval(() => {
       if (!state.__sharedMode || document.hidden) return;
       try { refreshSharedFromCloud(cloudBusinessId); } catch {}
-    }, 3000);
+    }, 1500);
   }
 
   // Pull the latest shared snapshot and re-render. Used by realtime + on resume.
@@ -2924,7 +2924,7 @@
         const cid = state.bizCloudMap[lid];
         if (cid && bizById(lid)) { try { refreshSharedFromCloud(cid); } catch {} }
       });
-    }, 3000);
+    }, 1500);
     ownerSharedUnsubs.push(() => { try { clearInterval(window.__ownerSharedPoll); } catch {} });
     // Re-render in case the initial pull changed anything (silent — no flash).
     try { if (state.user) rerenderCurrentTab(); } catch {}
@@ -4074,7 +4074,7 @@
       if (it.username) parts.push(`<div class="cred-row"><span class="cred-label">user</span><span class="cred-value">${esc(it.username)}</span><button class="btn-icon copy-link-btn" data-copy="${esc(it.username)}" data-copy-label="Username" aria-label="Copy username" title="Copy username"><i class="ti ti-copy"></i></button></div>`);
       if (it.password) {
         const masked = '•'.repeat(Math.min(it.password.length, 10));
-        parts.push(`<div class="cred-row"><span class="cred-label">pass</span><span class="cred-value cred-password" data-show="0" data-real="${esc(it.password)}">${masked}</span><button class="btn-icon copy-link-btn" data-pw-show aria-label="Show password" title="Show / hide password"><i class="ti ti-eye"></i></button><button class="btn-icon copy-link-btn" data-copy="${esc(it.password)}" data-copy-label="Password" aria-label="Copy password" title="Copy password"><i class="ti ti-copy"></i></button></div>`);
+        parts.push(`<div class="cred-row"><span class="cred-label">pass</span><span class="cred-value cred-password" data-show="1" data-real="${esc(it.password)}">${esc(it.password)}</span><button class="btn-icon copy-link-btn" data-pw-show aria-label="Hide password" title="Show / hide password"><i class="ti ti-eye-off"></i></button><button class="btn-icon copy-link-btn" data-copy="${esc(it.password)}" data-copy-label="Password" aria-label="Copy password" title="Copy password"><i class="ti ti-copy"></i></button></div>`);
       }
       credsHTML = `<div class="cred-stack">${parts.join('')}</div>`;
     }
@@ -5186,7 +5186,7 @@
         <div class="section-label" style="margin-bottom:10px;">Sign-in credentials</div>
         <div style="display:flex;flex-direction:column;gap:8px;font-size:13px;">
           <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-mail" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Email</span><strong style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${esc(b.email || '—')}</strong></div>
-          <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-lock" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Password</span><strong id="biz-pw" data-show="0" style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${bizPasswordMasked(b) || '—'}</strong>${b.password ? `<button id="biz-pw-toggle" class="btn-icon" style="padding:2px;"><i class="ti ti-eye" style="font-size:13px;"></i></button>` : ''}</div>
+          <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-lock" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Password</span><strong id="biz-pw" data-show="1" data-real="${esc(b.password || '')}" style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${b.password ? esc(b.password) : '—'}</strong>${b.password ? `<button id="biz-pw-toggle" class="btn-icon" style="padding:2px;"><i class="ti ti-eye-off" style="font-size:13px;"></i></button>` : ''}</div>
         </div>
       </div>
       <div class="biz-items-section">
@@ -5667,7 +5667,7 @@
         <div class="section-label">Credentials</div>
         <div class="info-pill">
           ${it.username ? `<div class="detail-meta-row"><i class="ti ti-user" style="font-size:13px;"></i><span style="width:78px;">Username</span><strong class="cred-mono">${esc(it.username)}</strong><button class="btn-icon copy-link-btn" data-copy="${esc(it.username)}" data-copy-label="Username" style="margin-left:auto;"><i class="ti ti-copy"></i></button></div>` : ''}
-          ${it.password ? `<div class="detail-meta-row"><i class="ti ti-lock" style="font-size:13px;"></i><span style="width:78px;">Password</span><strong class="cred-mono cred-password" data-show="0" data-real="${esc(it.password)}">${'•'.repeat(Math.min(it.password.length, 10))}</strong><button class="btn-icon copy-link-btn" data-pw-show style="margin-left:auto;"><i class="ti ti-eye"></i></button><button class="btn-icon copy-link-btn" data-copy="${esc(it.password)}" data-copy-label="Password"><i class="ti ti-copy"></i></button></div>` : ''}
+          ${it.password ? `<div class="detail-meta-row"><i class="ti ti-lock" style="font-size:13px;"></i><span style="width:78px;">Password</span><strong class="cred-mono cred-password" data-show="1" data-real="${esc(it.password)}">${esc(it.password)}</strong><button class="btn-icon copy-link-btn" data-pw-show style="margin-left:auto;"><i class="ti ti-eye-off"></i></button><button class="btn-icon copy-link-btn" data-copy="${esc(it.password)}" data-copy-label="Password"><i class="ti ti-copy"></i></button></div>` : ''}
         </div>
       </div>`);
     }
@@ -5775,7 +5775,7 @@
         <div class="section-label" style="margin-bottom:8px;">Credentials</div>
         <div class="info-pill">
           ${it.username ? `<div class="detail-meta-row"><i class="ti ti-user" style="font-size:13px;"></i><span style="width:80px;">Username</span><strong class="cred-mono">${esc(it.username)}</strong><button class="btn-icon copy-link-btn" data-copy="${esc(it.username)}" data-copy-label="Username" style="margin-left:auto;"><i class="ti ti-copy"></i></button></div>` : ''}
-          ${it.password ? `<div class="detail-meta-row"><i class="ti ti-lock" style="font-size:13px;"></i><span style="width:80px;">Password</span><strong class="cred-mono cred-password" data-show="0" data-real="${esc(it.password)}">${'•'.repeat(Math.min(it.password.length, 10))}</strong><button class="btn-icon copy-link-btn" data-pw-show style="margin-left:auto;"><i class="ti ti-eye"></i></button><button class="btn-icon copy-link-btn" data-copy="${esc(it.password)}" data-copy-label="Password"><i class="ti ti-copy"></i></button></div>` : ''}
+          ${it.password ? `<div class="detail-meta-row"><i class="ti ti-lock" style="font-size:13px;"></i><span style="width:80px;">Password</span><strong class="cred-mono cred-password" data-show="1" data-real="${esc(it.password)}">${esc(it.password)}</strong><button class="btn-icon copy-link-btn" data-pw-show style="margin-left:auto;"><i class="ti ti-eye-off"></i></button><button class="btn-icon copy-link-btn" data-copy="${esc(it.password)}" data-copy-label="Password"><i class="ti ti-copy"></i></button></div>` : ''}
         </div>
       </div>` : '';
 

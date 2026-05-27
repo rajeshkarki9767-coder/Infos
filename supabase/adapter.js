@@ -382,20 +382,53 @@
     subscribeSharedState(businessCloudId, onChange) {
       const c = getClient(); if (!c || !businessCloudId) return () => {};
       let channel;
-      try {
-        channel = c.channel('shared-' + businessCloudId)
-          .on('postgres_changes',
-            { event: '*', schema: 'public', table: 'shared_state', filter: `business_cloud_id=eq.${businessCloudId}` },
-            (payload) => { try { onChange && onChange(payload && payload.new); } catch {} })
-          .on('postgres_changes',
-            { event: '*', schema: 'public', table: 'businesses', filter: `id=eq.${businessCloudId}` },
-            () => { try { onChange && onChange(null); } catch {} })
-          .subscribe();
-      } catch (e) {
-        // Realtime unavailable — shared access still works, just not live.
-        return () => {};
-      }
-      return () => { try { c.removeChannel(channel); } catch {} };
+      let retryTimer = null;
+      let closed = false;
+
+      const connect = () => {
+        if (closed) return;
+        try {
+          channel = c.channel('shared-' + businessCloudId)
+            // NOTE: no server-side `filter` here. A filtered postgres_changes
+            // subscription requires REPLICA IDENTITY FULL on the table or it
+            // silently delivers nothing. Subscribing to ALL row changes and
+            // letting the app pull the current row is far more reliable — it
+            // works on a default Supabase table. The callback just signals
+            // "something changed, go re-pull".
+            .on('postgres_changes',
+              { event: '*', schema: 'public', table: 'shared_state' },
+              (payload) => {
+                const row = payload && payload.new;
+                // If we can tell which business changed, ignore other businesses;
+                // otherwise just trigger a pull (cheap, version-guarded).
+                if (!row || !row.business_cloud_id || row.business_cloud_id === businessCloudId) {
+                  try { onChange && onChange(row || null); } catch {}
+                }
+              })
+            .on('postgres_changes',
+              { event: '*', schema: 'public', table: 'businesses' },
+              () => { try { onChange && onChange(null); } catch {} })
+            .subscribe((status) => {
+              if (status === 'SUBSCRIBED') {
+                try { onChange && onChange(null); } catch {}
+              } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+                if (closed) return;
+                try { c.removeChannel(channel); } catch {}
+                clearTimeout(retryTimer);
+                retryTimer = setTimeout(connect, 2000);
+              }
+            });
+        } catch (e) {
+          if (!closed) { clearTimeout(retryTimer); retryTimer = setTimeout(connect, 3000); }
+        }
+      };
+      connect();
+
+      return () => {
+        closed = true;
+        clearTimeout(retryTimer);
+        try { c.removeChannel(channel); } catch {}
+      };
     },
 
     // Remove a shared business from the cloud (owner only; cascades to
