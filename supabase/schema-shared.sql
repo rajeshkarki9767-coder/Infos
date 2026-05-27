@@ -182,6 +182,12 @@ create trigger businesses_touch before update on public.businesses
 -- 10) realtime ---------------------------------------------------------------
 --  Add shared_state (and businesses) to the realtime publication so member +
 --  owner devices get live updates. Guarded so re-runs don't error.
+--  REPLICA IDENTITY FULL is REQUIRED for filtered realtime (we subscribe with
+--  filter business_cloud_id=eq.X): without it, Postgres only sends the primary
+--  key on UPDATE, the filter can't match, and live updates silently don't fire —
+--  which makes the app fall back to slow polling instead of instant sync.
+alter table public.shared_state replica identity full;
+alter table public.businesses   replica identity full;
 do $$
 begin
   begin execute 'alter publication supabase_realtime add table public.shared_state'; exception when others then null; end;

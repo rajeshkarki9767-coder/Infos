@@ -138,11 +138,11 @@
     // immediately echoes the business's own change back to the cloud, which can
     // advance the version and cause the NEXT real business update to be skipped
     // by the version guard (i.e. live updates silently stop arriving).
-    if (!state.__sharedMode && !(typeof sharedApplyingRemote !== 'undefined' && sharedApplyingRemote) &&
+    if (!state.__sharedMode && !state.__suppressOwnerPush && !(typeof sharedApplyingRemote !== 'undefined' && sharedApplyingRemote) &&
         state.bizCloudMap && Object.keys(state.bizCloudMap).length &&
         window.InfosSupabase && window.InfosSupabase.configured()) {
       clearTimeout(window.__sharePublishTimer);
-      window.__sharePublishTimer = setTimeout(() => { try { pushOwnerSharedBusinesses(); } catch {} }, 600);
+      window.__sharePublishTimer = setTimeout(() => { try { pushOwnerSharedBusinesses(); } catch {} }, 200);
     }
   }
 
@@ -195,7 +195,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '72.0.0';
+  const APP_VERSION = '75.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2731,7 +2731,7 @@
     if (!(window.InfosSupabase && window.InfosSupabase.adapter.subscribeSharedState)) return;
     sharedRealtimeUnsub = window.InfosSupabase.adapter.subscribeSharedState(cloudBusinessId, () => {
       clearTimeout(window.__sharedRefreshDebounce);
-      window.__sharedRefreshDebounce = setTimeout(() => refreshSharedFromCloud(cloudBusinessId), 250);
+      window.__sharedRefreshDebounce = setTimeout(() => refreshSharedFromCloud(cloudBusinessId), 80);
     });
     // POLLING FALLBACK (same as the owner side): realtime websockets don't always
     // deliver, so poll the shared row every 5s. The owner pushing an entry to this
@@ -2741,7 +2741,7 @@
     window.__sharedPoll = setInterval(() => {
       if (!state.__sharedMode || document.hidden) return;
       try { refreshSharedFromCloud(cloudBusinessId); } catch {}
-    }, 5000);
+    }, 3000);
   }
 
   // Pull the latest shared snapshot and re-render. Used by realtime + on resume.
@@ -2769,15 +2769,18 @@
       }
       sharedApplyingRemote = true;
       if (state.__sharedMode) {
+        const beforeSig = (() => { try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted).map(i => i.id)); } catch { return ''; } })();
         const ms = Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail });
-        // Preserve view position; swap data underneath.
         Object.assign(state, ms);
         state.__sharedMode = true;
         state.__sharedBusinessId = cloudBusinessId;
         state.__sharedVersion = snap.version || 0;
         state.user = state.user || { name: (snap.data.business && snap.data.business.name || 'Business'), email: state.__sharedEmail };
-        // Silent in-place re-render (no slide/fade) so live updates don't flash.
-        rerenderCurrentTab();
+        const afterSig = (() => { try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted).map(i => i.id)); } catch { return ''; } })();
+        const modalNow = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
+        if (beforeSig !== afterSig && !modalNow && !document.getElementById('fullscreen-message')) {
+          rerenderCurrentTab();
+        }
       } else {
         // Owner viewing this shared business: merge the slice into full state.
         // Map the cloud id back to the owner's local business id.
@@ -2787,12 +2790,31 @@
             if (state.bizCloudMap[lid] === cloudBusinessId) { localBizId = lid; break; }
           }
         }
+        // Snapshot the CURRENT tab's visible items before applying, so we only
+        // re-render if something the user can actually see changed. Polling that
+        // touches nothing visible must NOT re-render (that churn was causing
+        // entries to appear to flicker/disappear).
+        const beforeSig = (() => {
+          try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted).map(i => i.id)); }
+          catch { return ''; }
+        })();
         Slice.applySliceToOwnerState(state, snap.data, localBizId);
         if (!state.bizCloudVersions) state.bizCloudVersions = {};
         state.bizCloudVersions[cloudBusinessId] = snap.version || 0;
-        persistAll();
-        // Silent in-place re-render so the owner's view doesn't flash on updates.
-        rerenderCurrentTab();
+        // Persist locally without echoing a push back (breaks the poll→push loop).
+        state.__suppressOwnerPush = true;
+        try { persistAll(); } finally { state.__suppressOwnerPush = false; }
+        const afterSig = (() => {
+          try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted).map(i => i.id)); }
+          catch { return ''; }
+        })();
+        // Only re-render when the visible tab changed AND no modal/edit is open.
+        const modalNow = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
+        if (beforeSig !== afterSig && !modalNow && !document.getElementById('fullscreen-message')) {
+          rerenderCurrentTab();
+        }
+        sharedApplyingRemote = false;
+        return;
       }
     } catch (e) { console.warn('refreshSharedFromCloud failed:', e); }
     finally { sharedApplyingRemote = false; }
@@ -2867,7 +2889,7 @@
         const cid = state.bizCloudMap[lid];
         if (cid && bizById(lid)) { try { refreshSharedFromCloud(cid); } catch {} }
       });
-    }, 5000);
+    }, 3000);
     ownerSharedUnsubs.push(() => { try { clearInterval(window.__ownerSharedPoll); } catch {} });
     // Re-render in case the initial pull changed anything (silent — no flash).
     try { if (state.user) rerenderCurrentTab(); } catch {}
@@ -5121,8 +5143,8 @@
       <div class="info-pill" style="margin-bottom:20px;">
         <div class="section-label" style="margin-bottom:10px;">Sign-in credentials</div>
         <div style="display:flex;flex-direction:column;gap:8px;font-size:13px;">
-          <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-mail" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Email</span><strong style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${esc(b.email)}</strong></div>
-          <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-lock" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Password</span><strong id="biz-pw" data-show="0" style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${bizPasswordMasked(b)}</strong>${b.passwordEnc && !window.Crypto.isUnlocked() ? '<span class="status-pill" style="background:var(--accent-bg);color:var(--accent-text);">locked</span>' : `<button id="biz-pw-toggle" class="btn-icon" style="padding:2px;"><i class="ti ti-eye" style="font-size:13px;"></i></button>`}</div>
+          <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-mail" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Email</span><strong style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${esc(b.email || '—')}</strong></div>
+          <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-lock" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Password</span><strong id="biz-pw" data-show="0" style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${bizPasswordMasked(b) || '—'}</strong>${b.password ? `<button id="biz-pw-toggle" class="btn-icon" style="padding:2px;"><i class="ti ti-eye" style="font-size:13px;"></i></button>` : ''}</div>
         </div>
       </div>
       <div class="biz-items-section">
