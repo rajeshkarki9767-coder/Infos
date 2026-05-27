@@ -228,7 +228,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '76.0.0';
+  const APP_VERSION = '77.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2702,6 +2702,7 @@
     // live cross-device sync + pushing Balance entries up).
     const ms = Slice.sliceToMemberState(slice, { email });
     Object.assign(state, ms);
+      if (!state.bulkSelected || typeof state.bulkSelected.has !== "function") state.bulkSelected = new Set();
     state.__sharedMode = true;
     state.__sharedBusinessId = biz.id;
     state.__sharedVersion = (snap && snap.version) || 0;
@@ -2805,6 +2806,7 @@
         const beforeSig = (() => { try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted).map(i => i.id)); } catch { return ''; } })();
         const ms = Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail });
         Object.assign(state, ms);
+      if (!state.bulkSelected || typeof state.bulkSelected.has !== "function") state.bulkSelected = new Set();
         state.__sharedMode = true;
         state.__sharedBusinessId = cloudBusinessId;
         state.__sharedVersion = snap.version || 0;
@@ -4024,6 +4026,13 @@
 
   function renderItemCard(it, tabKey, opts) {
     opts = opts || {};
+    // Safety: bulkSelected must be a Set. If state was rehydrated from storage or
+    // a shared snapshot, a Set can come back as a plain array/object without
+    // .has()/.add(), which would throw here and abort the entire list render
+    // (causing blank tabs). Normalize defensively.
+    if (!state.bulkSelected || typeof state.bulkSelected.has !== 'function') {
+      state.bulkSelected = new Set(Array.isArray(state.bulkSelected) ? state.bulkSelected : []);
+    }
     const checkable = state.bulkMode && !isViewOnly();
     const checked = state.bulkSelected.has(it.id);
     const isNotice = tabKey === 'notices';
@@ -6874,6 +6883,12 @@
      'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs'].forEach(k => {
       if (p[k] !== undefined) state[k] = p[k];
     });
+    // bulkSelected is transient UI state and must always be a Set (it's never
+    // meant to be persisted; if an older build saved it, it'd come back as a
+    // plain object/array without .has() and crash card rendering).
+    if (!state.bulkSelected || typeof state.bulkSelected.has !== 'function') {
+      state.bulkSelected = new Set();
+    }
 
     // Re-apply custom accent now that state is hydrated
     // Custom accent colors have been removed in favor of the preset accent

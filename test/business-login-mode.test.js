@@ -113,3 +113,13 @@ check('owner CAN delete Balance entries but cannot edit them', /canDeleteBatch =
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
+
+// Regression: state.bulkSelected.has crash (blank tabs on real devices).
+// renderItemCard must not assume bulkSelected is a Set — after rehydration it
+// can be a plain array/object. The code must normalize before calling .has().
+{
+  const src = require('fs').readFileSync(require('path').join(__dirname,'..','app.js'),'utf8');
+  check('renderItemCard normalizes bulkSelected to a Set before .has()', /typeof state\.bulkSelected\.has !== 'function'[\s\S]{0,160}new Set\(/.test(src));
+  check('boot hydration normalizes bulkSelected to a Set', (src.match(/state\.bulkSelected = new Set\(\)/g)||[]).length >= 2);
+  check('bulkSelected is NOT persisted in persistAll', !/bulkSelected: state\.bulkSelected/.test(src));
+}
