@@ -134,7 +134,7 @@
         state.bizCloudMap && Object.keys(state.bizCloudMap).length &&
         window.InfosSupabase && window.InfosSupabase.configured()) {
       clearTimeout(window.__sharePublishTimer);
-      window.__sharePublishTimer = setTimeout(() => { try { pushOwnerSharedBusinesses(); } catch {} }, 1500);
+      window.__sharePublishTimer = setTimeout(() => { try { pushOwnerSharedBusinesses(); } catch {} }, 600);
     }
   }
 
@@ -187,7 +187,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '67.0.0';
+  const APP_VERSION = '68.0.0';
 
   // ---------- State ----------
   const state = {
@@ -718,7 +718,7 @@
         // Sub-tabs (System / Accounts) live as horizontal segmented controls inside the page body.
         html += `<div class="nav-item" data-tab="${key}"><i class="ti ti-${disp.icon} nav-icon"></i><span class="label">${esc(disp.name)}</span></div>`;
       } else if (key === 'notices') {
-        html += `<div class="nav-item" data-tab="${key}"><i class="ti ti-${disp.icon} nav-icon"></i><span class="label">${esc(disp.name)}</span><span class="label badge" id="notices-badge"></span></div>`;
+        html += `<div class="nav-item" data-tab="${key}"><i class="ti ti-${disp.icon} nav-icon"></i><span class="label">${esc(disp.name)}</span></div>`;
       } else if (key === 'businesses') {
         html += `<div class="nav-item" data-tab="${key}"><i class="ti ti-${disp.icon} nav-icon"></i><span class="label">${esc(disp.name)}</span></div>`;
       } else if (key === 'trash') {
@@ -1045,7 +1045,6 @@
     const cur = state.activeBizId;
     const opts = [
       { id: 'all', name: 'All businesses', icon: 'building-community' },
-      { id: 'none', name: 'Myself (owner)', icon: 'user' },
       ...state.businesses.map(b => ({ id: b.id, name: b.name, biz: b }))
     ];
     bizPicker.innerHTML = opts.map(o => `
@@ -1737,17 +1736,10 @@
     let chosenBizIds = editing ? (editing.bizIds ? [...editing.bizIds] : (editing.bizId ? [editing.bizId] : [])) :
                                  (state.activeBizId && state.activeBizId !== 'all' && state.activeBizId !== 'none' ? [state.activeBizId] : []);
     let chosenTagIds = editing ? [...(editing.tagIds || [])] : (state.activeTagId ? [state.activeTagId] : []);
-    // "Assign to myself" — item belongs to the owner only (no business). Tracked via ownerAssigned.
-    // DEFAULT FIX: a brand-new item created while NOT scoped to a single business
-    // (e.g. in the "All businesses" view) used to default to NO assignment, so if
-    // the user didn't notice the assignment field it would be saved unassigned and
-    // effectively vanish from every business filter. To prevent silently-orphaned
-    // entries, a new non-notices item with no business pre-selected defaults to
-    // "Myself" (owner-owned, always visible in the All view). The user can still
-    // switch it to a business in the modal before saving.
-    let assignSelf = editing ? !!editing.ownerAssigned
-                             : (state.activeBizId === 'none' ? true
-                                : (tabKey !== 'notices' && chosenBizIds.length === 0));
+    // Items are assigned to BUSINESSES only — there is no "assign to myself"
+    // concept. (assignSelf is kept internally as always-false so existing save
+    // logic that references it still works, but it is never shown or set.)
+    let assignSelf = false;
 
     function renderBizAssign() {
       const wrap = $('#if-biz');
@@ -1755,7 +1747,6 @@
       const allSelected = chosenBizIds.length === state.businesses.length && state.businesses.length > 0;
       wrap.innerHTML = `
         <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
-          <span class="assign-pill assign-self ${assignSelf ? 'selected' : ''}" data-assign-self="1"><i class="ti ti-user" style="font-size:12px;"></i> Myself${assignSelf ? ' <i class="ti ti-check" style="font-size:11px;"></i>' : ''}</span>
           ${state.businesses.map(b => {
             const sel = chosenBizIds.includes(b.id);
             return `<span class="assign-pill ${sel ? 'selected' : ''}" data-bid="${b.id}"><span class="biz-color-dot" style="background:${b.color}"></span>${esc(b.name)}${sel ? ' <i class="ti ti-check" style="font-size:11px;"></i>' : ''}</span>`;
@@ -1763,8 +1754,6 @@
         </div>
         ${state.businesses.length ? `<button type="button" class="btn-outline btn-sm" id="if-assign-all">${allSelected ? 'Unassign all businesses' : 'Assign to all businesses'}</button>` : ''}
       `;
-      const selfPill = wrap.querySelector('[data-assign-self]');
-      if (selfPill) selfPill.onclick = () => { assignSelf = !assignSelf; renderBizAssign(); };
       wrap.querySelectorAll('[data-bid]').forEach(el => el.onclick = () => {
         const id = el.dataset.bid;
         if (chosenBizIds.includes(id)) chosenBizIds = chosenBizIds.filter(x => x !== id);
@@ -1909,14 +1898,11 @@
       fields.forEach(f => values[f.k] = $('#if-' + f.k).value.trim());
       const missing = fields.filter(f => f.required && !values[f.k]);
       if (missing.length) { toast(`${missing[0].lbl} is required`); return; }
-      // Require at least one assignment: a business OR "Myself". Notices are exempt (global feed).
-      // If the user has no businesses at all, items implicitly belong to the owner (self).
-      let effectiveAssignSelf = assignSelf;
-      if (tabKey !== 'notices' && state.businesses.length === 0) {
-        effectiveAssignSelf = true;
-      }
-      if (tabKey !== 'notices' && state.businesses.length > 0 && chosenBizIds.length === 0 && !assignSelf) {
-        toast('Assign this to a business or to Myself');
+      // Require a business assignment (notices are the global feed, exempt). If
+      // the owner has no businesses yet, the item is simply unassigned.
+      let effectiveAssignSelf = false;
+      if (tabKey !== 'notices' && state.businesses.length > 0 && chosenBizIds.length === 0) {
+        toast('Assign this to a business');
         return;
       }
       const wasNew = !editing;
@@ -2755,6 +2741,15 @@
       clearTimeout(window.__sharedRefreshDebounce);
       window.__sharedRefreshDebounce = setTimeout(() => refreshSharedFromCloud(cloudBusinessId), 250);
     });
+    // POLLING FALLBACK (same as the owner side): realtime websockets don't always
+    // deliver, so poll the shared row every 5s. The owner pushing an entry to this
+    // business will then appear within ~5s even if realtime is silent. Version-
+    // guarded, so it's a no-op when nothing changed.
+    try { clearInterval(window.__sharedPoll); } catch {}
+    window.__sharedPoll = setInterval(() => {
+      if (!state.__sharedMode || document.hidden) return;
+      try { refreshSharedFromCloud(cloudBusinessId); } catch {}
+    }, 5000);
   }
 
   // Pull the latest shared snapshot and re-render. Used by realtime + on resume.
@@ -3851,6 +3846,8 @@
     // Stop the heartbeat and mark this device's session ended for the biz it was in
     if (state.bizContext) endBizDeviceSessionLocal(state.bizContext);
     if (window.__bizHeartbeatId) { clearInterval(window.__bizHeartbeatId); window.__bizHeartbeatId = null; }
+    try { clearInterval(window.__sharedPoll); } catch {}
+    try { clearInterval(window.__ownerSharedPoll); } catch {}
     // OWNER: tear down any shared-business realtime subscriptions opened for this
     // owner so they don't leak across sign-out / account switch.
     try { ownerSharedUnsubs.forEach(fn => { try { fn(); } catch {} }); } catch {}
@@ -4182,7 +4179,6 @@
         ${!isViewOnly() && hasBiz ? `
           <select id="list-biz-filter" class="list-biz-filter">
             <option value="all" ${state.activeBizId === 'all' ? 'selected' : ''}>All businesses</option>
-            <option value="none" ${state.activeBizId === 'none' ? 'selected' : ''}>Unassigned</option>
             ${state.businesses.map(b => `<option value="${b.id}" ${state.activeBizId === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}
           </select>
         ` : ''}
@@ -4467,7 +4463,6 @@
       ? `<div class="list-toolbar activity-filter-toolbar">
           <select id="activity-biz-filter" class="list-biz-filter">
             <option value="all" ${af === 'all' ? 'selected' : ''}>All businesses</option>
-            <option value="none" ${af === 'none' ? 'selected' : ''}>Unassigned</option>
             ${state.businesses.map(b => `<option value="${b.id}" ${af === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}
           </select>
         </div>`

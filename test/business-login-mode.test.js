@@ -49,7 +49,8 @@ check('profile card label uses the business name, not hardcoded "Shared business
 check('no "full app ... sync to everyone" wording in profile card', !/full app and your changes sync live to everyone/.test(src));
 
 console.log('\nno orphaned entries — new owner items always get an assignment:');
-check('new non-notices item defaults to assignSelf when no business pre-selected', /tabKey !== 'notices' && chosenBizIds\.length === 0\)/.test(src));
+check('no "Myself"/self-assign option (items assign to businesses only)', !/data-assign-self/.test(src) && /let assignSelf = false;/.test(src));
+check('item save requires a business assignment', /toast\('Assign this to a business'\)/.test(src));
 
 console.log('\nBALANCE: only the business login adds; owner is view-only on Balance:');
 check('Balance "Add entry" button only shown to business login (canAddBalance = isViewOnly())', /const canAddBalance = isViewOnly\(\)/.test(src));
