@@ -343,7 +343,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '106.0.0';
+  const APP_VERSION = '107.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2937,6 +2937,14 @@
     sharedRealtimeUnsub = null;
     if (!(window.InfosSupabase && window.InfosSupabase.adapter.subscribeSharedState)) return;
     sharedRealtimeUnsub = window.InfosSupabase.adapter.subscribeSharedState(cloudBusinessId, (row) => {
+      // Record what the realtime payload actually carried — this tells us whether
+      // the instant direct-apply path is usable (row.data present) or whether the
+      // payload is data-less (REPLICA IDENTITY not FULL → falls back to fetch).
+      try {
+        window.__infosRtPayloadLog = window.__infosRtPayloadLog || [];
+        window.__infosRtPayloadLog.push({ t: Date.now(), hasData: !!(row && row.data), v: (row && row.version) || null });
+        if (window.__infosRtPayloadLog.length > 20) window.__infosRtPayloadLog.shift();
+      } catch (e) {}
       // The realtime payload ALREADY contains the row data (REPLICA IDENTITY FULL
       // is enabled), so apply it DIRECTLY — no re-fetch. The re-fetch was the
       // `loadSharedState timed out` that kept live sync from working: reading the

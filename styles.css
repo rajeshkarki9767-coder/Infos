@@ -1002,10 +1002,11 @@ input, textarea, [contenteditable="true"] {
   align-items: center;
   margin: 0 0 12px;
   position: sticky;
-  top: -1px;
-  z-index: 6;
-  background: linear-gradient(to bottom, var(--app-bg) 70%, transparent);
-  padding: 4px 0 10px;
+  top: 0;
+  z-index: 20;
+  background: var(--app-bg);
+  padding: 10px 0 10px;
+  border-bottom: 1px solid var(--border-soft);
 }
 
 /* Credentials display inside card */
