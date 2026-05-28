@@ -1004,14 +1004,23 @@ input, textarea, [contenteditable="true"] {
   top: 0;
   z-index: 20;
   background: var(--app-bg);
-  margin: 0 -24px 12px;
-  padding: 14px 24px 12px;
+  padding: 12px 0;
+  margin: 0 0 12px;
   border-bottom: 1px solid var(--border-soft);
 }
-/* When the toolbar is the first thing in the list, pull it up to span the
-   scroll container's top padding so it pins to the true top. */
-#page-content > .list-toolbar:first-child,
-.list-page > .list-toolbar:first-child { margin-top: -20px; }
+/* The sticky element pins to the top of whichever ancestor scrolls. On mobile
+   that's #page-content (which has padding); on desktop it's #page-viewport with
+   #page-content position:relative. In both cases top:0 + a solid background keeps
+   the bar visible and pinned. No negative margins (they broke pinning when the
+   scroll container changed). */
+.list-toolbar::before {
+  content: '';
+  position: absolute;
+  left: -40px; right: -40px;
+  top: -24px; height: 24px;
+  background: var(--app-bg);
+  pointer-events: none;
+}
 
 /* Credentials display inside card */
 .cred-stack {
