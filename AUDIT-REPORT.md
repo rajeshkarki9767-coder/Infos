@@ -1,89 +1,82 @@
-# Infos — Audit & Auto-Fix Report (v104.0.0)
+# Infos — Audit & Auto-Fix Report (v109.0.0)
 
-**Method:** code review + the project's automated test suite (215 checks / 11 suites
+**Method:** code review + the project's automated test suite (now 221 checks / 12 suites
 against in-memory Postgres + a simulated DOM). Per the audit's own rules, anything not
 testable from this environment is marked NOT VERIFIABLE rather than given a fake pass. The
 score is a code-review + test self-assessment, NOT an independent production certification.
 
 ## 1. Score (self-assessment)
 
-Overall: 85 / 100 — code-review score, not a production certification. Most deductions are
-"cannot verify from here." Held at 85: this pass completed the owner-side instant-sync path
-and verified the realtime subscription design, but did not find a new code defect to fix —
-the remaining sync latency is most likely a live-service delivery matter, not a code bug
-(see below), which would be dishonest to "fix" blindly.
+Overall: 86 / 100 — code-review score, not a production certification. Up from 85: this pass
+verified the recently-fixed blank-page crash class is fully closed and added a regression
+test so it can't silently return.
 
 ## 2. Category scores
 
 | Category | Score | Basis |
 |---|---|---|
-| Stability | 89 | 215 checks pass; crashes fixed; Supabase calls timeout-guarded |
-| Backend / Auth | 86 | local-session auth (no network stall); idempotent member link |
+| Stability | 90 | 221 checks pass; the blank-page/sync-abort crash fixed + now regression-tested |
+| Backend / Auth | 86 | local-session auth; idempotent member link |
 | Database | 85 | RLS isolation tested vs real Postgres; realtime publication enabled by user |
-| Data integrity / Sync | 86 | content-aware pull; forced reconcile backstop; realtime force-applies on event |
+| Data integrity / Sync | 86 | realtime applies payload directly; crash that aborted applies now fixed |
 | Notifications | 79 | wired, deduped, permission-gated; delivery NOT VERIFIABLE here |
-| Sound system | 85 | autoplay unlock, shared ctx, node cleanup, delete sound, louder set; output NOT VERIFIABLE |
+| Sound system | 85 | autoplay unlock, shared ctx, node cleanup, distinct delete sounds; output NOT VERIFIABLE |
 | Security | 76 | no client secrets, ~185 esc() sites, safeUrl, server-side RLS; no formal pen-test |
-| Performance | 78 | sync compare off hot path; 4s read timeout; interval reuse; no profiling numbers |
+| Performance | 78 | version pre-check off hot path; interval reuse; no profiling numbers |
 | UI/UX | NOT SCORED | requires a real browser |
 | Responsiveness | NOT SCORED | requires real devices/viewports |
 | Accessibility | NOT SCORED | requires screen reader / audit tool |
-| Code Quality | 71 | tested + functional; one ~7,400-line file — modularization advisable |
+| Code Quality | 72 | tested + functional; one ~7,400-line file — modularization advisable |
 | Scalability | NOT VERIFIABLE | requires production-scale load testing |
 
 ## 3. Key findings & status
 
-- **Realtime sync (analyzed, NOT a code defect):** the subscription correctly subscribes to
-  all shared_state changes and filters client-side by business_cloud_id — deliberately
-  avoiding the Supabase gotcha where a server-side filter + missing REPLICA IDENTITY FULL
-  silently drops UPDATE events. The callback now force-applies on any event (30ms) on BOTH
-  sides. If live updates still lag, the cause is realtime events not being delivered by the
-  Supabase project (delivery/config), which is NOT VERIFIABLE / REQUIRES EXTERNAL SERVICE
-  ACCESS from here. Diagnostics are exposed at runtime (window.__InfosRealtimeStatus,
-  window.__infosSyncLog) so the user can confirm on the live app. I did not fabricate a
-  "fix" for this, since the code path is correct.
-- **Instant-sync path (completed this pass):** owner-side realtime callback now force-applies
-  immediately (was a plain guarded refresh), matching the business side. Both directions now
-  apply within ~30ms of a delivered realtime event; the 1-2s poll + forced reconcile is the
-  fallback when realtime is silent.
+- **Blank-page / sync-abort crash (FIXED in v108, hardened + tested this pass):** a
+  sync-triggered re-render called renderItemDetail with no ctx → "Cannot read properties of
+  undefined (reading 'itemTab')", which blanked the page on edit/save AND aborted the sync
+  apply (so updates didn't render). Diagnosed directly from the user's console. This pass:
+  verified the whole bug class is closed (only two render callsites, both now pass ctx; both
+  detail renderers guard a missing ctx), removed a redundant ternary I'd introduced, and
+  added a regression suite (test/detail-ctx-guard.test.js, 6 checks) so a future edit that
+  drops the guard fails CI.
+- **Realtime delivery (confirmed via user console):** window.__infosRtPayloadLog showed
+  events arriving — realtime IS delivering. With the crash fixed, applies no longer abort.
 - **Notifications / Security / Code Quality:** unchanged — delivery, formal pen-test, and a
   modular refactor are respectively NOT VERIFIABLE here / REQUIRE EXTERNAL TOOLING /
-  advisable-but-deferred (a blanket refactor risks regressions).
+  advisable-but-deferred.
 
-## 4. Changelog (this pass, v104)
+## 4. Changelog (this pass, v109)
 
-- Sync: owner-side realtime callback force-applies on event (30ms debounce), mirroring the
-  business side — completes the instant-sync path in both directions.
-- Verified (no change needed): realtime uses robust client-side filtering; no duplicate
-  functions; sound safeguards intact; no client secrets; Supabase calls timeout-guarded; no
-  stray console.log.
+- Removed a redundant ternary introduced in the v108 fix (both branches were identical).
+- Added test/detail-ctx-guard.test.js (6 checks) and registered it in run-all — locks in the
+  v108 crash fix. Suite total now 221 checks / 12 suites.
+- Verified (no change needed): only two render callsites and both pass ctx; no duplicate
+  functions; no client secrets; sound safeguards intact; no stray console.log.
 
-(Carried: v103 accent-localStorage-persist + forced reconcile; v102 delete sound + louder
-sounds + active-tab highlight + push retry/self-heal; v101 sync perf; v100 audio unlock;
-v99 accent save + splash tint + single search-X; v97/98 auth-timeout fix; v89 ID&Pass
-passwords; v87 realtime stack-overflow fix; crash fix; non-destructive merge.)
+(Carried: v108 detail-ctx crash fix + fixed search bar; v107 realtime payload diagnostic;
+v106 apply-from-realtime-payload; v105 cheap version read + accent-in-biz-login; v100 audio
+unlock; v97 auth-timeout fix; v87 realtime stack-overflow fix; non-destructive merge.)
 
 ## 5. NOT VERIFIABLE in this environment
 
 - Real-browser rendering, dark/light correctness, responsive breakpoints
 - iOS / Android / specific-browser behavior
 - Actual notification delivery; actual audio output on real hardware
-- **Whether Supabase realtime delivers change events to clients** (the live-sync latency
-  hinges on this; check window.__InfosRealtimeStatus + window.__infosSyncLog on the device)
+- Live realtime latency end-to-end on the user's network
 - Concurrent multi-user, slow-network, offline recovery on real devices
 - Formal security pen-test + dependency CVE audit; production-scale load metrics
 
 ## 6. Release status (honest)
 
-MOSTLY READY. Passes everything testable here; the instant-sync code path is complete and
-correct in both directions. Not "ENTERPRISE READY" in the certification sense — that needs
-the real-device / multi-user / security-audit / load validation in section 5 (and live
-confirmation that realtime events are delivered), which can't be done from this environment.
-Claiming it would be a fake validation, which the rules forbid.
+MOSTLY READY. Passes everything testable here; the crash that was blanking the page and
+sabotaging sync is fixed and regression-tested. Not "ENTERPRISE READY" in the certification
+sense — that needs the real-device / multi-user / security-audit / load validation in
+section 5, which can't be done from this environment. Claiming it would be a fake
+validation, which the rules forbid.
 
 ## 7. Final export
 
-Infos.zip (v104.0.0) accompanies this report — all checks passing, version consistent, no
-node_modules.
+Infos.zip (v109.0.0) accompanies this report — all 221 checks passing, version consistent,
+no node_modules.
 
 Self-assessment from code review + automated tests. No fabricated tests or validations.

@@ -343,7 +343,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '107.0.0';
+  const APP_VERSION = '109.0.0';
 
   // ---------- State ----------
   const state = {
@@ -1037,6 +1037,7 @@
     pageContent.className = '';
     pageContent.innerHTML = '';
     def.render(pageContent, ctx);
+    state.__currentCtx = ctx || null;
     bindChipClicks(pageContent);
     void pageContent.offsetWidth;
     pageContent.className = direction === 'right' ? 'page-enter-right' : (direction === 'left' ? 'page-enter-left' : 'page-enter-fade');
@@ -2415,7 +2416,11 @@
     const def = getTabDef(cur);
     if (def && def.render) {
       pageContent.innerHTML = '';
-      def.render(pageContent);
+      // Pass the stored context — detail views (item-detail, biz-detail,
+      // balance-detail) need it. Re-rendering without ctx crashed renderItemDetail
+      // ("Cannot read properties of undefined (reading 'itemTab')"), which blanked
+      // the page on edit/save and aborted sync applies.
+      def.render(pageContent, state.__currentCtx || undefined);
       bindChipClicks(pageContent);
     }
   }
@@ -5260,6 +5265,8 @@
 
   // Read-only detail page (legacy single-entry route, kept for deep links).
   function renderBalanceDetail(c, ctx) {
+    if (!ctx) ctx = state.__currentCtx;
+    if (!ctx) { try { setActive('balance'); } catch (e) {} return; }
     const tabKey = 'balance';
     const it = (state.items[tabKey] || []).find(x => x.id === ctx.itemId);
     if (!it) { c.innerHTML = emptyState('alert-circle', 'Entry not found', 'It may have been deleted.'); return; }
@@ -6176,6 +6183,11 @@
   }
 
   function renderItemDetail(c, ctx) {
+    // Defensive: a re-render (e.g. triggered by a sync update) may arrive without
+    // ctx. Fall back to the stored context; if there's genuinely none, bail to the
+    // list instead of throwing (which previously blanked the page).
+    if (!ctx) ctx = state.__currentCtx;
+    if (!ctx || ctx.itemId == null) { try { setActive('notices'); } catch (e) {} return; }
     const tabKey = ctx.itemTab, itemId = ctx.itemId;
     const it = state.items[tabKey]?.find(x => x.id === itemId);
     if (!it) { c.innerHTML = emptyState('alert-circle', 'Not found', ''); return; }
