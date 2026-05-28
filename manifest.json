@@ -137,6 +137,7 @@
   "share_target": {
     "action": "/index.html",
     "method": "GET",
+    "enctype": "application/x-www-form-urlencoded",
     "params": {
       "title": "title",
       "text": "text",
@@ -148,9 +149,6 @@
       "protocol": "web+infos",
       "url": "/index.html?handler=%s"
     }
-  ],
-  "scope_extensions": [
-    { "origin": "*.infos.app" }
   ],
   "file_handlers": [
     {

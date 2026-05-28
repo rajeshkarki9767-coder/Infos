@@ -73,6 +73,28 @@
   let client = null;
   function getClient() { if (!client) client = makeClient(); return client; }
 
+  // Reflect whether the Supabase REST endpoint is actually reachable. A dropped
+  // network or DNS failure (ERR_NAME_NOT_RESOLVED) doesn't always flip the
+  // websocket status, so REST calls report reachability here too. Debounced so a
+  // single transient blip doesn't flicker the pill. Only signals on a CHANGE.
+  let __lastReach = null, __reachTimer = null;
+  function signalReachability(ok) {
+    if (ok === __lastReach) return;
+    if (__reachTimer) { try { clearTimeout(__reachTimer); } catch (e) {} }
+    const _st = (typeof setTimeout !== 'undefined') ? setTimeout : null;
+    const apply = () => {
+      __lastReach = ok;
+      try {
+        if (typeof window !== 'undefined' && window.__InfosRealtimeStatus) {
+          window.__InfosRealtimeStatus(ok ? 'live' : 'error');
+        }
+      } catch (e) {}
+    };
+    // Going offline is debounced (avoid flicker on a one-off blip); coming back
+    // online applies immediately.
+    if (!ok && _st) __reachTimer = _st(apply, 2500); else apply();
+  }
+
   // ----- Auth helpers (used by the app's sign-in screen when Supabase is on) -----
   const Auth = {
     available() { return !!getClient(); },
@@ -376,10 +398,11 @@
           query,
           new Promise(resolve => _setTimeout(() => resolve({ data: null, __timedOut: true }), 3500))
         ]) : await query;
-        if (result && result.__timedOut) return null;
-        if (result && result.error) return null;
+        if (result && result.__timedOut) { signalReachability(false); return null; }
+        if (result && result.error) { signalReachability(false); return null; }
+        signalReachability(true);
         return (result && result.data && typeof result.data.version === 'number') ? result.data.version : 0;
-      } catch (e) { return null; }
+      } catch (e) { signalReachability(false); return null; }
     },
 
     // Read the live shared snapshot for a business. RLS lets only the owner or a
