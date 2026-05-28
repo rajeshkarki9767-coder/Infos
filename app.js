@@ -343,7 +343,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '118.0.0';
+  const APP_VERSION = '121.0.0';
 
   // ---------- State ----------
   const state = {
@@ -533,7 +533,7 @@
     return '';
   }
   function bizPasswordMasked(b) {
-    if (b.password) return '•'.repeat(Math.min(b.password.length, 10));
+    if (b.password) return '.'.repeat(Math.min(b.password.length, 10));
     return '';
   }
   function tagById(biz, tagId) { return biz?.tags.find(t => t.id === tagId); }
@@ -754,17 +754,14 @@
     // They only ever see items assigned to their own business, and revealing the full
     // assignment list would leak other businesses' names.
     if (isViewOnly()) return '';
-    // Sort chips by the canonical business order (state.businesses) so the order
-    // is STABLE across renders. Without this, the chip order followed the raw
-    // bizIds array, which could shuffle between syncs (cloud merge / different
-    // serialization orders) — the user saw "Marvel, Steve, Stark" become
-    // "Steve, Stark, Marvel" with no real change. Sorting by sidebar order
-    // matches what they already see in the businesses list.
-    const order = new Map((state.businesses || []).map((b, i) => [b.id, i]));
+    // Sort chips by business NAME — deterministic across all devices and all syncs.
+    // (Earlier we sorted by state.businesses index order, which is stable on one
+    // device but can differ between owner and member if a business was added on
+    // one side first. Name sort is the same everywhere, regardless.)
     const sorted = bizIds.slice().sort((a, b) => {
-      const ai = order.has(a) ? order.get(a) : 1e9;
-      const bi = order.has(b) ? order.get(b) : 1e9;
-      return ai - bi;
+      const an = (bizById(a)?.name || '').toLowerCase();
+      const bn = (bizById(b)?.name || '').toLowerCase();
+      return an < bn ? -1 : an > bn ? 1 : 0;
     });
     return sorted.map(id => bizChipHTML(id, small)).join('');
   }
@@ -3039,7 +3036,6 @@
       sharedApplyingRemote = true;
       if (state.__sharedMode) {
         const __before = itemIdSnapshot();
-        const __beforeSig = (() => { try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted)); } catch { return ''; } })();
         const ms = Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail });
         Object.assign(state, ms);
         if (!state.bulkSelected || typeof state.bulkSelected.has !== 'function') state.bulkSelected = new Set();
@@ -3048,8 +3044,13 @@
         state.__sharedVersion = snap.version || 0;
         state.user = state.user || { name: (snap.data.business && snap.data.business.name || 'Business'), email: state.__sharedEmail };
         try { chimeForArrivals(__before); } catch (e) {}
-        const __afterSig = (() => { try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted)); } catch { return ''; } })();
-        if (__beforeSig !== __afterSig) {
+        // ALWAYS re-render after a realtime apply. The previous "only render when
+        // the current tab's signature changed" optimization could miss updates
+        // (e.g. edits to other tabs' data, or when an item's field changed but the
+        // signature compared the wrong way). The trade-off — a minor flicker on
+        // your own edits' echo — is worth always reflecting reality.
+        const modalNow = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
+        if (!modalNow && !document.getElementById('fullscreen-message')) {
           rerenderCurrentTab();
           try { updateBadges(); buildNav(); } catch (e) {}
         }
@@ -3131,7 +3132,6 @@
       sharedApplyingRemote = true;
       if (state.__sharedMode) {
         const __before = itemIdSnapshot();
-        const __beforeRenderSig = (() => { try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted)); } catch { return ''; } })();
         const ms = Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail });
         Object.assign(state, ms);
       if (!state.bulkSelected || typeof state.bulkSelected.has !== "function") state.bulkSelected = new Set();
@@ -3141,12 +3141,11 @@
         state.user = state.user || { name: (snap.data.business && snap.data.business.name || 'Business'), email: state.__sharedEmail };
         // Chime for any entries that just arrived from the owner via sync.
         try { chimeForArrivals(__before); } catch (e) {}
-        // Re-render when the visible content changed (covers adds, edits, deletes
-        // on the current tab). On a forced reconcile this avoids needless flicker
-        // when nothing actually changed.
-        const __afterRenderSig = (() => { try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted)); } catch { return ''; } })();
+        // We got here only because the version OR content actually changed (or
+        // force was set). Always re-render — the conditional signature check
+        // could miss subtle changes that the user does need to see.
         const modalNow = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
-        if (__beforeRenderSig !== __afterRenderSig && !modalNow && !document.getElementById('fullscreen-message')) {
+        if (!modalNow && !document.getElementById('fullscreen-message')) {
           rerenderCurrentTab();
           try { updateBadges(); buildNav(); } catch (e) {}
         }
@@ -4796,7 +4795,7 @@
       const showing = span.dataset.show === '1';
       const real = span.dataset.real;
       span.dataset.show = showing ? '0' : '1';
-      span.textContent = showing ? '•'.repeat(Math.min(real.length, 10)) : real;
+      span.textContent = showing ? '.'.repeat(Math.min(real.length, 10)) : real;
       btn.innerHTML = `<i class="ti ${showing ? 'ti-eye' : 'ti-eye-off'}"></i>`;
       window.__InfosIcons?.replaceIcons(btn);
     });
@@ -4898,13 +4897,11 @@
     if (it.updatedAt && it.updatedAt !== it.createdAt) add('Last edited', new Date(it.updatedAt).toLocaleString());
     const bizIds = itemBizIds(it);
     if (bizIds.length && !isViewOnly()) {
-      // Sort by canonical sidebar order so the "Assigned to" list is stable across
-      // syncs (same fix as the chip-order one).
-      const __ord = new Map((state.businesses || []).map((b, i) => [b.id, i]));
+      // Sort by business name for fully deterministic order across all devices.
       const sorted = bizIds.slice().sort((a, b) => {
-        const ai = __ord.has(a) ? __ord.get(a) : 1e9;
-        const bi = __ord.has(b) ? __ord.get(b) : 1e9;
-        return ai - bi;
+        const an = (bizById(a)?.name || '').toLowerCase();
+        const bn = (bizById(b)?.name || '').toLowerCase();
+        return an < bn ? -1 : an > bn ? 1 : 0;
       });
       add('Assigned to', sorted.map(id => bizById(id)?.name).filter(Boolean).join(', '));
     }
@@ -5049,11 +5046,10 @@
         const verbColor = { created: 'success', edited: 'info', trashed: 'danger', restored: 'success' }[e.action] || 'info';
         const verbIcon = { created: 'plus', edited: 'edit', trashed: 'trash', restored: 'arrow-back-up' }[e.action] || 'point';
         const verbLabel = { created: 'Created', edited: 'Edited', trashed: 'Trashed', restored: 'Restored' }[e.action] || e.action;
-        const __actOrder = new Map((state.businesses || []).map((b, i) => [b.id, i]));
         const bizChips = (e.bizIds || []).slice().sort((a, b) => {
-            const ai = __actOrder.has(a) ? __actOrder.get(a) : 1e9;
-            const bi = __actOrder.has(b) ? __actOrder.get(b) : 1e9;
-            return ai - bi;
+            const an = (bizById(a)?.name || '').toLowerCase();
+            const bn = (bizById(b)?.name || '').toLowerCase();
+            return an < bn ? -1 : an > bn ? 1 : 0;
           }).map(bid => {
           const b = bizById(bid);
           return b ? `<span class="biz-chip" style="background:${b.color}1F;color:${readableColor(b.color)};">${esc(b.name)}</span>` : '';
@@ -5646,7 +5642,7 @@
     state.businesses.forEach(b => {
       const el = document.createElement('div');
       el.className = 'card-row clickable';
-      el.innerHTML = `<div style="display:flex;align-items:flex-start;gap:12px;">${bizAvatarHTML(b, 44)}<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;margin-bottom:4px;color:var(--text-primary);">${esc(b.name)}</div><div style="font-size:12px;color:var(--text-secondary);line-height:1.7;"><div><i class="ti ti-mail" style="font-size:12px;vertical-align:-1px;"></i> ${esc(b.email)}</div><div><i class="ti ti-lock" style="font-size:12px;vertical-align:-1px;"></i> ${(() => { const pw = bizPasswordValue(b); return pw ? esc(pw) : (b.__needsPasswordReset ? "<span style=\"color:var(--danger-fg);\">Re-set password (was encrypted)</span>" : "—"); })()}</div></div></div><i class="ti ti-chevron-right" style="font-size:16px;color:var(--text-tertiary);margin-top:12px;"></i></div>`;
+      el.innerHTML = `<div style="display:flex;align-items:flex-start;gap:12px;">${bizAvatarHTML(b, 44)}<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;margin-bottom:4px;color:var(--text-primary);">${esc(b.name)}</div><div style="font-size:12px;color:var(--text-secondary);line-height:1.7;"><div><i class="ti ti-mail" style="font-size:12px;vertical-align:-1px;"></i> ${esc(b.email)}</div><div><i class="ti ti-lock" style="font-size:12px;vertical-align:-1px;"></i> ${(() => { const pw = bizPasswordValue(b); if (pw) { const mask = '•'.repeat(Math.max(8, Math.min(pw.length, 12))); return esc(mask); } return b.__needsPasswordReset ? "<span style=\"color:var(--danger-fg);\">Re-set password (was encrypted)</span>" : "—"; })()}</div></div></div><i class="ti ti-chevron-right" style="font-size:16px;color:var(--text-tertiary);margin-top:12px;"></i></div>`;
       el.onclick = () => setActive('biz-detail','right',{bizId:b.id,title:b.name,sub:b.email});
       wrap.appendChild(el);
     });
@@ -5670,7 +5666,18 @@
         <div class="section-label" style="margin-bottom:10px;">Sign-in credentials</div>
         <div style="display:flex;flex-direction:column;gap:8px;font-size:13px;">
           <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-mail" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Email</span><strong style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${esc(b.email || '—')}</strong></div>
-          <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-lock" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Password</span><strong id="biz-pw" data-show="1" data-real="${esc(bizPasswordValue(b))}" style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${bizPasswordValue(b) ? esc(bizPasswordValue(b)) : '—'}</strong>${bizPasswordValue(b) ? `<button class="btn-icon" id="biz-pw-toggle" data-target="biz-pw" style="padding:2px;margin-left:auto;" aria-label="Hide password" title="Hide password"><i class="ti ti-eye-off" style="font-size:13px;"></i></button><button class="btn-icon copy-link-btn" data-copy="${esc(bizPasswordValue(b))}" data-copy-label="Password" style="padding:2px;" aria-label="Copy password" title="Copy password"><i class="ti ti-copy" style="font-size:13px;"></i></button>` : ''}</div>
+          <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-lock" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Password</span>${(() => {
+            const __pw = bizPasswordValue(b);
+            if (!__pw) {
+              return `<strong id="biz-pw" data-show="0" style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">—</strong>`;
+            }
+            // Default to HIDDEN. Remember per-business so toggling doesn't reset on every sync re-render.
+            const __key = '__bizPwShow_' + b.id;
+            const __showing = state[__key] === true;
+            const __mask = '•'.repeat(Math.max(8, Math.min(__pw.length, 14)));
+            const __display = __showing ? __pw : __mask;
+            return `<strong id="biz-pw" data-show="${__showing ? '1' : '0'}" data-real="${esc(__pw)}" data-mask="${esc(__mask)}" style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${esc(__display)}</strong><button class="btn-icon" id="biz-pw-toggle" style="padding:2px;margin-left:auto;" aria-label="${__showing ? 'Hide password' : 'Show password'}" title="${__showing ? 'Hide password' : 'Show password'}"><i class="ti ${__showing ? 'ti-eye-off' : 'ti-eye'}" style="font-size:13px;"></i></button><button class="btn-icon copy-link-btn" data-copy="${esc(__pw)}" data-copy-label="Password" style="padding:2px;" aria-label="Copy password" title="Copy password"><i class="ti ti-copy" style="font-size:13px;"></i></button>`;
+          })()}</div>
         </div>
       </div>
       <div class="biz-items-section">
@@ -5850,19 +5857,18 @@
     if (!isViewOnly()) $('#biz-edit').onclick = () => openBusinessModal(b.id);
     const pwToggleBtn = $('#biz-pw-toggle');
     if (pwToggleBtn) pwToggleBtn.onclick = () => {
-      const el = $('#biz-pw'), showing = el.dataset.show === '1';
-      el.dataset.show = showing ? '0' : '1';
-      const plain = bizPasswordValue(b);
-      if (showing) {
-        // Mask the password as a row of dots matching its length (capped). Keeps
-        // the field clearly populated while hiding the value.
-        el.textContent = plain ? '•'.repeat(Math.max(8, Math.min(plain.length, 14))) : '—';
-      } else {
-        el.textContent = plain || '—';
-      }
-      pwToggleBtn.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
-      pwToggleBtn.setAttribute('title', showing ? 'Show password' : 'Hide password');
-      pwToggleBtn.innerHTML = `<i class="ti ${showing ? 'ti-eye' : 'ti-eye-off'}" style="font-size:13px;"></i>`;
+      const el = $('#biz-pw'); if (!el) return;
+      const showing = el.dataset.show === '1';
+      const nextShow = !showing;
+      el.dataset.show = nextShow ? '1' : '0';
+      const real = el.dataset.real || bizPasswordValue(b) || '';
+      const mask = el.dataset.mask || '•'.repeat(Math.max(8, Math.min(real.length, 14)));
+      el.textContent = nextShow ? real : (real ? mask : '—');
+      // Persist per-business so a sync re-render doesn't reset the choice.
+      state['__bizPwShow_' + b.id] = nextShow;
+      pwToggleBtn.setAttribute('aria-label', nextShow ? 'Hide password' : 'Show password');
+      pwToggleBtn.setAttribute('title', nextShow ? 'Hide password' : 'Show password');
+      pwToggleBtn.innerHTML = `<i class="ti ${nextShow ? 'ti-eye-off' : 'ti-eye'}" style="font-size:13px;"></i>`;
       try { window.__InfosIcons?.replaceIcons(pwToggleBtn); } catch {}
     };
     if (!isViewOnly()) {
@@ -6228,7 +6234,7 @@
       if (!span) return;
       const showing = span.dataset.show === '1';
       span.dataset.show = showing ? '0' : '1';
-      span.textContent = showing ? '•'.repeat(Math.min(span.dataset.real.length, 10)) : span.dataset.real;
+      span.textContent = showing ? '.'.repeat(Math.min(span.dataset.real.length, 10)) : span.dataset.real;
       btn.innerHTML = `<i class="ti ${showing ? 'ti-eye' : 'ti-eye-off'}"></i>`;
       window.__InfosIcons?.replaceIcons(btn);
     });
@@ -6353,7 +6359,7 @@
       const showing = span.dataset.show === '1';
       const real = span.dataset.real;
       span.dataset.show = showing ? '0' : '1';
-      span.textContent = showing ? '•'.repeat(Math.min(real.length, 10)) : real;
+      span.textContent = showing ? '.'.repeat(Math.min(real.length, 10)) : real;
       btn.innerHTML = `<i class="ti ${showing ? 'ti-eye' : 'ti-eye-off'}"></i>`;
       window.__InfosIcons?.replaceIcons(btn);
     });

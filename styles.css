@@ -1786,10 +1786,15 @@ h1, h2, h3, h4 {
   display: flex;
   gap: 4px;
   padding: 4px;
-  background: var(--surface-2, var(--surface-1));
-  border: 1px solid var(--border-soft);
+  background: rgba(0, 0, 0, 0.08);
+  border: 1px solid rgba(0, 0, 0, 0.18);
   border-radius: var(--radius-md);
   margin-bottom: 16px;
+}
+body.dark .idpass-segtabs,
+[data-theme="dark"] .idpass-segtabs {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.20);
 }
 .idpass-segtabs > button {
   flex: 1;
@@ -1810,10 +1815,16 @@ h1, h2, h3, h4 {
 }
 .idpass-segtabs > button:hover { color: var(--text-primary); }
 .idpass-segtabs > button.active {
-  background: var(--app-bg);
+  background: #ffffff;
   color: var(--text-primary);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
-  border: 1px solid var(--border-soft);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.18);
+  border: 1px solid rgba(0, 0, 0, 0.10);
+}
+body.dark .idpass-segtabs > button.active,
+[data-theme="dark"] .idpass-segtabs > button.active {
+  background: rgba(255, 255, 255, 0.10);
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
 }
 .idpass-segtabs > button i { font-size: 14px; }
 

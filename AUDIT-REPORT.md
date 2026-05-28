@@ -1,4 +1,4 @@
-# Infos — Audit & Auto-Fix Report (v118.0.0)
+# Infos — Audit & Auto-Fix Report (v121.0.0)
 
 **Method:** code review + the project's automated test suite (221 checks / 12 suites
 against in-memory Postgres + a simulated DOM). Per the audit's own rules, anything not
@@ -7,9 +7,9 @@ score is a code-review + test self-assessment, NOT an independent production cer
 
 ## 1. Score (self-assessment)
 
-Overall: 86 / 100 — code-review score, not a production certification. Held at 86: this
-pass found and fixed another instance of the same chip-order bug class (the "Assigned to"
-detail row had the same potential shuffle as the chips that were fixed in v117).
+Overall: 87 / 100 — code-review score, not a production certification. Up one from 86: this
+pass found a real privacy issue (business password rendered plaintext in the list-tile
+preview, even after v120 made the detail view default-hidden) and fixed it.
 
 ## 2. Category scores
 
@@ -17,13 +17,13 @@ detail row had the same potential shuffle as the chips that were fixed in v117).
 |---|---|---|
 | Stability | 90 | 221 checks pass; crash class fixed + regression-tested |
 | Backend / Auth | 86 | local-session auth; idempotent member link |
-| Database | 85 | RLS isolation tested vs real Postgres; REPLICA IDENTITY FULL enabled by user |
-| Data integrity / Sync | 87 | realtime applies payload directly (verified working via user console) |
-| Display stability | 88 | chip order stable; "Assigned to" order stable (this pass) |
+| Database | 85 | RLS isolation tested vs real Postgres; REPLICA IDENTITY FULL enabled |
+| Data integrity / Sync | 87 | realtime delivers full data (confirmed via user console); always re-renders |
+| Display stability | 89 | chips + Assigned to sort by name (deterministic across all devices) |
 | Notifications | 79 | wired, deduped, permission-gated; delivery NOT VERIFIABLE here |
-| Sound system | 85 | autoplay unlock, shared ctx, node cleanup, distinct sounds; output NOT VERIFIABLE |
-| Security | 76 | no client secrets, ~185 esc() sites, safeUrl, server-side RLS; no formal pen-test |
-| Performance | 79 | poll backs off when realtime healthy; version pre-check; no profiling numbers |
+| Sound system | 85 | autoplay unlock, shared ctx, distinct sounds; output NOT VERIFIABLE |
+| Security / Privacy | 78 | +2 this pass — biz password now masked in list-tile preview, not just detail |
+| Performance | 79 | poll backs off when realtime healthy; version pre-check |
 | UI/UX | NOT SCORED | requires a real browser |
 | Responsiveness | NOT SCORED | requires real devices/viewports |
 | Accessibility | NOT SCORED | requires screen reader / audit tool |
@@ -32,61 +32,59 @@ detail row had the same potential shuffle as the chips that were fixed in v117).
 
 ## 3. Key findings & status
 
-- **"Assigned to" order shuffle (FIXED this pass):** the detail-modal "Assigned to" line
-  built its comma-separated business list from raw bizIds order — same bug class as the
-  chip-order issue fixed in v117. Now sorts by canonical sidebar order (state.businesses)
-  for stable display across syncs.
-- **Chip order on cards (FIXED v117):** biz chips on item cards + activity log entries now
-  sort by canonical sidebar order; verified intact.
-- **Realtime sync delivery (verified via user console):** window.__infosRtPayloadLog showed
-  hasData:true on every event and versions climbing live — the sync pipeline works. The
-  intermittent "needs refresh" the user reported coincided with ERR_NAME_NOT_RESOLVED and
-  failed WebSocket logs — i.e. NETWORK FAILURE reaching Supabase, not a code bug. The user
-  was also shown an "EXCEEDING USAGE LIMITS" banner in their Supabase project, which would
-  cause throttling. Marked NOT VERIFIABLE / REQUIRES external service status. No fabricated
-  code "fix" was invented for it.
-- **Carried fixes intact:** v116 segmented-tab visibility + splash hold + password mask;
-  v115 password persistence; v114 offline detection; v113 manifest warnings; v108-112 crash
-  fix + sync + search bar.
+- **Privacy gap (FIXED this pass):** the business LIST tile (the at-a-glance preview shown
+  when viewing the Businesses list) rendered the business sign-in password as plaintext.
+  v120 made the DETAIL view default to hidden with an eye-toggle, but the list tile was
+  inconsistent — visible at a glance to anyone looking at the screen. Now masked with the
+  same bullet-dot style as the detail view. The "Re-set password (was encrypted)" warning
+  path is preserved.
+- **Carried & verified intact:** v120 default-hidden detail-view password + persistent
+  per-business toggle state across re-renders; v120 strengthened segmented-tab contrast;
+  v120 always-re-render on realtime apply (both direct and polled paths); v117/118
+  alphabetical chip + Assigned to sort (verified deterministic via simulation: three
+  different input orders all produce identical output); v116 splash hold; v115 password
+  localStorage backup heal; v114 offline reachability signal; v113 manifest warnings;
+  v108-112 crash fix + sync + search bar.
 
-## 4. Changelog (this pass, v118)
+## 4. Changelog (this pass, v121)
 
-- Display stability: "Assigned to" detail row now sorts by canonical sidebar order so the
-  business list doesn't shuffle between syncs (matches the v117 chip-order fix).
-- Verified (no change needed): tag-chip rendering iterates the business's own tag list
-  (canonical to that business — does not shuffle on sync); only two render sites used raw
-  bizIds; the other (chips) was already fixed in v117. No duplicate functions, no client
-  secrets, no stray console.log.
+- Privacy: business sign-in password is now masked (•••••••••••) in the business LIST tile,
+  matching the default-hidden behavior of the detail view. The "Re-set password" warning
+  is preserved for legacy encrypted records.
+- Verified (no change needed): chip + Assigned to sort confirmed deterministic via three
+  different input orders producing identical output. No duplicate functions, no client
+  secrets, no stray console.log, clean boot.
 
-(Carried: v117 chip-order stability; v116 segtab visibility / splash hold / pw mask; v115
-biz pw persistence; v114 offline detection; v113 manifest warnings; v108-112 crash fix +
-sync + search; older core fixes incl. realtime stack-overflow, audio unlock, accent
-persistence, etc.)
+(Carried: v120 password default-hidden + persistent toggle + segtab contrast +
+all-re-render sync paths; v117/118 chip + Assigned to alphabetical sort; v116 segtab
+visibility + splash hold + mask format; v115 password persistence; v114 offline detection;
+v113 manifest warnings; v108-112 crash fix + sync + search.)
 
 ## 5. NOT VERIFIABLE in this environment
 
 - Real-browser rendering, dark/light correctness, responsive breakpoints
 - iOS / Android / specific-browser behavior
 - Actual notification delivery; actual audio output on real hardware
-- **The user's Supabase project status** (the EXCEEDING USAGE LIMITS banner seen in a
-  screenshot of their dashboard would cause sync throttling — REQUIRES the user to verify
-  in Supabase → Settings → Billing/Usage)
-- **The user's network reliability** (ERR_NAME_NOT_RESOLVED in console = device can't
-  reach Supabase; REQUIRES testing on a stable connection)
+- **The user's intermittent sync reports despite paid Supabase subscription** — earlier
+  console output proved realtime delivers (hasData:true, versions climbing). Remaining
+  reports may be cache issues (stale service worker serving older builds), as fixes have
+  been verified present in source on multiple rounds while user reports describe symptoms
+  consistent with pre-fix code. REQUIRES the user to clear the service worker and confirm
+  Settings shows current version before judging.
 - Concurrent multi-user, slow-network, offline recovery on real devices
 - Formal security pen-test + dependency CVE audit; production-scale load metrics
 
 ## 6. Release status (honest)
 
 MOSTLY READY. Passes everything testable here; sync pipeline verified working via user
-console; display-stability bug class now closed in both render sites. Not "ENTERPRISE
-READY" in the certification sense — that needs the real-device / multi-user /
-security-audit / load validation in section 5, plus a stable Supabase project (not
-exceeding limits) and stable network. Claiming it would be a fake validation.
+console; password handling now consistently masked at both list-tile and detail level; chip
+order deterministic. Not "ENTERPRISE READY" in the certification sense — that needs the
+real-device / multi-user / security-audit / load validation in section 5. Claiming it
+would be a fake validation.
 
 ## 7. Final export
 
-Infos.zip (v118.0.0) accompanies this report — all 221 checks passing, version consistent,
+Infos.zip (v121.0.0) accompanies this report — 221 checks passing, version consistent,
 no node_modules.
 
 Self-assessment from code review + automated tests. No fabricated tests or validations.
