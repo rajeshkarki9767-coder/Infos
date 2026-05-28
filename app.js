@@ -87,8 +87,8 @@
 
       if (state === 'uploading') {
         if (d) d.style.background = '#BA7517';
-        if (l) { l.textContent = 'Uploading to cloud…'; l.style.color = '#8a560f'; }
-        pill.title = 'Saving your change to the cloud…';
+        if (l) { l.textContent = 'Syncing…'; l.style.color = '#8a560f'; }
+        pill.title = 'Syncing your change…';
       } else if (state === 'synced') {
         if (d) d.style.background = '#1D9E75';
         if (l) { l.textContent = 'Synced'; l.style.color = '#137a55'; }
@@ -209,6 +209,7 @@
       hiddenTabs: state.hiddenTabs,
       customTabs: state.customTabs, tabOrder: state.tabOrder,
       onboarded: state.onboarded, pushPermissionAsked: state.pushPermissionAsked,
+      soundEnabled: state.soundEnabled,
       templates: state.templates,
       cryptoMeta: state.cryptoMeta,
       syncAdapter: state.syncAdapter,
@@ -303,7 +304,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '90.0.0';
+  const APP_VERSION = '95.0.0';
 
   // ---------- State ----------
   const state = {
@@ -377,7 +378,7 @@
   state.sidebarCollapsed = false;
   app.classList.remove('collapsed');
   ['user','bizContext','activeBizId','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
-   'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked',
+   'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked','soundEnabled',
    'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs'].forEach(k => {
     if (prefs[k] !== undefined) state[k] = prefs[k];
   });
@@ -2035,8 +2036,12 @@
       else recordHistory(obj, 'edited');
       // v15: cross-tab activity feed (for Notices → Activity Log)
       recordGlobalActivity(tabKey, wasNew ? 'created' : 'edited', obj);
-      // Play a soft chime for new notices (v10).
-      if (wasNew && tabKey === 'notices') playNoticeChime();
+      // Play a distinct chime when YOU add a new entry: balance has its own
+      // sound; all other tabs share the self-entry sound.
+      if (wasNew) {
+        if (tabKey === 'balance') playBalanceSound();
+        else playSelfEntrySound();
+      }
       // Activity log on each assigned business
       chosenBizIds.forEach(bid => {
         recordActivity(bizById(bid), wasNew ? 'added' : 'edited', `${wasNew ? 'Added' : 'Edited'} ${tabDisp(tabKey).name.toLowerCase()}: ${obj.title || obj.name}`);
@@ -2874,7 +2879,7 @@
     // guarded, so it's a no-op when nothing changed.
     try { clearInterval(window.__sharedPoll); } catch {}
     window.__sharedPoll = setInterval(() => {
-      if (!state.__sharedMode || document.hidden) return;
+      if (!state.__sharedMode) return;
       try { refreshSharedFromCloud(cloudBusinessId); } catch {}
     }, 1500);
   }
@@ -2904,7 +2909,7 @@
       }
       sharedApplyingRemote = true;
       if (state.__sharedMode) {
-        const beforeSig = (() => { try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted).map(i => i.id)); } catch { return ''; } })();
+        const __before = itemIdSnapshot();
         const ms = Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail });
         Object.assign(state, ms);
       if (!state.bulkSelected || typeof state.bulkSelected.has !== "function") state.bulkSelected = new Set();
@@ -2912,10 +2917,18 @@
         state.__sharedBusinessId = cloudBusinessId;
         state.__sharedVersion = snap.version || 0;
         state.user = state.user || { name: (snap.data.business && snap.data.business.name || 'Business'), email: state.__sharedEmail };
-        const afterSig = (() => { try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted).map(i => i.id)); } catch { return ''; } })();
+        // Chime for any entries that just arrived from the owner via sync.
+        try { chimeForArrivals(__before); } catch (e) {}
+        // We only get here AFTER passing the version guard above — i.e. the cloud
+        // genuinely has a newer version than we last applied, so SOMETHING changed
+        // (on any tab). Re-render the current view unconditionally (unless a modal
+        // or edit is open). Relying on a current-tab signature missed changes made
+        // on other tabs and edits, which is why owner→business updates needed a
+        // manual refresh. The version guard already prevents needless churn.
         const modalNow = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
-        if (beforeSig !== afterSig && !modalNow && !document.getElementById('fullscreen-message')) {
+        if (!modalNow && !document.getElementById('fullscreen-message')) {
           rerenderCurrentTab();
+          try { updateBadges(); buildNav(); } catch (e) {}
         }
       } else {
         // Owner viewing this shared business: merge the slice into full state.
@@ -2930,24 +2943,24 @@
         // re-render if something the user can actually see changed. Polling that
         // touches nothing visible must NOT re-render (that churn was causing
         // entries to appear to flicker/disappear).
-        const beforeSig = (() => {
-          try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted).map(i => i.id)); }
-          catch { return ''; }
-        })();
+        // Past the version guard ⇒ the cloud genuinely changed. Map cloud id back
+        // to the local business id and merge.
+        const __beforeOwner = itemIdSnapshot();
         Slice.applySliceToOwnerState(state, snap.data, localBizId);
         if (!state.bizCloudVersions) state.bizCloudVersions = {};
         state.bizCloudVersions[cloudBusinessId] = snap.version || 0;
         // Persist locally without echoing a push back (breaks the poll→push loop).
         state.__suppressOwnerPush = true;
         try { persistAll(); } finally { state.__suppressOwnerPush = false; }
-        const afterSig = (() => {
-          try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted).map(i => i.id)); }
-          catch { return ''; }
-        })();
-        // Only re-render when the visible tab changed AND no modal/edit is open.
+        // Chime for entries that just arrived from the business via sync.
+        try { chimeForArrivals(__beforeOwner); } catch (e) {}
+        // Re-render unconditionally (a confirmed version bump means real change on
+        // some tab); the version guard prevents needless churn. Skip only when a
+        // modal/edit is open so we don't yank the UI mid-interaction.
         const modalNow = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
-        if (beforeSig !== afterSig && !modalNow && !document.getElementById('fullscreen-message')) {
+        if (!modalNow && !document.getElementById('fullscreen-message')) {
           rerenderCurrentTab();
+          try { updateBadges(); buildNav(); } catch (e) {}
         }
         sharedApplyingRemote = false;
         return;
@@ -3022,7 +3035,6 @@
     window.__ownerSharedPoll = setInterval(() => {
       if (state.__sharedMode) return;
       if (!state.bizCloudMap) return;
-      if (document.hidden) return; // don't poll a backgrounded tab
       Object.keys(state.bizCloudMap).forEach(lid => {
         const cid = state.bizCloudMap[lid];
         if (cid && bizById(lid)) { try { refreshSharedFromCloud(cid); } catch {} }
@@ -3511,28 +3523,108 @@
     } catch { return 'd_unknown'; }
   }
 
-  // Play a soft two-note chime when a new notice is created.
-  // Uses Web Audio API so we don't ship any audio assets.
-  function playNoticeChime() {
+  // ---- Sound library (Web Audio, no audio files shipped) ----
+  // Distinct chimes for distinct events so the user can tell them apart by ear:
+  //   self-entry      : you added something (any tab except balance)
+  //   balance         : a balance entry was added
+  //   incoming        : a NEW entry arrived from sync (other login added it)
+  //   reminder        : a reminder/notice arrived for a business
+  // Each respects the user's sound preference (state.soundEnabled, default on).
+  function soundsOn() { return state.soundEnabled !== false; }
+  // Reuse ONE AudioContext for all sounds. Creating a fresh context per sound can
+  // hit browser limits (some cap concurrent contexts at ~6) and is wasteful; a
+  // single shared, resumed context is more robust and avoids overlap glitches.
+  function getAudioCtx() {
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return;
-      const ctx = new AC();
+      if (!AC) return null;
+      if (!window.__infosAudioCtx) window.__infosAudioCtx = new AC();
+      const ctx = window.__infosAudioCtx;
+      if (ctx.state === 'suspended') { try { ctx.resume(); } catch {} }
+      return ctx;
+    } catch { return null; }
+  }
+  function playChord(notes, opts) {
+    try {
+      if (!soundsOn()) return;
+      const ctx = getAudioCtx();
+      if (!ctx) return;
       const now = ctx.currentTime;
-      // Two ascending notes (E5 and A5) with a gentle envelope
-      [659.25, 880.00].forEach((freq, i) => {
+      const gap = (opts && opts.gap) != null ? opts.gap : 0.12;
+      const dur = (opts && opts.dur) != null ? opts.dur : 0.32;
+      const vol = (opts && opts.vol) != null ? opts.vol : 0.12;
+      const type = (opts && opts.type) || 'sine';
+      notes.forEach((freq, i) => {
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
-        osc.type = 'sine';
+        osc.type = type;
         osc.frequency.value = freq;
-        gain.gain.setValueAtTime(0, now + i * 0.12);
-        gain.gain.linearRampToValueAtTime(0.12, now + i * 0.12 + 0.03);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.12 + 0.32);
+        const start = now + i * gap;
+        gain.gain.setValueAtTime(0, start);
+        gain.gain.linearRampToValueAtTime(vol, start + 0.03);
+        gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
         osc.connect(gain).connect(ctx.destination);
-        osc.start(now + i * 0.12);
-        osc.stop(now + i * 0.12 + 0.34);
+        osc.start(start);
+        osc.stop(start + dur + 0.02);
+        // Free the nodes when done (the context stays alive and reused).
+        osc.onended = () => { try { osc.disconnect(); gain.disconnect(); } catch {} };
       });
-      setTimeout(() => ctx.close().catch(() => {}), 700);
+    } catch {}
+  }
+  // Backwards-compatible name used elsewhere.
+  function playNoticeChime() { playSelfEntrySound(); }
+  // You added an entry yourself (ascending two-note, bright).
+  function playSelfEntrySound() { playChord([659.25, 880.00], { gap: 0.10, dur: 0.30, type: 'sine' }); }
+  // You added a BALANCE entry (lower, two-note "coin"-ish, triangle wave).
+  function playBalanceSound() { playChord([523.25, 392.00], { gap: 0.09, dur: 0.26, vol: 0.13, type: 'triangle' }); }
+  // A NEW entry arrived from another login via sync (three soft rising notes).
+  function playIncomingSound() { playChord([587.33, 740.00, 932.33], { gap: 0.10, dur: 0.30, vol: 0.11, type: 'sine' }); }
+  // A reminder arrived for a business (distinct double-pulse, slightly urgent).
+  function playReminderSound() { playChord([880.00, 880.00], { gap: 0.16, dur: 0.22, vol: 0.14, type: 'square' }); }
+
+  // Snapshot of all live item ids per tab — used to detect entries that ARRIVED
+  // from sync (so we can chime for them). Returns a Set of "tab:id" keys.
+  function itemIdSnapshot() {
+    const s = new Set();
+    try {
+      Object.keys(state.items || {}).forEach(function (tab) {
+        (state.items[tab] || []).forEach(function (it) {
+          if (it && !it.deleted && it.id != null) s.add(tab + ':' + it.id);
+        });
+      });
+    } catch {}
+    return s;
+  }
+  // Given a before-snapshot, find tabs that gained NEW items and chime accordingly.
+  // Reminders/notices get the reminder sound; everything else the incoming sound.
+  function chimeForArrivals(beforeSet) {
+    try {
+      if (!soundsOn()) return;
+      let gotReminder = false, gotOther = false, gotBalance = false;
+      Object.keys(state.items || {}).forEach(function (tab) {
+        (state.items[tab] || []).forEach(function (it) {
+          if (!it || it.deleted || it.id == null) return;
+          if (beforeSet.has(tab + ':' + it.id)) return; // not new
+          if (tab === 'notices') gotReminder = true;
+          else if (tab === 'balance') gotBalance = true;
+          else gotOther = true;
+        });
+      });
+      // Priority: reminder > balance > other (one sound per refresh, no overlap).
+      if (gotReminder) playReminderSound();
+      else if (gotBalance) playBalanceSound();
+      else if (gotOther) playIncomingSound();
+
+      // Fire a browser/push notification too (if the user granted permission),
+      // so arrivals are noticed even when the app isn't focused.
+      try {
+        if ((gotReminder || gotBalance || gotOther) && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          var title = gotReminder ? 'New reminder' : (gotBalance ? 'New balance entry' : 'New entry');
+          var body = gotReminder ? 'A new reminder just arrived.' : (gotBalance ? 'A balance entry was just added.' : 'A new entry was just added.');
+          var n = new Notification('Infos — ' + title, { body: body, icon: 'icons/icon-192.png', tag: 'infos-arrival' });
+          setTimeout(function () { try { n.close(); } catch (e) {} }, 6000);
+        }
+      } catch (e) {}
     } catch {}
   }
 
@@ -5206,6 +5298,7 @@
         });
         // Global activity (one entry per item)
         created.forEach(it => recordGlobalActivity(tabKey, 'created', it));
+        if (created.length) playBalanceSound();
         persistAll();
         closeModal();
         state.history.pop(); setActive(tabKey, 'fade');
@@ -6585,6 +6678,15 @@
         <div class="section-label" style="margin-bottom:10px;">Notifications</div>
         <div class="settings-hint" style="margin-bottom:10px;">Browser permission to show reminders.</div>
         <button class="btn-outline btn-sm" id="enable-push"><i class="ti ti-bell" style="font-size:13px;vertical-align:-2px;"></i> ${('Notification' in window && Notification.permission === 'granted') ? 'Enabled' : 'Enable notifications'}</button>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;">
+          <div>
+            <div style="font-size:13px;font-weight:600;color:var(--text-primary);">Sound effects</div>
+            <div class="settings-hint" style="margin:2px 0 0;">Chimes for new entries, balance entries, reminders, and incoming syncs.</div>
+          </div>
+          <button id="toggle-sound" role="switch" aria-checked="${state.soundEnabled !== false}" style="flex:none;width:44px;height:26px;border-radius:999px;border:none;cursor:pointer;position:relative;transition:background .15s;background:${state.soundEnabled !== false ? 'var(--accent-solid, #378ADD)' : '#c4c8cc'};">
+            <span style="position:absolute;top:3px;left:${state.soundEnabled !== false ? '21px' : '3px'};width:20px;height:20px;border-radius:50%;background:#fff;transition:left .15s;box-shadow:0 1px 2px rgba(0,0,0,.3);"></span>
+          </button>
+        </div>
       </div>
     `;
     if (tab === 'management' && !isViewer) {
@@ -6740,6 +6842,14 @@
     });
     const ep = $('#enable-push');
     if (ep) ep.onclick = requestPushPermission;
+    const ts = $('#toggle-sound');
+    if (ts) ts.onclick = () => {
+      state.soundEnabled = (state.soundEnabled === false) ? true : false;
+      persistAll();
+      // Play a sample when turning on, so the user hears it works.
+      if (state.soundEnabled) { try { playSelfEntrySound(); } catch {} }
+      rerenderCurrentTab();
+    };
   }
 
   function wireManagement(c) {
@@ -6988,7 +7098,7 @@
     state.sidebarCollapsed = false;
     app.classList.remove('collapsed');
     ['user','bizContext','activeBizId','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
-     'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked',
+     'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked','soundEnabled',
      'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs'].forEach(k => {
       if (p[k] !== undefined) state[k] = p[k];
     });
