@@ -15,7 +15,11 @@
     window.addEventListener('unhandledrejection', function (ev) {
       try {
         var r = ev && ev.reason;
-        showRuntimeError('Async error: ' + (r && r.message ? r.message : String(r)));
+        var msg = (r && r.message) ? r.message : String(r);
+        // Include the top of the stack trace so a recursion/stack-overflow points
+        // us at the offending function instead of just saying "stack exceeded".
+        var stack = (r && r.stack) ? String(r.stack).split('\n').slice(0, 4).join(' | ') : '';
+        showRuntimeError('Async error: ' + msg + (stack ? '  [' + stack + ']' : ''));
       } catch (e) {}
     });
   } catch (e) {}
@@ -249,7 +253,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '82.0.0';
+  const APP_VERSION = '85.0.0';
 
   // ---------- State ----------
   const state = {
@@ -401,6 +405,27 @@
     // Always store plaintext (encryption feature removed).
     b.password = plaintext;
     delete b.passwordEnc;
+    // BULLETPROOF BACKUP: also write to a synchronous localStorage map keyed by
+    // business id. The in-memory b.password can momentarily be lost if state is
+    // rehydrated mid-flight (async IndexedDB write racing a sync pull), which made
+    // the password flash then blank. The render falls back to this map so the
+    // password is ALWAYS shown once set.
+    try {
+      const map = JSON.parse(localStorage.getItem('infos-biz-pw') || '{}');
+      if (plaintext) map[b.id] = plaintext; else delete map[b.id];
+      localStorage.setItem('infos-biz-pw', JSON.stringify(map));
+    } catch {}
+  }
+  // Read a business password, falling back to the synchronous backup map if the
+  // in-memory copy is missing.
+  function bizPasswordValue(b) {
+    if (!b) return '';
+    if (b.password) return b.password;
+    try {
+      const map = JSON.parse(localStorage.getItem('infos-biz-pw') || '{}');
+      if (map[b.id]) { b.password = map[b.id]; return map[b.id]; } // heal in-memory too
+    } catch {}
+    return '';
   }
   function bizPasswordMasked(b) {
     if (b.password) return '•'.repeat(Math.min(b.password.length, 10));
@@ -5183,7 +5208,7 @@
     state.businesses.forEach(b => {
       const el = document.createElement('div');
       el.className = 'card-row clickable';
-      el.innerHTML = `<div style="display:flex;align-items:flex-start;gap:12px;">${bizAvatarHTML(b, 44)}<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;margin-bottom:4px;color:var(--text-primary);">${esc(b.name)}</div><div style="font-size:12px;color:var(--text-secondary);line-height:1.7;"><div><i class="ti ti-mail" style="font-size:12px;vertical-align:-1px;"></i> ${esc(b.email)}</div><div><i class="ti ti-lock" style="font-size:12px;vertical-align:-1px;"></i> ${b.password ? esc(b.password) : (b.__needsPasswordReset ? '<span style="color:var(--danger-fg);">Re-set password (was encrypted)</span>' : '—')}</div></div></div><i class="ti ti-chevron-right" style="font-size:16px;color:var(--text-tertiary);margin-top:12px;"></i></div>`;
+      el.innerHTML = `<div style="display:flex;align-items:flex-start;gap:12px;">${bizAvatarHTML(b, 44)}<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;margin-bottom:4px;color:var(--text-primary);">${esc(b.name)}</div><div style="font-size:12px;color:var(--text-secondary);line-height:1.7;"><div><i class="ti ti-mail" style="font-size:12px;vertical-align:-1px;"></i> ${esc(b.email)}</div><div><i class="ti ti-lock" style="font-size:12px;vertical-align:-1px;"></i> ${(() => { const pw = bizPasswordValue(b); return pw ? esc(pw) : (b.__needsPasswordReset ? "<span style=\"color:var(--danger-fg);\">Re-set password (was encrypted)</span>" : "—"); })()}</div></div></div><i class="ti ti-chevron-right" style="font-size:16px;color:var(--text-tertiary);margin-top:12px;"></i></div>`;
       el.onclick = () => setActive('biz-detail','right',{bizId:b.id,title:b.name,sub:b.email});
       wrap.appendChild(el);
     });
@@ -5207,7 +5232,7 @@
         <div class="section-label" style="margin-bottom:10px;">Sign-in credentials</div>
         <div style="display:flex;flex-direction:column;gap:8px;font-size:13px;">
           <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-mail" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Email</span><strong style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${esc(b.email || '—')}</strong></div>
-          <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-lock" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Password</span><strong id="biz-pw" data-show="1" data-real="${esc(b.password || '')}" style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${b.password ? esc(b.password) : '—'}</strong>${b.password ? `<button id="biz-pw-toggle" class="btn-icon" style="padding:2px;"><i class="ti ti-eye-off" style="font-size:13px;"></i></button>` : ''}</div>
+          <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-lock" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Password</span><strong id="biz-pw" data-show="1" data-real="${esc(bizPasswordValue(b))}" style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${bizPasswordValue(b) ? esc(bizPasswordValue(b)) : '—'}</strong>${bizPasswordValue(b) ? `<button id="biz-pw-toggle" class="btn-icon" style="padding:2px;"><i class="ti ti-eye-off" style="font-size:13px;"></i></button>` : ''}</div>
         </div>
       </div>
       <div class="biz-items-section">
@@ -6934,6 +6959,17 @@
         }
       });
     }
+
+    // Heal business passwords from the synchronous backup map (covers any case
+    // where the in-memory/IndexedDB copy lost the password).
+    try {
+      const pwMap = JSON.parse(localStorage.getItem('infos-biz-pw') || '{}');
+      if (Array.isArray(state.businesses)) {
+        state.businesses.forEach(function (b) {
+          if (b && !b.password && pwMap[b.id]) b.password = pwMap[b.id];
+        });
+      }
+    } catch {}
 
     // Re-apply custom accent now that state is hydrated
     // Custom accent colors have been removed in favor of the preset accent

@@ -162,8 +162,19 @@
 
     async currentUser() {
       const c = getClient(); if (!c) return null;
-      const { data } = await c.auth.getUser();
-      return data?.user || null;
+      const _setTimeout = (typeof setTimeout !== 'undefined') ? setTimeout
+                          : (typeof globalThis !== 'undefined' && globalThis.setTimeout) ? globalThis.setTimeout : null;
+      // Hard timeout: a hung auth.getUser() would freeze boot forever (the user
+      // sees an endless loading screen and the nav never binds, so Settings /
+      // Switch account / Sign out appear dead). Cap it at 5s and treat a timeout
+      // as "no session" so the app proceeds to the sign-in screen.
+      const call = c.auth.getUser();
+      const res = _setTimeout ? await Promise.race([
+        call,
+        new Promise(resolve => _setTimeout(() => resolve({ data: null, __timedOut: true }), 5000))
+      ]) : await call;
+      if (res && res.__timedOut) { try { console.warn('currentUser timed out'); } catch {} return null; }
+      return res?.data?.user || null;
     },
 
     // ---- member detection ----
