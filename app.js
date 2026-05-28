@@ -52,7 +52,7 @@
       if (!pill) {
         pill = document.createElement('div');
         pill.id = id;
-        pill.style.cssText = 'position:fixed;top:14px;right:64px;z-index:99998;display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font:600 11px/1 system-ui,-apple-system,sans-serif;background:rgba(255,255,255,.92);box-shadow:0 1px 4px rgba(0,0,0,.15);border:1px solid rgba(0,0,0,.06);opacity:.9;user-select:none;';
+        pill.style.cssText = 'position:fixed;top:10px;right:60px;z-index:99998;display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font:600 11px/1 system-ui,-apple-system,sans-serif;background:var(--surface,rgba(255,255,255,.96));box-shadow:0 1px 3px rgba(0,0,0,.12);border:1px solid rgba(0,0,0,.06);user-select:none;pointer-events:none;max-width:130px;white-space:nowrap;overflow:hidden;';
         var dot = document.createElement('span');
         dot.id = 'infos-rt-dot';
         dot.style.cssText = 'width:8px;height:8px;border-radius:50%;background:#9aa0a6;flex:none;transition:background .2s;';
@@ -331,7 +331,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '104.0.0';
+  const APP_VERSION = '105.0.0';
 
   // ---------- State ----------
   const state = {
@@ -661,6 +661,20 @@
   // ---------- Per-business theme tint ----------
   // Always on: when a business is the active filter (or context), apply its color as the accent.
   function applyPerBizTheme() {
+    // If the user has explicitly saved an accent, it wins — don't auto-override
+    // with the business brand color. Previously a business login always forced the
+    // business color every render, so the user's chosen accent never stuck (it
+    // looked like the accent "reset after refresh").
+    let userSavedAccent = null;
+    try { userSavedAccent = localStorage.getItem('infos-accent'); } catch (e) {}
+    if (userSavedAccent) {
+      app.dataset.accent = userSavedAccent;
+      app.style.removeProperty('--accent-solid');
+      app.style.removeProperty('--accent-bg');
+      app.style.removeProperty('--accent-text');
+      app.classList.remove('biz-themed');
+      return;
+    }
     let bizColor = null;
     if (state.bizContext) bizColor = bizById(state.bizContext)?.color;
     else if (state.activeBizId && state.activeBizId !== 'all' && state.activeBizId !== 'none') bizColor = bizById(state.activeBizId)?.color;
@@ -2940,6 +2954,19 @@
   // `force` skips the version/content guards and always re-applies + re-renders.
   async function refreshSharedFromCloud(cloudBusinessId, force) {
     try {
+      // CHEAP PRE-CHECK: fetch just the version integer (fast, never times out)
+      // before pulling the heavy data blob. The full-blob fetch on every poll was
+      // timing out, which is why live updates only appeared after a manual refresh.
+      // Skip the pre-check when forced (forced reconcile must pull regardless).
+      if (!force && window.InfosSupabase.adapter.loadSharedVersion) {
+        const appliedV = state.__sharedMode
+          ? (state.__sharedVersion || 0)
+          : ((state.bizCloudVersions && state.bizCloudVersions[cloudBusinessId]) || 0);
+        let cloudV = null;
+        try { cloudV = await window.InfosSupabase.adapter.loadSharedVersion(cloudBusinessId); } catch (e) {}
+        // null = the cheap read failed; fall through to a full load to be safe.
+        if (cloudV != null && cloudV <= appliedV) return; // nothing newer — no expensive fetch
+      }
       const snap = await window.InfosSupabase.adapter.loadSharedState(cloudBusinessId);
       if (!snap || !snap.data) return;
       const appliedVersion = state.__sharedMode
@@ -3696,6 +3723,8 @@
   function playReminderSound() { playChord([987.77, 987.77], { gap: 0.15, dur: 0.24, vol: 0.30, type: 'square', attack: 0.005 }); }
   // Something was DELETED — bold descending two-note (falling = removal).
   function playDeleteSound() { playChord([587.33, 392.00], { gap: 0.10, dur: 0.30, vol: 0.28, type: 'sawtooth', attack: 0.006 }); }
+  // A BALANCE entry was deleted — distinct lower "cash-out" descending triple.
+  function playBalanceDeleteSound() { playChord([523.25, 392.00, 261.63], { gap: 0.08, dur: 0.28, vol: 0.30, type: 'sawtooth', attack: 0.006 }); }
 
   // Snapshot of all live item ids per tab — used to detect entries that ARRIVED
   // from sync (so we can chime for them). Returns a Set of "tab:id" keys.
@@ -5103,7 +5132,7 @@
           touched.forEach(bid => { const biz = bizById(bid); if (biz) recordActivity(biz, 'deleted', `Deleted balance entry by ${b.recorder}`); });
           persistAll();
           state.history.pop(); setActive(tabKey, 'fade');
-          playDeleteSound(); toast('Entry deleted');
+          (tabKey === 'balance' ? playBalanceDeleteSound() : playDeleteSound()); toast('Entry deleted');
         }
       });
     });

@@ -359,6 +359,29 @@
       return data.id;
     },
 
+    // Cheap version-only read: fetches just the integer version, not the heavy
+    // `data` JSON blob. Polls use this to decide whether a full load is even
+    // needed — fetching the whole blob every second was slow enough to time out
+    // (which is exactly why live sync "only worked on refresh"). Returns the
+    // version number, or null on error/timeout.
+    async loadSharedVersion(businessCloudId) {
+      const c = getClient(); if (!c) throw new Error('Supabase not configured');
+      if (!businessCloudId) throw new Error('businessCloudId required');
+      const _setTimeout = (typeof setTimeout !== 'undefined') ? setTimeout
+                          : (typeof globalThis !== 'undefined' && globalThis.setTimeout) ? globalThis.setTimeout : null;
+      try {
+        const query = c.from('shared_state').select('version')
+          .eq('business_cloud_id', businessCloudId).maybeSingle();
+        const result = _setTimeout ? await Promise.race([
+          query,
+          new Promise(resolve => _setTimeout(() => resolve({ data: null, __timedOut: true }), 3500))
+        ]) : await query;
+        if (result && result.__timedOut) return null;
+        if (result && result.error) return null;
+        return (result && result.data && typeof result.data.version === 'number') ? result.data.version : 0;
+      } catch (e) { return null; }
+    },
+
     // Read the live shared snapshot for a business. RLS lets only the owner or a
     // linked member read it. Returns { data, version, updatedAt } or null if no
     // row exists yet. Works for both owner and member callers.
@@ -380,11 +403,12 @@
           .select('data, version, updated_at')
           .eq('business_cloud_id', businessCloudId)
           .maybeSingle();
-        // 8s is generous enough for a slow connection while still bounding a true
-        // hang. (Was 4s, which was killing slow-but-valid queries on mobile.)
+        // Full data fetch gets a longer budget (the blob can be large). Polls no
+        // longer call this every tick — only when loadSharedVersion says the
+        // version changed — so a 10s ceiling here won't cause poll churn.
         const result = _setTimeout ? await Promise.race([
           query,
-          new Promise(resolve => _setTimeout(() => resolve({ data: null, error: null, __timedOut: true }), 4000))
+          new Promise(resolve => _setTimeout(() => resolve({ data: null, error: null, __timedOut: true }), 10000))
         ]) : await query;
         if (result && result.__timedOut) { try { console.warn('loadSharedState timed out'); } catch {} return null; }
         const { data, error } = result;
