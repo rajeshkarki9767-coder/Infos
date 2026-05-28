@@ -343,7 +343,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '115.0.0';
+  const APP_VERSION = '118.0.0';
 
   // ---------- State ----------
   const state = {
@@ -754,7 +754,19 @@
     // They only ever see items assigned to their own business, and revealing the full
     // assignment list would leak other businesses' names.
     if (isViewOnly()) return '';
-    return bizIds.map(id => bizChipHTML(id, small)).join('');
+    // Sort chips by the canonical business order (state.businesses) so the order
+    // is STABLE across renders. Without this, the chip order followed the raw
+    // bizIds array, which could shuffle between syncs (cloud merge / different
+    // serialization orders) — the user saw "Marvel, Steve, Stark" become
+    // "Steve, Stark, Marvel" with no real change. Sorting by sidebar order
+    // matches what they already see in the businesses list.
+    const order = new Map((state.businesses || []).map((b, i) => [b.id, i]));
+    const sorted = bizIds.slice().sort((a, b) => {
+      const ai = order.has(a) ? order.get(a) : 1e9;
+      const bi = order.has(b) ? order.get(b) : 1e9;
+      return ai - bi;
+    });
+    return sorted.map(id => bizChipHTML(id, small)).join('');
   }
   // Render chips for an item, normalizing legacy bizId vs bizIds.
   function itemBizChipsHTML(it, small) {
@@ -2943,7 +2955,9 @@
 
     if (!state.__switchInProgress && !isBootRestore) {
       const shownName = (state.businesses && state.businesses[0] && state.businesses[0].name) || biz.name || 'your business';
-      setTimeout(() => { hideLoadingSplash(); toast(`Signed in to ${shownName}`); }, 250);
+      // Hold the splash long enough for the user to actually read it (previously
+      // ~250ms which felt like a freeze + flash). 1.4s reads as deliberate.
+      setTimeout(() => { hideLoadingSplash(); toast(`Signed in to ${shownName}`); }, 1400);
     }
   }
 
@@ -3669,10 +3683,12 @@
     setActive('notices');
     if (!state.__switchInProgress) {
       state.__nextSplashAction = null;
+      // 1.5s — long enough for the user to read "Signing in / Welcome…" without
+      // it feeling like a flash. Previously 600ms which read as a brief freeze.
       setTimeout(() => {
         hideLoadingSplash();
         if (asBizId) toast(`Signed in to ${bizById(asBizId)?.name}`); else toast(`Welcome, ${name}`);
-      }, 600);
+      }, 1500);
     }
     flushPendingShare();
   }
@@ -4881,7 +4897,17 @@
     if (it.createdAt) add('Created', new Date(it.createdAt).toLocaleString());
     if (it.updatedAt && it.updatedAt !== it.createdAt) add('Last edited', new Date(it.updatedAt).toLocaleString());
     const bizIds = itemBizIds(it);
-    if (bizIds.length && !isViewOnly()) add('Assigned to', bizIds.map(id => bizById(id)?.name).filter(Boolean).join(', '));
+    if (bizIds.length && !isViewOnly()) {
+      // Sort by canonical sidebar order so the "Assigned to" list is stable across
+      // syncs (same fix as the chip-order one).
+      const __ord = new Map((state.businesses || []).map((b, i) => [b.id, i]));
+      const sorted = bizIds.slice().sort((a, b) => {
+        const ai = __ord.has(a) ? __ord.get(a) : 1e9;
+        const bi = __ord.has(b) ? __ord.get(b) : 1e9;
+        return ai - bi;
+      });
+      add('Assigned to', sorted.map(id => bizById(id)?.name).filter(Boolean).join(', '));
+    }
     openModal(`
       <div class="modal-head">
         <h3>${esc(it.title || it.name || it.label || 'Detail')}</h3>
@@ -5023,7 +5049,12 @@
         const verbColor = { created: 'success', edited: 'info', trashed: 'danger', restored: 'success' }[e.action] || 'info';
         const verbIcon = { created: 'plus', edited: 'edit', trashed: 'trash', restored: 'arrow-back-up' }[e.action] || 'point';
         const verbLabel = { created: 'Created', edited: 'Edited', trashed: 'Trashed', restored: 'Restored' }[e.action] || e.action;
-        const bizChips = (e.bizIds || []).map(bid => {
+        const __actOrder = new Map((state.businesses || []).map((b, i) => [b.id, i]));
+        const bizChips = (e.bizIds || []).slice().sort((a, b) => {
+            const ai = __actOrder.has(a) ? __actOrder.get(a) : 1e9;
+            const bi = __actOrder.has(b) ? __actOrder.get(b) : 1e9;
+            return ai - bi;
+          }).map(bid => {
           const b = bizById(bid);
           return b ? `<span class="biz-chip" style="background:${b.color}1F;color:${readableColor(b.color)};">${esc(b.name)}</span>` : '';
         }).join('');
@@ -5823,8 +5854,9 @@
       el.dataset.show = showing ? '0' : '1';
       const plain = bizPasswordValue(b);
       if (showing) {
-        // Mask the password: keep length information so it's clearly masked.
-        el.textContent = plain ? '•'.repeat(Math.min(plain.length, 12)) : '—';
+        // Mask the password as a row of dots matching its length (capped). Keeps
+        // the field clearly populated while hiding the value.
+        el.textContent = plain ? '•'.repeat(Math.max(8, Math.min(plain.length, 14))) : '—';
       } else {
         el.textContent = plain || '—';
       }

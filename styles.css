@@ -1786,7 +1786,8 @@ h1, h2, h3, h4 {
   display: flex;
   gap: 4px;
   padding: 4px;
-  background: var(--surface-1);
+  background: var(--surface-2, var(--surface-1));
+  border: 1px solid var(--border-soft);
   border-radius: var(--radius-md);
   margin-bottom: 16px;
 }
@@ -1809,9 +1810,10 @@ h1, h2, h3, h4 {
 }
 .idpass-segtabs > button:hover { color: var(--text-primary); }
 .idpass-segtabs > button.active {
-  background: var(--surface-elevated);
+  background: var(--app-bg);
   color: var(--text-primary);
-  box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+  border: 1px solid var(--border-soft);
 }
 .idpass-segtabs > button i { font-size: 14px; }
 
