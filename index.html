@@ -68,6 +68,26 @@
   @keyframes bootspin{to{transform:rotate(360deg);}}
   @keyframes bootpulse{0%,100%{transform:scale(1);}50%{transform:scale(1.05);}}
 </style>
+<script>
+  /* Tint the splash with the user's saved accent BEFORE app.js runs, so the
+     splash matches the chosen accent everywhere. Safe + self-contained. */
+  (function () {
+    try {
+      var ACCENTS = { blue:'#378ADD', teal:'#1D9E75', emerald:'#0E7C5A', purple:'#7F77DD',
+        indigo:'#4F46B5', navy:'#2A4A7F', coral:'#D85A30', darkred:'#B23A2E',
+        maroon:'#7E3045', amber:'#BA7517', pink:'#D4537E', slate:'#4A5568' };
+      var saved = localStorage.getItem('infos-accent');
+      var col = ACCENTS[saved];
+      if (!col) return;
+      var logoBg = document.querySelector('.boot-splash-logo rect');
+      if (logoBg) logoBg.setAttribute('fill', col);
+      var logo = document.querySelector('.boot-splash-logo');
+      if (logo) logo.style.boxShadow = '0 10px 30px ' + col + '40';
+      var spinner = document.querySelector('.boot-splash-spinner');
+      if (spinner) { spinner.style.borderTopColor = col; spinner.style.borderColor = col + '40'; spinner.style.borderTopColor = col; }
+    } catch (e) {}
+  })();
+</script>
 
 <div id="install-banner" class="install-banner" hidden>
   <svg width="32" height="32" viewBox="0 0 512 512" aria-hidden="true" style="flex-shrink:0;border-radius:8px;">

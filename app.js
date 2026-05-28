@@ -317,7 +317,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '98.0.0';
+  const APP_VERSION = '101.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2905,14 +2905,29 @@
       const appliedVersion = state.__sharedMode
         ? (state.__sharedVersion || 0)
         : ((state.bizCloudVersions && state.bizCloudVersions[cloudBusinessId]) || 0);
-      // Diagnostic (visible via window.__infosSyncLog) so we can confirm on the
-      // live app whether the poll is actually seeing newer versions.
+      const versionNewer = (snap.version || 0) > appliedVersion;
+      // Fast path: if the cloud version is genuinely newer, apply — no expensive
+      // comparison needed. Only when the version is NOT newer do we fall back to a
+      // content comparison, because version counters can drift (two owner windows,
+      // or the business's own push advancing its version) and wrongly suppress a
+      // real update. This keeps the costly stringify off the common 1s poll path.
+      let proceed = versionNewer;
+      let sameContent = true;
+      if (!versionNewer) {
+        try {
+          const incomingItems = (state.__sharedMode)
+            ? (Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail }).items || {})
+            : (snap.data.items || {});
+          sameContent = JSON.stringify(incomingItems) === JSON.stringify(state.items || {});
+        } catch (e) { sameContent = false; }
+        proceed = !sameContent; // content differs despite version → apply anyway
+      }
       try {
         window.__infosSyncLog = window.__infosSyncLog || [];
-        window.__infosSyncLog.push({ t: Date.now(), biz: cloudBusinessId, cloudV: snap.version || 0, appliedV: appliedVersion, mode: state.__sharedMode ? 'biz' : 'owner' });
+        window.__infosSyncLog.push({ t: Date.now(), biz: cloudBusinessId, cloudV: snap.version || 0, appliedV: appliedVersion, newer: versionNewer, same: sameContent, mode: state.__sharedMode ? 'biz' : 'owner' });
         if (window.__infosSyncLog.length > 30) window.__infosSyncLog.shift();
       } catch (e) {}
-      if ((snap.version || 0) <= appliedVersion) return;
+      if (!proceed) return;
       // Don't yank the UI out from under an open modal or an in-progress edit —
       // that's what causes the flicker. Defer the refresh until the user is idle.
       const modalOpen = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
@@ -3559,6 +3574,32 @@
       return ctx;
     } catch { return null; }
   }
+  // Unlock audio on the FIRST user gesture. Browsers create AudioContexts in a
+  // "suspended" state and only allow playback after resume() is called inside a
+  // real user interaction. Without this, the first (and sometimes all) sounds are
+  // silently blocked. We resume once on the first pointer/key/touch event, play a
+  // near-silent tick to fully unlock on iOS, then remove the listeners.
+  function primeAudioUnlock() {
+    const unlock = () => {
+      try {
+        const ctx = getAudioCtx();
+        if (ctx) {
+          if (ctx.state === 'suspended') ctx.resume();
+          // Silent tick to satisfy stricter mobile unlock requirements.
+          const o = ctx.createOscillator(); const g = ctx.createGain();
+          g.gain.value = 0.0001; o.connect(g).connect(ctx.destination);
+          o.start(); o.stop(ctx.currentTime + 0.02);
+        }
+      } catch (e) {}
+      document.removeEventListener('pointerdown', unlock, true);
+      document.removeEventListener('keydown', unlock, true);
+      document.removeEventListener('touchstart', unlock, true);
+    };
+    document.addEventListener('pointerdown', unlock, true);
+    document.addEventListener('keydown', unlock, true);
+    document.addEventListener('touchstart', unlock, true);
+  }
+  try { primeAudioUnlock(); } catch (e) {}
   function playChord(notes, opts) {
     try {
       if (!soundsOn()) return;
@@ -4448,7 +4489,7 @@
       <div class="list-toolbar">
         <div class="list-search-wrap">
           <i class="ti ti-search list-search-icon"></i>
-          <input id="list-search-input" type="search" placeholder="Search ${esc(tabDisp(tabKey).name.toLowerCase())}…" value="${esc(q)}" autocomplete="off"/>
+          <input id="list-search-input" type="text" inputmode="search" placeholder="Search ${esc(tabDisp(tabKey).name.toLowerCase())}…" value="${esc(q)}" autocomplete="off"/>
           ${q ? '<button class="input-icon-btn" id="list-search-clear" type="button" aria-label="Clear"><i class="ti ti-x"></i></button>' : ''}
         </div>
         ${!isViewOnly() && hasBiz ? `
@@ -6687,7 +6728,8 @@
       <div class="settings-section">
         <div class="section-label" style="margin-bottom:10px;">Accent color</div>
         <div class="accent-row">${[['blue','#378ADD'],['teal','#1D9E75'],['emerald','#0E7C5A'],['purple','#7F77DD'],['indigo','#4F46B5'],['navy','#2A4A7F'],['coral','#D85A30'],['darkred','#B23A2E'],['maroon','#7E3045'],['amber','#BA7517'],['pink','#D4537E'],['slate','#4A5568']].map(([n,col]) => `<div class="accent-swatch" data-accent="${n}" style="background:${col};" title="${n}"></div>`).join('')}</div>
-        <div class="settings-hint">When a business is filtered, the app tints to its brand color automatically.</div>
+        <div class="settings-hint">Applies instantly across every tab, the sidebar, and the splash screen. Tap Save to lock it in.</div>
+        <button class="btn-primary btn-sm" id="save-accent" style="margin-top:10px;"><i class="ti ti-check" style="font-size:13px;vertical-align:-2px;"></i> Save accent</button>
       </div>
       <div class="settings-section">
         <div class="section-label" style="margin-bottom:10px;">Notifications</div>
@@ -6854,7 +6896,16 @@
       app.dataset.accent = s.dataset.accent;
       updS();
       persistAll();
+      // Store synchronously so the splash screen on the NEXT load uses this accent
+      // immediately (before the full state hydrates).
+      try { localStorage.setItem('infos-accent', s.dataset.accent); } catch {}
     });
+    const saveAccentBtn = $('#save-accent');
+    if (saveAccentBtn) saveAccentBtn.onclick = () => {
+      persistAll();
+      try { localStorage.setItem('infos-accent', app.dataset.accent || 'blue'); } catch {}
+      toast('Accent saved — applied across the app'); haptic();
+    };
     const ep = $('#enable-push');
     if (ep) ep.onclick = requestPushPermission;
     const ts = $('#toggle-sound');
