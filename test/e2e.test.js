@@ -208,7 +208,7 @@ async function run() {
   const v1 = await S.adapter.saveSharedState(cloudId, sliceA, 0);
   ownerState.bizCloudVersions[cloudId] = v1;
   check('owner pushed shared slice, version = 1', v1 === 1);
-  check('shared slice stripped item secrets', !('password' in sliceA.items.balance[0]) && !('pin' in sliceA.items.balance[0]));
+  check('shared slice keeps plaintext password (idpass shared content), drops passwordEnc', sliceA.items.balance[0].password === 'SECRET' && !('passwordEnc' in sliceA.items.balance[0]));
 
   console.log('\n2) Member signs in and loads the FULL app on shared data:');
   CURRENT = memberUid;
@@ -219,7 +219,7 @@ async function run() {
   const memberState = Slice.sliceToMemberState(snap.data, { email: 'team@acme.com' });
   check('member gets a full editable state (1 business, items present)',
     memberState.businesses.length === 1 && memberState.items.notices.length === 1 && memberState.items.balance.length === 1);
-  check('member does NOT receive secrets', !('password' in memberState.items.balance[0]));
+  check('member DOES receive idpass passwords (so team can use them)', memberState.items.balance[0].password === 'SECRET');
   check('member nextItemId is beyond existing (3 -> 4)', memberState.nextItemId === 4);
 
   console.log('\n3) Member edits: renames an entry + adds a new one, pushes back:');

@@ -29,7 +29,7 @@ const slice = Slice.buildSharedSlice(ownerState, LOCAL, CLOUD);
   check(`slice includes ${tab} item`, !!(slice.items[tab] && slice.items[tab].length === 1));
 });
 check('slice item bizIds normalized to CLOUD id', slice.items.system[0].bizIds.includes(CLOUD));
-check('secrets stripped from idpass items in slice', !slice.items['idpass-system'][0].password && !slice.items['idpass-system'][0].passwordEnc);
+check('idpass passwords ARE shared so the team can see them', slice.items['idpass-system'][0].password === 'secret' && !slice.items['idpass-system'][0].passwordEnc);
 
 console.log('\nbusiness login hydrates the slice into member state:');
 const ms = Slice.sliceToMemberState(slice, { email: 'team@acme.com' });

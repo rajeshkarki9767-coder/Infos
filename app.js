@@ -42,6 +42,9 @@
   // websocket is actually connected. Green = live sync is on; gray = falling back
   // to polling only. Hidden if the cloud isn't configured. This makes it obvious
   // whether updates SHOULD appear instantly or only after the next poll.
+  // Remembers the steady connection state ('live' | 'error' | null) so transient
+  // upload states ('uploading' → 'synced') can settle back to the right label.
+  window.__InfosSyncBase = window.__InfosSyncBase || null;
   window.__InfosRealtimeStatus = function (state) {
     try {
       var id = 'infos-rt-status';
@@ -52,7 +55,7 @@
         pill.style.cssText = 'position:fixed;top:14px;right:64px;z-index:99998;display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font:600 11px/1 system-ui,-apple-system,sans-serif;background:rgba(255,255,255,.92);box-shadow:0 1px 4px rgba(0,0,0,.15);border:1px solid rgba(0,0,0,.06);opacity:.9;user-select:none;';
         var dot = document.createElement('span');
         dot.id = 'infos-rt-dot';
-        dot.style.cssText = 'width:8px;height:8px;border-radius:50%;background:#9aa0a6;flex:none;';
+        dot.style.cssText = 'width:8px;height:8px;border-radius:50%;background:#9aa0a6;flex:none;transition:background .2s;';
         var lbl = document.createElement('span');
         lbl.id = 'infos-rt-label';
         lbl.style.cssText = 'color:#444;letter-spacing:.2px;';
@@ -62,21 +65,45 @@
       }
       var d = document.getElementById('infos-rt-dot');
       var l = document.getElementById('infos-rt-label');
-      if (state === 'live') {
+      // Track the steady connection state separately from transient upload states.
+      if (state === 'live' || state === 'error') window.__InfosSyncBase = state;
+
+      function applyBase() {
+        var base = window.__InfosSyncBase;
+        if (base === 'live') {
+          if (d) d.style.background = '#1D9E75';
+          if (l) { l.textContent = 'Live sync'; l.style.color = '#137a55'; }
+          pill.title = 'Realtime connected — changes sync instantly';
+        } else if (base === 'error') {
+          if (d) d.style.background = '#D85A30';
+          if (l) { l.textContent = 'Sync: offline'; l.style.color = '#b1471f'; }
+          pill.title = 'Realtime not connected — updates sync on a short delay';
+        } else {
+          if (d) d.style.background = '#9aa0a6';
+          if (l) { l.textContent = 'Connecting…'; l.style.color = '#444'; }
+          pill.title = 'Connecting…';
+        }
+      }
+
+      if (state === 'uploading') {
+        if (d) d.style.background = '#BA7517';
+        if (l) { l.textContent = 'Uploading to cloud…'; l.style.color = '#8a560f'; }
+        pill.title = 'Saving your change to the cloud…';
+      } else if (state === 'synced') {
         if (d) d.style.background = '#1D9E75';
-        if (l) { l.textContent = 'Live sync'; l.style.color = '#137a55'; }
-        pill.title = 'Realtime connected — changes sync instantly';
-      } else if (state === 'error') {
-        if (d) d.style.background = '#D85A30';
-        if (l) { l.textContent = 'Sync: offline'; l.style.color = '#b1471f'; }
-        pill.title = 'Realtime not connected — updates sync on a short delay (polling)';
+        if (l) { l.textContent = 'Synced'; l.style.color = '#137a55'; }
+        pill.title = 'Your change is saved to the cloud';
+        // After a moment, settle back to the steady connection label.
+        clearTimeout(window.__InfosSyncSettleTimer);
+        window.__InfosSyncSettleTimer = setTimeout(applyBase, 1800);
       } else {
-        if (d) d.style.background = '#9aa0a6';
-        if (l) { l.textContent = 'Connecting…'; l.style.color = '#444'; }
-        pill.title = 'Connecting to realtime…';
+        applyBase();
       }
     } catch (e) {}
   };
+  // Convenience helpers the push paths call.
+  window.__InfosSyncUploading = function () { try { window.__InfosRealtimeStatus('uploading'); } catch (e) {} };
+  window.__InfosSyncDone = function () { try { window.__InfosRealtimeStatus('synced'); } catch (e) {} };
 
   // Keep v7 key — v8 adds the optional `recentSignins` field but is otherwise shape-compatible
   // with v7, so we want existing users to keep their data.
@@ -230,6 +257,8 @@
     if (!state.bizCloudMap || !window.InfosSupabase || !window.InfosSupabase.configured()) return;
     if (typeof sharedApplyingRemote !== 'undefined' && sharedApplyingRemote) return;
     const Slice = window.InfosSharedSlice;
+    let pushedAny = false;
+    try { if (window.__InfosSyncUploading) window.__InfosSyncUploading(); } catch {}
     for (const localId of Object.keys(state.bizCloudMap)) {
       const cloudId = state.bizCloudMap[localId];
       if (!cloudId || !bizById(localId)) continue;
@@ -239,8 +268,10 @@
         const v = await window.InfosSupabase.adapter.saveSharedState(cloudId, slice, expected);
         if (!state.bizCloudVersions) state.bizCloudVersions = {};
         state.bizCloudVersions[cloudId] = v;
+        pushedAny = true;
       } catch (e) { /* leave for next save; not fatal */ }
     }
+    try { if (pushedAny && window.__InfosSyncDone) window.__InfosSyncDone(); } catch {}
   }
 
   // ---------- DOM refs ----------
@@ -272,7 +303,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '88.0.0';
+  const APP_VERSION = '90.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2340,6 +2371,11 @@
   // Hide the header switch button when there's nothing to switch to.
   function refreshHeaderSwitchVisibility() {
     if (!headerSwitchBtn) return;
+    // For a business (view-only) login, always offer Switch account in the header
+    // top-right — the member needs a way to leave/switch even if no other accounts
+    // are saved on this device. For the owner, show it only when there are other
+    // saved accounts to switch to.
+    if (isViewOnly()) { headerSwitchBtn.hidden = false; return; }
     const accs = (typeof listSwitchableAccounts === 'function') ? listSwitchableAccounts() : [];
     headerSwitchBtn.hidden = accs.length === 0;
   }
@@ -2930,11 +2966,13 @@
     const doPush = async () => {
       try {
         if (state.__sharedMode) {
+          try { if (window.__InfosSyncUploading) window.__InfosSyncUploading(); } catch {}
           const slice = Slice.memberStateToSlice(state);
           if (!slice) return;
           const v = await window.InfosSupabase.adapter.saveSharedState(
             state.__sharedBusinessId, slice, state.__sharedVersion || 0);
           state.__sharedVersion = v;
+          try { if (window.__InfosSyncDone) window.__InfosSyncDone(); } catch {}
         }
       } catch (e) { console.warn('pushSharedState failed:', e); }
     };

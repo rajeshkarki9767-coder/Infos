@@ -48,7 +48,7 @@ console.log('\nbuildSharedSlice:');
     slice.items.notices.map(i => i.id).sort().join(',') === '1,3');
   check('trashed item excluded', !slice.items.notices.some(i => i.id === 4));
   check('balance item present', slice.items.balance && slice.items.balance.length === 1);
-  check('item password/pin stripped', !('password' in slice.items.balance[0]) && !('pin' in slice.items.balance[0]));
+  check('item passwordEnc dropped, plaintext password kept (idpass is shared content)', !('passwordEnc' in slice.items.balance[0]) && slice.items.balance[0].password === 'leak');
   check('business secrets stripped (no password/email/devices)',
     !('password' in slice.business) && !('devices' in slice.business));
   check('business identity kept', slice.business.id === 'b1' && slice.business.name === 'Acme' && slice.business.color === '#111');

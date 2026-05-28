@@ -36,12 +36,18 @@
   }
   function itemHasBiz(it, bizId) { return itemBizIds(it).indexOf(bizId) !== -1; }
 
-  // Strip secrets that must never travel to the cloud.
+  // ID & Pass items are SHARED CONTENT: the whole point is for the business team
+  // to see the username/password so they can log in to those systems. So we keep
+  // `password` in the slice. We only drop the legacy encrypted field (dead since
+  // encryption was removed) — the plaintext password is the data the team needs.
   function sanitizeItem(it) {
     var copy = Object.assign({}, it);
-    delete copy.password; delete copy.passwordEnc; delete copy.pin;
+    delete copy.passwordEnc;
     return copy;
   }
+  // A BUSINESS's OWN sign-in password (b.password) is different: that's the owner's
+  // credential for distributing login access, not data the member needs in their
+  // copy. Keep stripping it from the shared business record.
   function sanitizeBusiness(b) {
     var copy = Object.assign({}, b);
     delete copy.password; delete copy.passwordEnc;

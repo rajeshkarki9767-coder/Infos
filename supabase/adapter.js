@@ -346,25 +346,37 @@
     async loadSharedState(businessCloudId) {
       const c = getClient(); if (!c) throw new Error('Supabase not configured');
       if (!businessCloudId) throw new Error('businessCloudId required');
-      // Hard timeout — never let a hung cloud query freeze the boot or business
-      // login. If it doesn't respond in 4s, return null and let the app proceed
-      // with the empty/cached state; the next poll or realtime event will hydrate.
+      // De-dupe in-flight calls: the poll + realtime + boot can all ask for the
+      // same business's state at once. Without this, queries stack up and each
+      // races its own timeout, producing a flood of "timed out" logs and wasted
+      // requests. Return the already-pending promise instead of firing another.
+      this.__loadInflight = this.__loadInflight || {};
+      if (this.__loadInflight[businessCloudId]) return this.__loadInflight[businessCloudId];
+
       const _setTimeout = (typeof setTimeout !== 'undefined') ? setTimeout
                           : (typeof globalThis !== 'undefined' && globalThis.setTimeout) ? globalThis.setTimeout
                           : null;
-      const query = c.from('shared_state')
-        .select('data, version, updated_at')
-        .eq('business_cloud_id', businessCloudId)
-        .maybeSingle();
-      const result = _setTimeout ? await Promise.race([
-        query,
-        new Promise(resolve => _setTimeout(() => resolve({ data: null, error: null, __timedOut: true }), 4000))
-      ]) : await query;
-      if (result && result.__timedOut) { try { console.warn('loadSharedState timed out'); } catch {} return null; }
-      const { data, error } = result;
-      if (error) throw error;
-      if (!data) return null;
-      return { data: data.data || {}, version: data.version || 0, updatedAt: data.updated_at || null };
+      const run = (async () => {
+        const query = c.from('shared_state')
+          .select('data, version, updated_at')
+          .eq('business_cloud_id', businessCloudId)
+          .maybeSingle();
+        // 8s is generous enough for a slow connection while still bounding a true
+        // hang. (Was 4s, which was killing slow-but-valid queries on mobile.)
+        const result = _setTimeout ? await Promise.race([
+          query,
+          new Promise(resolve => _setTimeout(() => resolve({ data: null, error: null, __timedOut: true }), 8000))
+        ]) : await query;
+        if (result && result.__timedOut) { try { console.warn('loadSharedState timed out'); } catch {} return null; }
+        const { data, error } = result;
+        if (error) throw error;
+        if (!data) return null;
+        return { data: data.data || {}, version: data.version || 0, updatedAt: data.updated_at || null };
+      })();
+
+      this.__loadInflight[businessCloudId] = run;
+      try { return await run; }
+      finally { try { delete this.__loadInflight[businessCloudId]; } catch (e) {} }
     },
 
     // Write the live shared snapshot for a business (upsert). RLS lets only the
