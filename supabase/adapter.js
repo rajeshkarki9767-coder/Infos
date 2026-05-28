@@ -164,10 +164,22 @@
       const c = getClient(); if (!c) return null;
       const _setTimeout = (typeof setTimeout !== 'undefined') ? setTimeout
                           : (typeof globalThis !== 'undefined' && globalThis.setTimeout) ? globalThis.setTimeout : null;
-      // Hard timeout: a hung auth.getUser() would freeze boot forever (the user
-      // sees an endless loading screen and the nav never binds, so Settings /
-      // Switch account / Sign out appear dead). Cap it at 5s and treat a timeout
-      // as "no session" so the app proceeds to the sign-in screen.
+      // Prefer getSession(): it reads the session from LOCAL STORAGE with no
+      // network round-trip, so a slow/flaky connection to Supabase can't make the
+      // app think you're signed out (which was causing pushes to fail with "Not
+      // signed in" and sync to stop). getUser() hits the network to re-validate
+      // and was timing out on slower connections.
+      try {
+        const sres = await Promise.race([
+          c.auth.getSession(),
+          _setTimeout ? new Promise(resolve => _setTimeout(() => resolve({ data: null, __timedOut: true }), 4000)) : new Promise(() => {})
+        ]);
+        if (sres && !sres.__timedOut && sres.data && sres.data.session && sres.data.session.user) {
+          return sres.data.session.user;
+        }
+      } catch (e) { /* fall through to getUser */ }
+      // Fallback: network getUser (still time-bounded) in case the session cache
+      // is empty but a valid token exists server-side.
       const call = c.auth.getUser();
       const res = _setTimeout ? await Promise.race([
         call,
@@ -232,8 +244,15 @@
       const c = getClient(); if (!c) return null;
       const m = await Auth.getMembership();
       if (!m) return null;
-      const { data: bizRows } = await c.from('businesses')
-        .select('id, name, color').eq('id', m.businessId);
+      const _setTimeout = (typeof setTimeout !== 'undefined') ? setTimeout
+                          : (typeof globalThis !== 'undefined' && globalThis.setTimeout) ? globalThis.setTimeout : null;
+      // Time-bound the lookup: a hung query here would freeze the member boot. On
+      // timeout, fall back to a minimal business record from the membership row.
+      const q = c.from('businesses').select('id, name, color').eq('id', m.businessId);
+      const res = _setTimeout ? await Promise.race([
+        q, new Promise(resolve => _setTimeout(() => resolve({ data: null, __timedOut: true }), 5000))
+      ]) : await q;
+      const bizRows = (res && !res.__timedOut) ? res.data : null;
       const business = (bizRows && bizRows[0]) || { id: m.businessId, name: 'Shared business', color: '#378ADD' };
       return { ...business, allowedTabs: m.allowedTabs };
     },
@@ -388,9 +407,14 @@
     // documented; this only keeps the version counter honest.)
     async saveSharedState(businessCloudId, data, expectedVersion) {
       const c = getClient(); if (!c) throw new Error('Supabase not configured');
-      const user = await Auth.currentUser();
-      if (!user) throw new Error('Not signed in');
       if (!businessCloudId) throw new Error('businessCloudId required');
+      // Get the user id for updated_by, but DON'T hard-fail the push if we can't
+      // confirm it quickly — a slow getUser() previously threw "Not signed in" and
+      // killed sync even though the user was signed in. RLS still rejects any
+      // unauthorized write server-side, so this is safe. currentUser() now reads
+      // the local session first (no network), so this is fast in the normal case.
+      let userId = null;
+      try { const u = await Auth.currentUser(); userId = u && u.id; } catch (e) {}
       let baseVersion = Number(expectedVersion) || 0;
       try {
         const { data: cur } = await c.from('shared_state')
@@ -403,7 +427,7 @@
         data: data || {},
         version: nextVersion,
         updated_at: new Date().toISOString(),
-        updated_by: user.id
+        updated_by: userId || null
       };
       const { error } = await c.from('shared_state').upsert(row, { onConflict: 'business_cloud_id' });
       if (error) throw error;

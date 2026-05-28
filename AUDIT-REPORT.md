@@ -1,94 +1,85 @@
-# Infos — Audit & Auto-Fix Report (v95.0.0)
+# Infos — Audit & Auto-Fix Report (v98.0.0)
 
-**Method:** code review + the project's automated test suite (215 checks / 11 suites,
-run against an in-memory Postgres and a simulated DOM). Per the audit rules, anything
-not testable here is marked **NOT VERIFIABLE** rather than given a fake pass. The score
-is an honest **self-assessment from code review + tests** — NOT an independent
+**Method:** code review + the project's automated test suite (215 checks / 11 suites
+against in-memory Postgres + a simulated DOM). Per the audit's own rules, anything not
+testable from this environment is marked **NOT VERIFIABLE** instead of given a fake pass.
+The score below is an honest **code-review + test self-assessment**, NOT an independent
 production certification.
 
----
+## 1. Score (self-assessment)
 
-## 1. Score (self-assessment, code review + automated tests)
-
-**Overall: 82 / 100** — labeled as a code-review score, not a production certification.
-
-The deductions are almost entirely "cannot be verified from here," not known defects.
+**Overall: 84 / 100** — code-review score, not a production certification. Most deductions
+are "cannot verify from here," not known defects. Up from the prior 82 because a real,
+user-reported sync-blocking bug was found and fixed this cycle (see Changelog).
 
 ## 2. Category scores
 
 | Category | Score | Basis |
 |---|---|---|
-| Stability | 88 | 215 checks pass; known crashes fixed + guarded; timeouts everywhere |
-| Backend / Auth | 85 | adapter/api/business-login suites pass; idempotent member link |
-| Database | 85 | RLS isolation tested vs real Postgres; monotonic versioning |
-| Data integrity / Sync | 86 | non-destructive merge + tombstones; version-guarded live re-render |
-| Notifications | 78 | in-app + sound + browser-notification wired & deduped; **delivery NOT VERIFIABLE here** |
-| Sound system | 84 | single shared AudioContext, node cleanup, mute pref; **audio output NOT VERIFIABLE here** |
-| Security | 75 | no client secrets, output escaping, server-side RLS; **no formal pen-test / dep audit** |
-| Performance | 74 | boot timeouts, render only on real change, interval reuse; **no real profiling numbers** |
-| UI/UX | NOT SCORED | requires a real browser to judge |
+| Stability | 89 | 215 checks pass; known crashes fixed; Supabase hot calls timeout-guarded |
+| Backend / Auth | 86 | auth reads local session (no network stall); idempotent member link |
+| Database | 85 | RLS isolation tested vs real Postgres; realtime publication enabled (user-confirmed) |
+| Data integrity / Sync | 86 | non-destructive merge; version-guarded re-render; push serialized |
+| Notifications | 78 | wired + deduped; delivery NOT VERIFIABLE here |
+| Sound system | 84 | shared AudioContext, node cleanup, mute pref; output NOT VERIFIABLE here |
+| Security | 76 | no client secrets, ~185 esc() sites, links via safeUrl, server-side RLS; no formal pen-test |
+| Performance | 76 | network timeouts, render-on-change, interval reuse; no profiling numbers |
+| UI/UX | NOT SCORED | requires a real browser |
 | Responsiveness | NOT SCORED | requires real devices/viewports |
-| Accessibility | NOT SCORED | requires a screen reader / audit tool |
-| Code Quality | 70 | works + tested, but one ~7,200-line file; modularization would help |
+| Accessibility | NOT SCORED | requires screen reader / audit tool |
+| Code Quality | 71 | tested + functional; one ~7,300-line file — modularization advisable |
 | Scalability | NOT VERIFIABLE | requires production-scale load testing |
 
-## 3. Deductions & what was done
+## 3. Key deductions & status
 
-- **Notifications −22:** triggers, sounds, and browser-Notification calls are wired and
-  deduped (`tag: 'infos-arrival'`). Actual *delivery* to OS/browser — **REQUIRES REAL
-  DEVICE TESTING**. Not faked.
-- **Sound −16:** this round reused a single AudioContext (was one-per-sound, which can
-  hit browser limits) and added node cleanup on `onended`. Actual audible output —
-  **REQUIRES REAL DEVICE/BROWSER**. Browsers also block audio until first user gesture
-  (documented behavior, not a bug).
-- **Security −25:** verifiable items are sound (no client-side secrets; `esc()` at ~185
-  sites; RLS server-side). A formal XSS/CSRF/SSRF pen-test and dependency CVE scan —
-  **REQUIRES EXTERNAL TOOLING**, not performed, not faked.
-- **Performance −26:** structural improvements done (boot timeouts, render-on-change,
-  interval reuse, shared audio context). Bundle/render/memory metrics — **REQUIRES REAL
-  PROFILING**, no numbers invented.
-- **Code Quality −30:** functional and fully tested, but `app.js` is monolithic. A
-  refactor into modules is advisable but was NOT done in this pass — at this maturity a
-  blanket refactor risks regressions, and several past bugs came from large changes.
+- **Sync had a REAL bug (now FIXED):** the app validated auth via network getUser() on every
+  push; on a slow connection it timed out and the push aborted with "Not signed in", so
+  changes never reached the cloud (worked only after refresh). Confirmed from the user's
+  console logs. Fixed (v97): auth reads the LOCAL session first; the push no longer
+  hard-fails if it can't reach the network to confirm the user (RLS still protects writes).
+- **Notifications -22 / Sound -16:** wiring done + deduped; actual delivery and audio output
+  REQUIRE REAL DEVICE TESTING — not faked.
+- **Security -24:** verifiable items sound; formal XSS/CSRF/SSRF pen-test + dependency CVE
+  scan REQUIRE EXTERNAL TOOLING — not performed, not faked.
+- **Performance -24:** structural improvements done; real metrics REQUIRE PROFILING — no
+  numbers invented.
+- **Code Quality -29:** monolithic app.js; modular refactor advisable but NOT done — a blanket
+  refactor risks regressions (several past bugs came from large changes); needs its own
+  careful, tested pass.
 
-## 4. Changelog (this pass, v95)
+## 4. Changelog (this pass, v98)
 
-- Sound system: replaced per-sound AudioContext with a single shared, resumed context;
-  free oscillator/gain nodes on `onended`. More robust, no context-limit risk.
-- Reviewed (already correct, no change needed): poll intervals cleared before re-create;
-  heartbeat intervals guarded against duplicates; own-echo suppressed by version guard so
-  arrival sounds/notifications don't fire for your own entries; arrival notifications
-  deduped by tag.
-- Verified no client-side secrets; API functions have method/auth/input guards.
+- Auth/sync robustness: getMemberBusiness() now time-bounds its DB lookup (5s) with a
+  graceful fallback, matching the v97 auth-timeout fix so a hung query can't freeze the
+  member boot.
+- Verified (no change needed): auth hot paths use local getSession() not network getUser();
+  poll handles null snapshots without crashing; intervals cleared/guarded; no client-side
+  secrets; output escaping + safeUrl in place.
 
-(Prior rounds, still in place: live-sync re-render fix, ID&Pass passwords shared to
-business logins, realtime stack-overflow fix, plaintext passwords, login timeouts,
-crash fix, non-destructive merge, four notification sounds + push.)
+(Carried from prior rounds: v97 auth-timeout/"Not signed in" sync fix; v96 push
+serialization + diagnostics; v91-93 live re-render; v94/95 sounds + shared audio ctx; v89
+ID&Pass passwords shared to business; v87 realtime stack-overflow fix; plaintext passwords;
+login timeouts; crash fix; non-destructive merge.)
 
 ## 5. NOT VERIFIABLE in this environment
 
-- Real-browser rendering, dark/light visual correctness, responsive breakpoints
+- Real-browser rendering, dark/light correctness, responsive breakpoints
 - iOS / Android / specific-browser behavior
-- Actual browser/OS notification *delivery*
-- Actual audio *output* (and first-gesture autoplay behavior)
-- Concurrent multi-user load, slow-network, offline recovery on real devices
-- Formal security pen-test and dependency CVE audit
+- Actual browser/OS notification delivery; actual audio output + first-gesture autoplay
+- Concurrent multi-user, slow-network, offline recovery on real devices
+- Formal security pen-test + dependency CVE audit
 - Production-scale load / performance metrics
-- Whether Supabase realtime is enabled at the project level (the in-app
-  "Live sync / Sync: offline" pill reports this at runtime — check it on the deployed app)
 
 ## 6. Release status (honest)
 
-**MOSTLY READY** — for what is testable here, it passes everything: stable, no known
-crashes, data integrity and access control verified against real Postgres, sync logic
-sound. It is **not** "ENTERPRISE READY" in the certification sense, because that label
-requires the real-device, multi-user, security-audit, and load validation listed in §5,
-which cannot be done from this environment. Calling it "enterprise ready" would be a fake
-validation, which the audit rules forbid.
+MOSTLY READY. Passes everything testable here; the real sync-blocking bug the user hit is
+fixed. Not labeled "ENTERPRISE READY" because that means independently validated under the
+real-device / multi-user / security-audit / load conditions in section 5, which can't be
+done from this environment — claiming it would be a fake validation, which the rules forbid.
 
 ## 7. Final export
 
-`Infos.zip` (v95.0.0) accompanies this report — all checks passing, version consistent,
-no node_modules.
+Infos.zip (v98.0.0) accompanies this report — all checks passing, version consistent, no
+node_modules.
 
-*Self-assessment from code review + automated tests. No fabricated tests or validations.*
+Self-assessment from code review + automated tests. No fabricated tests or validations.

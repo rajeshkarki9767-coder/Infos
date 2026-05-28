@@ -247,7 +247,9 @@
         state.bizCloudMap && Object.keys(state.bizCloudMap).length &&
         window.InfosSupabase && window.InfosSupabase.configured()) {
       clearTimeout(window.__sharePublishTimer);
-      window.__sharePublishTimer = setTimeout(() => { try { pushOwnerSharedBusinesses(); } catch {} }, 200);
+      // Push quickly (short debounce coalesces a burst of rapid edits into one
+      // network write). 150ms is fast enough to feel instant on the other side.
+      window.__sharePublishTimer = setTimeout(() => { try { pushOwnerSharedBusinesses(); } catch {} }, 150);
     }
   }
 
@@ -257,6 +259,11 @@
     if (state.__sharedMode) return;
     if (!state.bizCloudMap || !window.InfosSupabase || !window.InfosSupabase.configured()) return;
     if (typeof sharedApplyingRemote !== 'undefined' && sharedApplyingRemote) return;
+    // Prevent overlapping pushes: two concurrent pushes can each read the same
+    // base version and the second's write gets a stale expected version, which
+    // could drop an update. Serialize them.
+    if (window.__ownerPushInflight) { window.__ownerPushQueued = true; return; }
+    window.__ownerPushInflight = true;
     const Slice = window.InfosSharedSlice;
     let pushedAny = false;
     try { if (window.__InfosSyncUploading) window.__InfosSyncUploading(); } catch {}
@@ -273,6 +280,12 @@
       } catch (e) { /* leave for next save; not fatal */ }
     }
     try { if (pushedAny && window.__InfosSyncDone) window.__InfosSyncDone(); } catch {}
+    window.__ownerPushInflight = false;
+    // If an edit happened while we were pushing, run once more to flush it.
+    if (window.__ownerPushQueued) {
+      window.__ownerPushQueued = false;
+      setTimeout(() => { try { pushOwnerSharedBusinesses(); } catch {} }, 50);
+    }
   }
 
   // ---------- DOM refs ----------
@@ -304,7 +317,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '95.0.0';
+  const APP_VERSION = '98.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2881,7 +2894,7 @@
     window.__sharedPoll = setInterval(() => {
       if (!state.__sharedMode) return;
       try { refreshSharedFromCloud(cloudBusinessId); } catch {}
-    }, 1500);
+    }, 1000);
   }
 
   // Pull the latest shared snapshot and re-render. Used by realtime + on resume.
@@ -2889,14 +2902,16 @@
     try {
       const snap = await window.InfosSupabase.adapter.loadSharedState(cloudBusinessId);
       if (!snap || !snap.data) return;
-      // Ignore versions we've already applied (including our OWN just-written
-      // version) to avoid render churn / echo loops. The "last applied version"
-      // lives in different places for the two modes:
-      //   - business login (__sharedMode): state.__sharedVersion
-      //   - owner viewing a shared biz:    state.bizCloudVersions[cloudId]
       const appliedVersion = state.__sharedMode
         ? (state.__sharedVersion || 0)
         : ((state.bizCloudVersions && state.bizCloudVersions[cloudBusinessId]) || 0);
+      // Diagnostic (visible via window.__infosSyncLog) so we can confirm on the
+      // live app whether the poll is actually seeing newer versions.
+      try {
+        window.__infosSyncLog = window.__infosSyncLog || [];
+        window.__infosSyncLog.push({ t: Date.now(), biz: cloudBusinessId, cloudV: snap.version || 0, appliedV: appliedVersion, mode: state.__sharedMode ? 'biz' : 'owner' });
+        if (window.__infosSyncLog.length > 30) window.__infosSyncLog.shift();
+      } catch (e) {}
       if ((snap.version || 0) <= appliedVersion) return;
       // Don't yank the UI out from under an open modal or an in-progress edit —
       // that's what causes the flicker. Defer the refresh until the user is idle.
