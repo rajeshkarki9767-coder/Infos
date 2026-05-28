@@ -343,7 +343,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '110.0.0';
+  const APP_VERSION = '112.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2958,6 +2958,7 @@
       // payload's own data makes it truly instant with zero extra network.
       if (row && row.data) {
         try {
+          window.__lastRealtimeApply = Date.now();
           applySharedSnapshotDirect(cloudBusinessId, { data: row.data, version: row.version || 0 });
           return;
         } catch (e) {}
@@ -2975,14 +2976,18 @@
     window.__sharedPoll = setInterval(() => {
       if (!state.__sharedMode) return;
       bizPollTick++;
-      // The realtime event is the instant path. This poll is the backstop. The
-      // guarded refresh is cheap; every other tick we force a full reconcile that
-      // can't be wrongly skipped. It only re-renders when content actually
-      // changed, so there's no flicker — but it guarantees the business converges
-      // within ~1-2s even if realtime is silent.
-      const force = (bizPollTick % 2 === 0);
-      try { refreshSharedFromCloud(cloudBusinessId, force); } catch {}
-    }, 1000);
+      // Realtime is the primary path and is confirmed delivering full data
+      // (payloads carry hasData:true). If realtime delivered recently, the poll is
+      // unnecessary — skip it so we don't spam the slow full-blob fetch (which was
+      // timing out every second and bogging the main thread). Only when realtime
+      // has been quiet for a while do we do a lightweight version check, and only
+      // fetch the full row if that cheap check says the version actually advanced.
+      const sinceRealtime = Date.now() - (window.__lastRealtimeApply || 0);
+      if (sinceRealtime < 8000) return; // realtime healthy → no poll needed
+      // Realtime quiet: cheap version-only check (never times out); refreshShared
+      // already pre-checks the version and skips the heavy fetch when unchanged.
+      try { refreshSharedFromCloud(cloudBusinessId, false); } catch {}
+    }, 4000);
   }
 
   // Apply a shared snapshot we ALREADY have in hand (e.g. from a realtime payload)
@@ -3211,7 +3216,7 @@
         const unsub = window.InfosSupabase.adapter.subscribeSharedState(cloudId, (row) => {
           // Apply the realtime payload's data directly — no slow re-fetch.
           if (row && row.data) {
-            try { applySharedSnapshotDirect(cloudId, { data: row.data, version: row.version || 0 }); return; } catch (e) {}
+            try { window.__lastRealtimeApply = Date.now(); applySharedSnapshotDirect(cloudId, { data: row.data, version: row.version || 0 }); return; } catch (e) {}
           }
           clearTimeout(window.__ownerRtDebounce);
           window.__ownerRtDebounce = setTimeout(() => refreshSharedFromCloud(cloudId, true), 30);
@@ -3229,21 +3234,22 @@
     window.__ownerSharedPoll = setInterval(() => {
       if (state.__sharedMode) return;
       if (!state.bizCloudMap) return;
-      Object.keys(state.bizCloudMap).forEach(lid => {
-        const cid = state.bizCloudMap[lid];
-        if (cid && bizById(lid)) { try { refreshSharedFromCloud(cid); } catch {} }
-      });
-      // Every ~4th tick (~6s), also RE-PUSH the owner's current state. This is a
-      // self-heal: if an earlier push failed (network/auth hiccup) and the user
-      // hasn't made another edit, the change would otherwise be stranded on this
-      // device forever. The server handles versioning, so a redundant push is a
-      // cheap no-op when nothing changed. This directly fixes "the entry I added
-      // never reached the business".
       ownerPollTick++;
-      if (ownerPollTick % 4 === 0 && !sharedApplyingRemote) {
+      // Self-heal: re-push current state occasionally so a previously-failed push
+      // isn't stranded (cheap no-op server-side when nothing changed).
+      if (ownerPollTick % 3 === 0 && !sharedApplyingRemote) {
         try { pushOwnerSharedBusinesses(); } catch {}
       }
-    }, 1500);
+      // Realtime is the primary path (confirmed delivering full data). Only poll
+      // for incoming changes when realtime has been quiet, to avoid the slow
+      // full-blob fetch spamming timeouts every tick.
+      const sinceRealtime = Date.now() - (window.__lastRealtimeApply || 0);
+      if (sinceRealtime < 8000) return;
+      Object.keys(state.bizCloudMap).forEach(lid => {
+        const cid = state.bizCloudMap[lid];
+        if (cid && bizById(lid)) { try { refreshSharedFromCloud(cid, false); } catch {} }
+      });
+    }, 4000);
     ownerSharedUnsubs.push(() => { try { clearInterval(window.__ownerSharedPoll); } catch {} });
     // Re-render in case the initial pull changed anything (silent — no flash).
     try { if (state.user) rerenderCurrentTab(); } catch {}

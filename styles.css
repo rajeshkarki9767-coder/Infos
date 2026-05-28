@@ -1004,20 +1004,21 @@ input, textarea, [contenteditable="true"] {
   top: 0;
   z-index: 20;
   background: var(--app-bg);
-  padding: 12px 0;
-  margin: 0 0 12px;
+  /* Stretch the bar's background across the scroll container's horizontal padding
+     (≈24px each side, a bit more for safety) and compensate with matching padding,
+     so the row content stays put but the opaque background covers the FULL width.
+     This stops list items from showing in the side gutters as they scroll under. */
+  margin: 0 -40px 12px;
+  padding: 12px 40px;
   border-bottom: 1px solid var(--border-soft);
 }
-/* The sticky element pins to the top of whichever ancestor scrolls. On mobile
-   that's #page-content (which has padding); on desktop it's #page-viewport with
-   #page-content position:relative. In both cases top:0 + a solid background keeps
-   the bar visible and pinned. No negative margins (they broke pinning when the
-   scroll container changed). */
+/* Opaque backing above the bar covering the container's TOP padding, full width,
+   so nothing peeks over the top edge either. */
 .list-toolbar::before {
   content: '';
   position: absolute;
-  left: -40px; right: -40px;
-  top: -24px; height: 24px;
+  left: 0; right: 0;
+  top: -28px; height: 28px;
   background: var(--app-bg);
   pointer-events: none;
 }
