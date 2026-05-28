@@ -266,6 +266,7 @@
     window.__ownerPushInflight = true;
     const Slice = window.InfosSharedSlice;
     let pushedAny = false;
+    let anyFailed = false;
     try { if (window.__InfosSyncUploading) window.__InfosSyncUploading(); } catch {}
     for (const localId of Object.keys(state.bizCloudMap)) {
       const cloudId = state.bizCloudMap[localId];
@@ -277,7 +278,14 @@
         if (!state.bizCloudVersions) state.bizCloudVersions = {};
         state.bizCloudVersions[cloudId] = v;
         pushedAny = true;
-      } catch (e) { /* leave for next save; not fatal */ }
+      } catch (e) {
+        anyFailed = true;
+        try {
+          window.__infosSyncLog = window.__infosSyncLog || [];
+          window.__infosSyncLog.push({ t: Date.now(), pushFail: String(e && e.message || e), biz: cloudId });
+          if (window.__infosSyncLog.length > 30) window.__infosSyncLog.shift();
+        } catch (_) {}
+      }
     }
     try { if (pushedAny && window.__InfosSyncDone) window.__InfosSyncDone(); } catch {}
     window.__ownerPushInflight = false;
@@ -285,6 +293,12 @@
     if (window.__ownerPushQueued) {
       window.__ownerPushQueued = false;
       setTimeout(() => { try { pushOwnerSharedBusinesses(); } catch {} }, 50);
+    } else if (anyFailed) {
+      // A push failed (network/auth hiccup). Retry shortly so the change isn't
+      // silently stranded on this device — this was a real cause of "the entry
+      // I added never showed up on the business".
+      clearTimeout(window.__ownerPushRetry);
+      window.__ownerPushRetry = setTimeout(() => { try { pushOwnerSharedBusinesses(); } catch {} }, 2500);
     }
   }
 
@@ -317,7 +331,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '101.0.0';
+  const APP_VERSION = '104.0.0';
 
   // ---------- State ----------
   const state = {
@@ -386,6 +400,8 @@
   const prefs = loadPrefs();
   if (prefs.theme) app.dataset.theme = prefs.theme;
   if (prefs.accent) app.dataset.accent = prefs.accent;
+  // Synchronous accent backup (survives a quick refresh before IndexedDB flush).
+  try { const la = localStorage.getItem('infos-accent'); if (la) app.dataset.accent = la; } catch (e) {}
   // v13: sidebarCollapsed UI is gone — force-clear any old saved value so users
   // who had it toggled on previously don't stay stuck in icon-only mode.
   state.sidebarCollapsed = false;
@@ -890,6 +906,18 @@
     $('#biz-filter-wrap').style.display = isBiz ? 'none' : 'block';
     buildBottomTabs();
     if (typeof refreshHeaderSwitchVisibility === 'function') refreshHeaderSwitchVisibility();
+    // Rebuilding navList.innerHTML wipes the .active highlight off every nav item.
+    // Re-apply it for the current tab so the active tab stays highlighted in the
+    // sidebar (it was disappearing on the owner whenever buildNav ran after an
+    // add/delete/business change).
+    try {
+      const curTab = state.idpassSubtab && (state.currentTab === 'idpass') ? 'idpass' : state.currentTab;
+      const activeKey = (state.currentTab === 'biz-detail') ? 'businesses' : (state.currentTab || '');
+      $$('.nav-item').forEach(n => {
+        const dt = n.dataset.tab;
+        n.classList.toggle('active', !!dt && (dt === activeKey || (state.currentTab === 'idpass' && dt === 'idpass')));
+      });
+    } catch (e) {}
   }
 
   function bindNavItems() {
@@ -2095,7 +2123,7 @@
           if (cur === tabKey) { state.history.pop(); setActive(tabKey, 'fade'); }
           else if (cur === 'item-detail') goBack();
           updateBadges(); buildNav();
-          toast('Moved to trash'); haptic();
+          playDeleteSound(); toast('Moved to trash'); haptic();
         }
       });
     };
@@ -2883,22 +2911,34 @@
     sharedRealtimeUnsub = null;
     if (!(window.InfosSupabase && window.InfosSupabase.adapter.subscribeSharedState)) return;
     sharedRealtimeUnsub = window.InfosSupabase.adapter.subscribeSharedState(cloudBusinessId, () => {
+      // A realtime event means the row genuinely changed — apply it immediately,
+      // bypassing the version/content guards (force=true), with a tiny debounce to
+      // coalesce a burst. This is the INSTANT path.
       clearTimeout(window.__sharedRefreshDebounce);
-      window.__sharedRefreshDebounce = setTimeout(() => refreshSharedFromCloud(cloudBusinessId), 80);
+      window.__sharedRefreshDebounce = setTimeout(() => refreshSharedFromCloud(cloudBusinessId, true), 30);
     });
     // POLLING FALLBACK (same as the owner side): realtime websockets don't always
     // deliver, so poll the shared row every 5s. The owner pushing an entry to this
     // business will then appear within ~5s even if realtime is silent. Version-
     // guarded, so it's a no-op when nothing changed.
     try { clearInterval(window.__sharedPoll); } catch {}
+    let bizPollTick = 0;
     window.__sharedPoll = setInterval(() => {
       if (!state.__sharedMode) return;
-      try { refreshSharedFromCloud(cloudBusinessId); } catch {}
+      bizPollTick++;
+      // The realtime event is the instant path. This poll is the backstop. The
+      // guarded refresh is cheap; every other tick we force a full reconcile that
+      // can't be wrongly skipped. It only re-renders when content actually
+      // changed, so there's no flicker — but it guarantees the business converges
+      // within ~1-2s even if realtime is silent.
+      const force = (bizPollTick % 2 === 0);
+      try { refreshSharedFromCloud(cloudBusinessId, force); } catch {}
     }, 1000);
   }
 
   // Pull the latest shared snapshot and re-render. Used by realtime + on resume.
-  async function refreshSharedFromCloud(cloudBusinessId) {
+  // `force` skips the version/content guards and always re-applies + re-renders.
+  async function refreshSharedFromCloud(cloudBusinessId, force) {
     try {
       const snap = await window.InfosSupabase.adapter.loadSharedState(cloudBusinessId);
       if (!snap || !snap.data) return;
@@ -2927,7 +2967,7 @@
         window.__infosSyncLog.push({ t: Date.now(), biz: cloudBusinessId, cloudV: snap.version || 0, appliedV: appliedVersion, newer: versionNewer, same: sameContent, mode: state.__sharedMode ? 'biz' : 'owner' });
         if (window.__infosSyncLog.length > 30) window.__infosSyncLog.shift();
       } catch (e) {}
-      if (!proceed) return;
+      if (!proceed && !force) return;
       // Don't yank the UI out from under an open modal or an in-progress edit —
       // that's what causes the flicker. Defer the refresh until the user is idle.
       const modalOpen = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
@@ -2940,6 +2980,7 @@
       sharedApplyingRemote = true;
       if (state.__sharedMode) {
         const __before = itemIdSnapshot();
+        const __beforeRenderSig = (() => { try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted)); } catch { return ''; } })();
         const ms = Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail });
         Object.assign(state, ms);
       if (!state.bulkSelected || typeof state.bulkSelected.has !== "function") state.bulkSelected = new Set();
@@ -2949,14 +2990,12 @@
         state.user = state.user || { name: (snap.data.business && snap.data.business.name || 'Business'), email: state.__sharedEmail };
         // Chime for any entries that just arrived from the owner via sync.
         try { chimeForArrivals(__before); } catch (e) {}
-        // We only get here AFTER passing the version guard above — i.e. the cloud
-        // genuinely has a newer version than we last applied, so SOMETHING changed
-        // (on any tab). Re-render the current view unconditionally (unless a modal
-        // or edit is open). Relying on a current-tab signature missed changes made
-        // on other tabs and edits, which is why owner→business updates needed a
-        // manual refresh. The version guard already prevents needless churn.
+        // Re-render when the visible content changed (covers adds, edits, deletes
+        // on the current tab). On a forced reconcile this avoids needless flicker
+        // when nothing actually changed.
+        const __afterRenderSig = (() => { try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted)); } catch { return ''; } })();
         const modalNow = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
-        if (!modalNow && !document.getElementById('fullscreen-message')) {
+        if (__beforeRenderSig !== __afterRenderSig && !modalNow && !document.getElementById('fullscreen-message')) {
           rerenderCurrentTab();
           try { updateBadges(); buildNav(); } catch (e) {}
         }
@@ -3051,7 +3090,11 @@
       // Live subscription.
       try {
         const unsub = window.InfosSupabase.adapter.subscribeSharedState(cloudId, () => {
-          refreshSharedFromCloud(cloudId);
+          // Realtime event = the row genuinely changed → apply instantly,
+          // bypassing the guards (force=true). This is the instant business→owner
+          // path, mirroring the owner→business path on the business side.
+          clearTimeout(window.__ownerRtDebounce);
+          window.__ownerRtDebounce = setTimeout(() => refreshSharedFromCloud(cloudId, true), 30);
         });
         ownerSharedUnsubs.push(unsub);
       } catch {}
@@ -3062,6 +3105,7 @@
     // entries "without a refresh" even when realtime is silent. refreshSharedFromCloud
     // is cheap (version-guarded: it no-ops when nothing changed).
     try { clearInterval(window.__ownerSharedPoll); } catch {}
+    let ownerPollTick = 0;
     window.__ownerSharedPoll = setInterval(() => {
       if (state.__sharedMode) return;
       if (!state.bizCloudMap) return;
@@ -3069,6 +3113,16 @@
         const cid = state.bizCloudMap[lid];
         if (cid && bizById(lid)) { try { refreshSharedFromCloud(cid); } catch {} }
       });
+      // Every ~4th tick (~6s), also RE-PUSH the owner's current state. This is a
+      // self-heal: if an earlier push failed (network/auth hiccup) and the user
+      // hasn't made another edit, the change would otherwise be stranded on this
+      // device forever. The server handles versioning, so a redundant push is a
+      // cheap no-op when nothing changed. This directly fixes "the entry I added
+      // never reached the business".
+      ownerPollTick++;
+      if (ownerPollTick % 4 === 0 && !sharedApplyingRemote) {
+        try { pushOwnerSharedBusinesses(); } catch {}
+      }
     }, 1500);
     ownerSharedUnsubs.push(() => { try { clearInterval(window.__ownerSharedPoll); } catch {} });
     // Re-render in case the initial pull changed anything (silent — no flash).
@@ -3616,9 +3670,10 @@
         osc.type = type;
         osc.frequency.value = freq;
         const start = now + i * gap;
-        gain.gain.setValueAtTime(0, start);
-        gain.gain.linearRampToValueAtTime(vol, start + 0.03);
-        gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+        const attack = (opts && opts.attack) != null ? opts.attack : 0.03;
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(vol, start + attack);
+        gain.gain.exponentialRampToValueAtTime(0.0008, start + dur);
         osc.connect(gain).connect(ctx.destination);
         osc.start(start);
         osc.stop(start + dur + 0.02);
@@ -3629,14 +3684,18 @@
   }
   // Backwards-compatible name used elsewhere.
   function playNoticeChime() { playSelfEntrySound(); }
-  // You added an entry yourself (ascending two-note, bright).
-  function playSelfEntrySound() { playChord([659.25, 880.00], { gap: 0.10, dur: 0.30, type: 'sine' }); }
-  // You added a BALANCE entry (lower, two-note "coin"-ish, triangle wave).
-  function playBalanceSound() { playChord([523.25, 392.00], { gap: 0.09, dur: 0.26, vol: 0.13, type: 'triangle' }); }
-  // A NEW entry arrived from another login via sync (three soft rising notes).
-  function playIncomingSound() { playChord([587.33, 740.00, 932.33], { gap: 0.10, dur: 0.30, vol: 0.11, type: 'sine' }); }
-  // A reminder arrived for a business (distinct double-pulse, slightly urgent).
-  function playReminderSound() { playChord([880.00, 880.00], { gap: 0.16, dur: 0.22, vol: 0.14, type: 'square' }); }
+  // Louder, sharper, bolder set. Higher volume, faster attack (sharper), and
+  // bolder waveforms (triangle/sawtooth carry more harmonics than a pure sine).
+  // You added an entry yourself — bright bold ascending two-note.
+  function playSelfEntrySound() { playChord([659.25, 987.77], { gap: 0.09, dur: 0.32, vol: 0.28, type: 'triangle', attack: 0.008 }); }
+  // You added a BALANCE entry — bold low "coin" two-note (sawtooth).
+  function playBalanceSound() { playChord([523.25, 392.00], { gap: 0.08, dur: 0.30, vol: 0.30, type: 'sawtooth', attack: 0.006 }); }
+  // A NEW entry arrived from another login via sync — bold three rising notes.
+  function playIncomingSound() { playChord([587.33, 783.99, 1046.50], { gap: 0.09, dur: 0.30, vol: 0.26, type: 'triangle', attack: 0.008 }); }
+  // A reminder arrived for a business — sharp urgent double-pulse (square).
+  function playReminderSound() { playChord([987.77, 987.77], { gap: 0.15, dur: 0.24, vol: 0.30, type: 'square', attack: 0.005 }); }
+  // Something was DELETED — bold descending two-note (falling = removal).
+  function playDeleteSound() { playChord([587.33, 392.00], { gap: 0.10, dur: 0.30, vol: 0.28, type: 'sawtooth', attack: 0.006 }); }
 
   // Snapshot of all live item ids per tab — used to detect entries that ARRIVED
   // from sync (so we can chime for them). Returns a Set of "tab:id" keys.
@@ -5044,7 +5103,7 @@
           touched.forEach(bid => { const biz = bizById(bid); if (biz) recordActivity(biz, 'deleted', `Deleted balance entry by ${b.recorder}`); });
           persistAll();
           state.history.pop(); setActive(tabKey, 'fade');
-          toast('Entry deleted');
+          playDeleteSound(); toast('Entry deleted');
         }
       });
     });
@@ -6141,7 +6200,7 @@
             it.deleted = true; it.deletedAt = Date.now(); it.deletedFromTab = tabKey;
             recordHistory(it, 'trashed');
             recordGlobalActivity(tabKey, 'trashed', it);
-            persistAll(); updateBadges(); buildNav(); goBack(); toast('Moved to trash');
+            persistAll(); playDeleteSound(); updateBadges(); buildNav(); goBack(); toast('Moved to trash');
           }
         });
       };
@@ -7160,6 +7219,14 @@
     const p = cachedPrefs;
     if (p.theme) app.dataset.theme = p.theme;
     if (p.accent) app.dataset.accent = p.accent;
+    // Accent is also mirrored to localStorage synchronously on every change (the
+    // IndexedDB write is debounced and may not have flushed before a quick
+    // refresh). Prefer the localStorage value if present so the accent never
+    // resets on reload.
+    try {
+      const la = localStorage.getItem('infos-accent');
+      if (la) { app.dataset.accent = la; cachedPrefs.accent = la; }
+    } catch (e) {}
     // v13: ignore any old sidebarCollapsed value
     state.sidebarCollapsed = false;
     app.classList.remove('collapsed');

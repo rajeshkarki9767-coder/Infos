@@ -384,7 +384,7 @@
         // hang. (Was 4s, which was killing slow-but-valid queries on mobile.)
         const result = _setTimeout ? await Promise.race([
           query,
-          new Promise(resolve => _setTimeout(() => resolve({ data: null, error: null, __timedOut: true }), 8000))
+          new Promise(resolve => _setTimeout(() => resolve({ data: null, error: null, __timedOut: true }), 4000))
         ]) : await query;
         if (result && result.__timedOut) { try { console.warn('loadSharedState timed out'); } catch {} return null; }
         const { data, error } = result;
