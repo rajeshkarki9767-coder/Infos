@@ -49,10 +49,10 @@
     try {
       var id = 'infos-rt-status';
       var pill = document.getElementById(id);
+      var headerActions = document.getElementById('header-actions');
       if (!pill) {
         pill = document.createElement('div');
         pill.id = id;
-        pill.style.cssText = 'position:fixed;top:10px;right:60px;z-index:99998;display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font:600 11px/1 system-ui,-apple-system,sans-serif;background:var(--surface,rgba(255,255,255,.96));box-shadow:0 1px 3px rgba(0,0,0,.12);border:1px solid rgba(0,0,0,.06);user-select:none;pointer-events:none;max-width:130px;white-space:nowrap;overflow:hidden;';
         var dot = document.createElement('span');
         dot.id = 'infos-rt-dot';
         dot.style.cssText = 'width:8px;height:8px;border-radius:50%;background:#9aa0a6;flex:none;transition:background .2s;';
@@ -61,6 +61,18 @@
         lbl.style.cssText = 'color:#444;letter-spacing:.2px;';
         lbl.textContent = 'Connecting…';
         pill.appendChild(dot); pill.appendChild(lbl);
+      }
+      // Preferred home: inside the header actions, to the LEFT of the switch-account
+      // icon — fixed in the header flow, not floating over content. Fall back to a
+      // fixed corner position only while the header doesn't exist yet (early boot).
+      var switchBtn = document.getElementById('header-switch-account');
+      var inHeader = headerActions && pill.parentNode === headerActions;
+      if (headerActions && !inHeader) {
+        pill.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font:600 11px/1 system-ui,-apple-system,sans-serif;background:var(--surface,rgba(0,0,0,.04));border:1px solid rgba(0,0,0,.06);user-select:none;pointer-events:none;white-space:nowrap;flex:none;margin-right:4px;';
+        if (switchBtn) headerActions.insertBefore(pill, switchBtn);
+        else headerActions.insertBefore(pill, headerActions.firstChild);
+      } else if (!headerActions && !pill.parentNode) {
+        pill.style.cssText = 'position:fixed;top:10px;right:60px;z-index:99998;display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font:600 11px/1 system-ui,-apple-system,sans-serif;background:rgba(255,255,255,.96);box-shadow:0 1px 3px rgba(0,0,0,.12);border:1px solid rgba(0,0,0,.06);user-select:none;pointer-events:none;white-space:nowrap;';
         (document.body || document.documentElement).appendChild(pill);
       }
       var d = document.getElementById('infos-rt-dot');
@@ -331,7 +343,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '105.0.0';
+  const APP_VERSION = '106.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2924,10 +2936,20 @@
     try { if (sharedRealtimeUnsub) sharedRealtimeUnsub(); } catch {}
     sharedRealtimeUnsub = null;
     if (!(window.InfosSupabase && window.InfosSupabase.adapter.subscribeSharedState)) return;
-    sharedRealtimeUnsub = window.InfosSupabase.adapter.subscribeSharedState(cloudBusinessId, () => {
-      // A realtime event means the row genuinely changed — apply it immediately,
-      // bypassing the version/content guards (force=true), with a tiny debounce to
-      // coalesce a burst. This is the INSTANT path.
+    sharedRealtimeUnsub = window.InfosSupabase.adapter.subscribeSharedState(cloudBusinessId, (row) => {
+      // The realtime payload ALREADY contains the row data (REPLICA IDENTITY FULL
+      // is enabled), so apply it DIRECTLY — no re-fetch. The re-fetch was the
+      // `loadSharedState timed out` that kept live sync from working: reading the
+      // full state blob over a slow connection took longer than the timeout, so
+      // the update never applied and a manual refresh was needed. Using the
+      // payload's own data makes it truly instant with zero extra network.
+      if (row && row.data) {
+        try {
+          applySharedSnapshotDirect(cloudBusinessId, { data: row.data, version: row.version || 0 });
+          return;
+        } catch (e) {}
+      }
+      // Fallback (e.g. businesses-table event with no shared row payload): fetch.
       clearTimeout(window.__sharedRefreshDebounce);
       window.__sharedRefreshDebounce = setTimeout(() => refreshSharedFromCloud(cloudBusinessId, true), 30);
     });
@@ -2948,6 +2970,63 @@
       const force = (bizPollTick % 2 === 0);
       try { refreshSharedFromCloud(cloudBusinessId, force); } catch {}
     }, 1000);
+  }
+
+  // Apply a shared snapshot we ALREADY have in hand (e.g. from a realtime payload)
+  // with no network fetch. This is the instant path: the realtime event carries
+  // the full row, so we skip the slow loadSharedState that was timing out.
+  function applySharedSnapshotDirect(cloudBusinessId, snap) {
+    try {
+      if (!snap || !snap.data) return;
+      const modalOpen = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
+      const fsmOpen = !!document.getElementById('fullscreen-message');
+      if (modalOpen || fsmOpen || (typeof sharedSaveTimer !== 'undefined' && sharedSaveTimer)) {
+        // Don't disrupt an open modal/edit; retry shortly.
+        clearTimeout(window.__sharedRefreshRetry);
+        window.__sharedRefreshRetry = setTimeout(() => { try { applySharedSnapshotDirect(cloudBusinessId, snap); } catch {} }, 1000);
+        return;
+      }
+      try {
+        window.__infosSyncLog = window.__infosSyncLog || [];
+        window.__infosSyncLog.push({ t: Date.now(), biz: cloudBusinessId, cloudV: snap.version || 0, via: 'realtime-direct', mode: state.__sharedMode ? 'biz' : 'owner' });
+        if (window.__infosSyncLog.length > 30) window.__infosSyncLog.shift();
+      } catch (e) {}
+      sharedApplyingRemote = true;
+      if (state.__sharedMode) {
+        const __before = itemIdSnapshot();
+        const __beforeSig = (() => { try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted)); } catch { return ''; } })();
+        const ms = Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail });
+        Object.assign(state, ms);
+        if (!state.bulkSelected || typeof state.bulkSelected.has !== 'function') state.bulkSelected = new Set();
+        state.__sharedMode = true;
+        state.__sharedBusinessId = cloudBusinessId;
+        state.__sharedVersion = snap.version || 0;
+        state.user = state.user || { name: (snap.data.business && snap.data.business.name || 'Business'), email: state.__sharedEmail };
+        try { chimeForArrivals(__before); } catch (e) {}
+        const __afterSig = (() => { try { return JSON.stringify((state.items[state.currentTab] || []).filter(i => !i.deleted)); } catch { return ''; } })();
+        if (__beforeSig !== __afterSig) {
+          rerenderCurrentTab();
+          try { updateBadges(); buildNav(); } catch (e) {}
+        }
+      } else {
+        // Owner viewing a shared business: merge the slice into full state.
+        let localBizId = null;
+        if (state.bizCloudMap) {
+          for (const lid of Object.keys(state.bizCloudMap)) {
+            if (state.bizCloudMap[lid] === cloudBusinessId) { localBizId = lid; break; }
+          }
+        }
+        if (localBizId) {
+          Slice.applySliceToOwnerState(state, snap.data, localBizId);
+          if (!state.bizCloudVersions) state.bizCloudVersions = {};
+          state.bizCloudVersions[cloudBusinessId] = snap.version || 0;
+          persistAll();
+          rerenderCurrentTab();
+          try { updateBadges(); buildNav(); } catch (e) {}
+        }
+      }
+      sharedApplyingRemote = false;
+    } catch (e) { sharedApplyingRemote = false; }
   }
 
   // Pull the latest shared snapshot and re-render. Used by realtime + on resume.
@@ -3116,10 +3195,11 @@
       } catch (e) { sharedApplyingRemote = false; }
       // Live subscription.
       try {
-        const unsub = window.InfosSupabase.adapter.subscribeSharedState(cloudId, () => {
-          // Realtime event = the row genuinely changed → apply instantly,
-          // bypassing the guards (force=true). This is the instant business→owner
-          // path, mirroring the owner→business path on the business side.
+        const unsub = window.InfosSupabase.adapter.subscribeSharedState(cloudId, (row) => {
+          // Apply the realtime payload's data directly — no slow re-fetch.
+          if (row && row.data) {
+            try { applySharedSnapshotDirect(cloudId, { data: row.data, version: row.version || 0 }); return; } catch (e) {}
+          }
           clearTimeout(window.__ownerRtDebounce);
           window.__ownerRtDebounce = setTimeout(() => refreshSharedFromCloud(cloudId, true), 30);
         });
