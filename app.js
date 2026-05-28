@@ -343,7 +343,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '114.0.0';
+  const APP_VERSION = '115.0.0';
 
   // ---------- State ----------
   const state = {
@@ -509,10 +509,23 @@
     } catch {}
   }
   // Read a business password, falling back to the synchronous backup map if the
-  // in-memory copy is missing.
+  // in-memory copy is missing. Also opportunistically WRITES to the backup map
+  // whenever the in-memory value exists but the backup doesn't — so a password
+  // loaded from cloud sync (on a new device, or after a remote apply) is preserved
+  // even if the in-memory state is later wiped mid-flight.
   function bizPasswordValue(b) {
     if (!b) return '';
-    if (b.password) return b.password;
+    if (b.password) {
+      // Heal the backup map opportunistically.
+      try {
+        const map = JSON.parse(localStorage.getItem('infos-biz-pw') || '{}');
+        if (map[b.id] !== b.password) {
+          map[b.id] = b.password;
+          localStorage.setItem('infos-biz-pw', JSON.stringify(map));
+        }
+      } catch {}
+      return b.password;
+    }
     try {
       const map = JSON.parse(localStorage.getItem('infos-biz-pw') || '{}');
       if (map[b.id]) { b.password = map[b.id]; return map[b.id]; } // heal in-memory too
@@ -5626,7 +5639,7 @@
         <div class="section-label" style="margin-bottom:10px;">Sign-in credentials</div>
         <div style="display:flex;flex-direction:column;gap:8px;font-size:13px;">
           <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-mail" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Email</span><strong style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${esc(b.email || '—')}</strong></div>
-          <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-lock" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Password</span><strong id="biz-pw" data-show="1" data-real="${esc(bizPasswordValue(b))}" style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${bizPasswordValue(b) ? esc(bizPasswordValue(b)) : '—'}</strong>${bizPasswordValue(b) ? `<button class="btn-icon copy-link-btn" data-copy="${esc(bizPasswordValue(b))}" data-copy-label="Password" style="padding:2px;margin-left:auto;" aria-label="Copy password" title="Copy password"><i class="ti ti-copy" style="font-size:13px;"></i></button>` : ''}</div>
+          <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-lock" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Password</span><strong id="biz-pw" data-show="1" data-real="${esc(bizPasswordValue(b))}" style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${bizPasswordValue(b) ? esc(bizPasswordValue(b)) : '—'}</strong>${bizPasswordValue(b) ? `<button class="btn-icon" id="biz-pw-toggle" data-target="biz-pw" style="padding:2px;margin-left:auto;" aria-label="Hide password" title="Hide password"><i class="ti ti-eye-off" style="font-size:13px;"></i></button><button class="btn-icon copy-link-btn" data-copy="${esc(bizPasswordValue(b))}" data-copy-label="Password" style="padding:2px;" aria-label="Copy password" title="Copy password"><i class="ti ti-copy" style="font-size:13px;"></i></button>` : ''}</div>
         </div>
       </div>
       <div class="biz-items-section">
@@ -5805,17 +5818,20 @@
     `;
     if (!isViewOnly()) $('#biz-edit').onclick = () => openBusinessModal(b.id);
     const pwToggleBtn = $('#biz-pw-toggle');
-    if (pwToggleBtn) pwToggleBtn.onclick = async () => {
+    if (pwToggleBtn) pwToggleBtn.onclick = () => {
       const el = $('#biz-pw'), showing = el.dataset.show === '1';
       el.dataset.show = showing ? '0' : '1';
+      const plain = bizPasswordValue(b);
       if (showing) {
-        el.textContent = bizPasswordMasked(b);
+        // Mask the password: keep length information so it's clearly masked.
+        el.textContent = plain ? '•'.repeat(Math.min(plain.length, 12)) : '—';
       } else {
-        const plain = await bizPasswordDecrypt(b);
-        el.textContent = (plain != null && plain !== '') ? plain : bizPasswordMasked(b);
+        el.textContent = plain || '—';
       }
-      pwToggleBtn.innerHTML = `<i class="ti ${showing ? 'ti-eye' : 'ti-eye-off'}"></i>`;
-      window.__InfosIcons?.replaceIcons(pwToggleBtn);
+      pwToggleBtn.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+      pwToggleBtn.setAttribute('title', showing ? 'Show password' : 'Hide password');
+      pwToggleBtn.innerHTML = `<i class="ti ${showing ? 'ti-eye' : 'ti-eye-off'}" style="font-size:13px;"></i>`;
+      try { window.__InfosIcons?.replaceIcons(pwToggleBtn); } catch {}
     };
     if (!isViewOnly()) {
       // Allowed tabs toggles (checkbox change)
