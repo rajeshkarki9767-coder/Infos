@@ -404,26 +404,54 @@
     // applies to the realtime stream, so only authorized devices receive events.
     subscribeSharedState(businessCloudId, onChange) {
       const c = getClient(); if (!c || !businessCloudId) return () => {};
-      let channel;
+      let channel = null;
       let retryTimer = null;
       let closed = false;
+      let tearingDown = false;   // guard: removeChannel() fires a CLOSED status
+                                 // callback synchronously; without this guard that
+                                 // re-enters the handler → removeChannel → CLOSED →
+                                 // ... → "Maximum call stack size exceeded" inside
+                                 // supabase-js. This is THE stack-overflow fix.
+      let attempt = 0;
 
-      const connect = () => {
+      const _setTimeout = (typeof setTimeout !== 'undefined') ? setTimeout
+                          : (typeof globalThis !== 'undefined' && globalThis.setTimeout) ? globalThis.setTimeout : null;
+
+      const teardown = () => {
+        if (tearingDown) return;       // never re-enter teardown
+        tearingDown = true;
+        const ch = channel; channel = null;
+        try { if (ch) c.removeChannel(ch); } catch (e) {}
+        tearingDown = false;
+      };
+
+      const scheduleRetry = () => {
+        if (closed || !_setTimeout) return;
+        // Cap retries. If realtime is disabled at the project level it will never
+        // connect; after a few tries we stop and rely on the app's polling
+        // fallback (no error spam, no endless reconnect attempts).
+        if (attempt >= 5) {
+          try { if (typeof window !== 'undefined' && window.__InfosRealtimeStatus) window.__InfosRealtimeStatus('error'); } catch (e) {}
+          return;
+        }
+        clearTimeout(retryTimer);
+        retryTimer = _setTimeout(connect, 2000);
+      };
+
+      function connect() {
         if (closed) return;
+        // Always fully tear down any prior channel before making a new one, and
+        // give each attempt a UNIQUE name so a lingering old channel can never
+        // collide with the new one (same-name channels stack up inside supabase-js
+        // and cross-fire status events).
+        teardown();
+        attempt += 1;
         try {
-          channel = c.channel('shared-' + businessCloudId)
-            // NOTE: no server-side `filter` here. A filtered postgres_changes
-            // subscription requires REPLICA IDENTITY FULL on the table or it
-            // silently delivers nothing. Subscribing to ALL row changes and
-            // letting the app pull the current row is far more reliable — it
-            // works on a default Supabase table. The callback just signals
-            // "something changed, go re-pull".
+          channel = c.channel('shared-' + businessCloudId + '-' + attempt)
             .on('postgres_changes',
               { event: '*', schema: 'public', table: 'shared_state' },
               (payload) => {
                 const row = payload && payload.new;
-                // If we can tell which business changed, ignore other businesses;
-                // otherwise just trigger a pull (cheap, version-guarded).
                 if (!row || !row.business_cloud_id || row.business_cloud_id === businessCloudId) {
                   try { onChange && onChange(row || null); } catch {}
                 }
@@ -432,39 +460,34 @@
               { event: '*', schema: 'public', table: 'businesses' },
               () => { try { onChange && onChange(null); } catch {} })
             .subscribe((status) => {
-              // status: SUBSCRIBED | CHANNEL_ERROR | TIMED_OUT | CLOSED
+              if (closed || tearingDown) return;   // ignore events during teardown
               try {
-                // Surface the realtime status to the page so we can see whether
-                // live sync is actually connected (vs silently falling back to
-                // polling). Only the live state is informative; we don't show
-                // every transient state.
-                if (typeof window !== 'undefined') {
-                  if (status === 'SUBSCRIBED') {
-                    if (window.__InfosRealtimeStatus) window.__InfosRealtimeStatus('live');
-                  } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-                    if (window.__InfosRealtimeStatus) window.__InfosRealtimeStatus('error');
-                  }
+                if (typeof window !== 'undefined' && window.__InfosRealtimeStatus) {
+                  if (status === 'SUBSCRIBED') window.__InfosRealtimeStatus('live');
+                  else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') window.__InfosRealtimeStatus('error');
                 }
               } catch (e) {}
               if (status === 'SUBSCRIBED') {
                 try { onChange && onChange(null); } catch {}
-              } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-                if (closed) return;
-                try { c.removeChannel(channel); } catch {}
-                clearTimeout(retryTimer);
-                retryTimer = setTimeout(connect, 2000);
+              } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+                // Retry ONLY on real errors. CLOSED is the normal teardown signal —
+                // retrying on it (and tearing down inside the handler) is what
+                // caused the recursion. Schedule an async retry; do NOT tear down
+                // synchronously here.
+                scheduleRetry();
               }
+              // status === 'CLOSED' → do nothing. Normal teardown; no retry.
             });
         } catch (e) {
-          if (!closed) { clearTimeout(retryTimer); retryTimer = setTimeout(connect, 3000); }
+          scheduleRetry();
         }
-      };
+      }
       connect();
 
       return () => {
         closed = true;
         clearTimeout(retryTimer);
-        try { c.removeChannel(channel); } catch {}
+        teardown();
       };
     },
 
