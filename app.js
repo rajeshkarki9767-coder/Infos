@@ -196,8 +196,16 @@
           if (typeof toast === 'function') toast('Storage is full — export data and remove old photos');
         }
       } catch (e) { console.warn('save failed', e); }
-      // Push to sync if enabled
-      try { if (window.Sync && window.Sync.status().enabled) window.Sync.pushNow(cachedPrefs); } catch {}
+      // Push to sync if enabled. SKIP when in business-login (shared) mode: a
+      // business member has no write permission on the owner's app_state row,
+      // and every attempt 401s. The business's data is pushed via pushSharedState
+      // (which goes to shared_state with the correct RLS policy) — but only when
+      // not applying a remote update (see persistAll/sharedApplyingRemote guard).
+      try {
+        if (window.Sync && window.Sync.status().enabled && !state.__sharedMode) {
+          window.Sync.pushNow(cachedPrefs);
+        }
+      } catch {}
     }, 250);
   }
   function persistAll() {
@@ -207,7 +215,14 @@
     // push the real data to the shared row.
     if (state.__sharedMode) {
       savePrefs({ theme: app.dataset.theme, accent: app.dataset.accent, customAccent: state.customAccent });
-      if (state.__sharedBusinessId) pushSharedState(false);
+      // CRITICAL: do NOT push while applying a remote update. The realtime
+      // callback applies the incoming snapshot then calls persistAll to save
+      // locally; without this guard the business member would attempt to push
+      // the incoming data straight back to shared_state, which (a) is a
+      // pointless echo and (b) 401s because members don't have write permission
+      // on shared_state. The whole push chain only makes sense for the OWNER
+      // making a real local edit.
+      if (state.__sharedBusinessId && !sharedApplyingRemote) pushSharedState(false);
       return;
     }
     savePrefs({
@@ -343,7 +358,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '121.0.0';
+  const APP_VERSION = '123.0.0';
 
   // ---------- State ----------
   const state = {
@@ -497,15 +512,24 @@
     // Always store plaintext (encryption feature removed).
     b.password = plaintext;
     delete b.passwordEnc;
-    // BULLETPROOF BACKUP: also write to a synchronous localStorage map keyed by
-    // business id. The in-memory b.password can momentarily be lost if state is
-    // rehydrated mid-flight (async IndexedDB write racing a sync pull), which made
-    // the password flash then blank. The render falls back to this map so the
-    // password is ALWAYS shown once set.
+    // BULLETPROOF BACKUP #1: synchronous localStorage map keyed by business id,
+    // so re-renders on THIS device never lose the password between in-memory state
+    // wipes and the next render.
     try {
       const map = JSON.parse(localStorage.getItem('infos-biz-pw') || '{}');
       if (plaintext) map[b.id] = plaintext; else delete map[b.id];
       localStorage.setItem('infos-biz-pw', JSON.stringify(map));
+    } catch {}
+    // BULLETPROOF BACKUP #2: the password also rides in the OWNER'S app_state
+    // (cachedPrefs.bizPasswords). app_state is owner-only (RLS), so this map
+    // syncs between the owner's devices but is never delivered to business
+    // members. Without this, a business created on Device A would show "—" for
+    // its password on Device B (because sanitizeBusiness strips the password
+    // from the shared slice, by design — it's not safe to push to members).
+    try {
+      const pwMap = (cachedPrefs && cachedPrefs.bizPasswords) || {};
+      if (plaintext) pwMap[b.id] = plaintext; else delete pwMap[b.id];
+      savePrefs({ bizPasswords: pwMap });
     } catch {}
   }
   // Read a business password, falling back to the synchronous backup map if the
@@ -516,7 +540,7 @@
   function bizPasswordValue(b) {
     if (!b) return '';
     if (b.password) {
-      // Heal the backup map opportunistically.
+      // Heal both backups opportunistically while we have a valid value.
       try {
         const map = JSON.parse(localStorage.getItem('infos-biz-pw') || '{}');
         if (map[b.id] !== b.password) {
@@ -524,11 +548,33 @@
           localStorage.setItem('infos-biz-pw', JSON.stringify(map));
         }
       } catch {}
+      try {
+        const pwMap = (cachedPrefs && cachedPrefs.bizPasswords) || {};
+        if (pwMap[b.id] !== b.password) {
+          pwMap[b.id] = b.password;
+          savePrefs({ bizPasswords: pwMap });
+        }
+      } catch {}
       return b.password;
     }
+    // Fallback 1: localStorage (this device).
     try {
       const map = JSON.parse(localStorage.getItem('infos-biz-pw') || '{}');
-      if (map[b.id]) { b.password = map[b.id]; return map[b.id]; } // heal in-memory too
+      if (map[b.id]) { b.password = map[b.id]; return map[b.id]; }
+    } catch {}
+    // Fallback 2: owner's cloud-synced cachedPrefs (covers cross-device).
+    try {
+      const pwMap = (cachedPrefs && cachedPrefs.bizPasswords) || {};
+      if (pwMap[b.id]) {
+        b.password = pwMap[b.id];
+        // Heal localStorage on this device too.
+        try {
+          const map = JSON.parse(localStorage.getItem('infos-biz-pw') || '{}');
+          map[b.id] = pwMap[b.id];
+          localStorage.setItem('infos-biz-pw', JSON.stringify(map));
+        } catch {}
+        return pwMap[b.id];
+      }
     } catch {}
     return '';
   }
@@ -2855,7 +2901,13 @@
   }
   function pwVis(s) { return { pct: [0,25,50,75,100][s], color: ['#888780','#E24B4A','#EF9F27','#97C459','#1D9E75'][s] }; }
   $('#auth-password').oninput = () => { if (authMode !== 'signup') return; const { pct, color } = pwVis(pwScore($('#auth-password').value)); $('#pw-strength-bar').style.width = pct + '%'; $('#pw-strength-bar').style.background = color; };
-  function showAuthError(m) { $('#auth-error').textContent = m; $('#auth-error').hidden = false; }
+  function showAuthError(m) {
+    $('#auth-error').textContent = m; $('#auth-error').hidden = false;
+    // If we already showed the splash on click, hide it now so the user can
+    // see and act on the error message.
+    try { hideLoadingSplash(); } catch {}
+    try { const btn = $('#auth-submit'); if (btn) { btn.disabled = false; if (btn.textContent === 'Signing in…' || btn.textContent === 'Creating…') btn.textContent = 'Sign in'; } } catch {}
+  }
   // ============================================================================
   //  SHARED BUSINESS ACCESS  (replaces the old view-only member screen)
   // ----------------------------------------------------------------------------
@@ -3327,6 +3379,16 @@
     const btn = $('#auth-submit'); const original = btn.textContent;
     btn.textContent = authMode === 'signup' ? 'Creating…' : 'Signing in…'; btn.disabled = true;
 
+    // Show the loading splash IMMEDIATELY on click (sign-in only — signup keeps
+    // the form visible until confirmation). The previous flow left the user
+    // staring at a frozen-looking button for the whole async auth roundtrip.
+    // Track click time on window so the later success handler (in another scope)
+    // can guarantee a minimum splash duration from this moment.
+    window.__signInClickedAt = Date.now();
+    if (authMode === 'signin') {
+      try { showLoadingSplash('Signing in', { action: 'signing-in', subtitle: 'Signing in…' }); } catch {}
+    }
+
     // ---- Cloud path: if Supabase is configured, authenticate against it ----
     // Wait for config to load (from /api/config) so we don't fall to local by race.
     if (window.InfosSupabase && window.InfosSupabase.ready) {
@@ -3682,12 +3744,15 @@
     setActive('notices');
     if (!state.__switchInProgress) {
       state.__nextSplashAction = null;
-      // 1.5s — long enough for the user to read "Signing in / Welcome…" without
-      // it feeling like a flash. Previously 600ms which read as a brief freeze.
+      // Guarantee a minimum 3s of splash visibility from when the user clicked
+      // sign-in. If auth was fast, we wait out the rest. If auth was slow, we
+      // hide as soon as we get here. Either way the splash never flashes <3s.
+      const __elapsed = Date.now() - (window.__signInClickedAt || Date.now());
+      const __remaining = Math.max(0, 3000 - __elapsed);
       setTimeout(() => {
         hideLoadingSplash();
         if (asBizId) toast(`Signed in to ${bizById(asBizId)?.name}`); else toast(`Welcome, ${name}`);
-      }, 1500);
+      }, __remaining);
     }
     flushPendingShare();
   }
