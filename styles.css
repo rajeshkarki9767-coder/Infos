@@ -1672,6 +1672,34 @@ select:focus,
 }
 .switch-account-row:active { transform: scale(0.99); }
 
+/* Subtle divider between the existing accounts and the "Add another account" row,
+   so the action is grouped but visually distinct from real accounts. */
+.switch-add-divider {
+  height: 1px;
+  background: var(--border-soft);
+  margin: 14px -4px 10px;
+  opacity: 0.7;
+}
+/* Add-account row: same shape as account rows but with a dashed border to read as
+   "action, not an account", and a tinted plus avatar. */
+.switch-account-row-add {
+  border-style: dashed;
+  border-color: var(--border-soft);
+  background: transparent;
+}
+.switch-account-row-add:hover {
+  border-color: var(--accent-solid);
+  background: var(--accent-bg);
+}
+.recent-avatar-add {
+  background: var(--accent-bg);
+  color: var(--accent-solid);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.recent-avatar-add .ti { font-size: 18px; }
+
 /* Splash overlay — shared design with loading-splash. New v15.1 design. */
 .switch-splash {
   position: fixed;

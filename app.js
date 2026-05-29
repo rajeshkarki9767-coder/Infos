@@ -201,9 +201,18 @@
       // and every attempt 401s. The business's data is pushed via pushSharedState
       // (which goes to shared_state with the correct RLS policy) — but only when
       // not applying a remote update (see persistAll/sharedApplyingRemote guard).
+      // CRITICAL: push the FULL state, not just cachedPrefs. The adapter stores
+      // whatever it gets as the full app_state row; pushing cachedPrefs alone
+      // would overwrite the cloud with a near-empty prefs blob (no items, no
+      // businesses), losing data on the OTHER device's next pull.
+      // Share the same debounced __cloudPushTimer with persistAll so rapid
+      // savePrefs + persistAll sequences coalesce into a SINGLE cloud push
+      // instead of double-firing (savePrefs's 250ms push then persistAll's
+      // 1500ms push). The clearTimeout below cancels any pending earlier push.
       try {
         if (window.Sync && window.Sync.status().enabled && !state.__sharedMode) {
-          window.Sync.pushNow(cachedPrefs);
+          clearTimeout(window.__cloudPushTimer);
+          window.__cloudPushTimer = setTimeout(() => { try { window.Sync.pushNow(state); } catch {} }, 1500);
         }
       } catch {}
     }, 250);
@@ -215,14 +224,30 @@
     // push the real data to the shared row.
     if (state.__sharedMode) {
       // Persist enough to RESTORE shared mode on a refresh: the mode flag,
-      // business cloud id, and the member email. Without these in IDB, a
-      // refresh wipes shared-mode and the device starts blank — which is the
-      // bug behind "sync isn't working, edits don't save, no realtime events".
+      // business cloud id, member email, AND the actual items/businesses/currentTab.
+      // Without items in IDB, every refresh starts blank until the cloud catches up,
+      // which the user perceives as "sync broken / data missing". Saving the cached
+      // copy gives an instant first paint and survives offline blips.
       savePrefs({
         theme: app.dataset.theme, accent: app.dataset.accent, customAccent: state.customAccent,
         __sharedMode: true,
         __sharedBusinessId: state.__sharedBusinessId,
-        __sharedEmail: state.__sharedEmail
+        __sharedEmail: state.__sharedEmail,
+        __sharedVersion: state.__sharedVersion,
+        // Cache the data so refreshes don't show a blank screen.
+        items: state.items,
+        businesses: state.businesses,
+        currentTab: state.currentTab,
+        activeBizId: state.activeBizId,
+        nextItemId: state.nextItemId,
+        nextTabId: state.nextTabId,
+        customTabs: state.customTabs,
+        globalActivity: state.globalActivity,
+        itemOrder: state.itemOrder,
+        bizTabOrder: state.bizTabOrder,
+        globalRenames: state.globalRenames,
+        noticesSubtab: state.noticesSubtab,
+        soundEnabled: state.soundEnabled
       });
       // CRITICAL: do NOT push while applying a remote update. The realtime
       // callback applies the incoming snapshot then calls persistAll to save
@@ -367,7 +392,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '127.0.0';
+  const APP_VERSION = '133.0.0';
 
   // ---------- State ----------
   const state = {
@@ -529,13 +554,15 @@
       if (plaintext) map[b.id] = plaintext; else delete map[b.id];
       localStorage.setItem('infos-biz-pw', JSON.stringify(map));
     } catch {}
-    // BULLETPROOF BACKUP #2: the password also rides in the OWNER'S app_state
-    // (cachedPrefs.bizPasswords). app_state is owner-only (RLS), so this map
-    // syncs between the owner's devices but is never delivered to business
-    // members. Without this, a business created on Device A would show "—" for
-    // its password on Device B (because sanitizeBusiness strips the password
-    // from the shared slice, by design — it's not safe to push to members).
+    // BULLETPROOF BACKUP #2: the password also rides in the OWNER's STATE
+    // (state.bizPasswords). State is pushed to the owner's app_state row (RLS
+    // restricts to owner), so this map syncs between the owner's devices but is
+    // never delivered to business members. CRITICAL: must write to `state` (not
+    // just cachedPrefs) — only state goes through sanitizeForCloud → cloud push.
     try {
+      state.bizPasswords = state.bizPasswords || {};
+      if (plaintext) state.bizPasswords[b.id] = plaintext; else delete state.bizPasswords[b.id];
+      // Mirror to cachedPrefs too so it survives a partial reload.
       const pwMap = (cachedPrefs && cachedPrefs.bizPasswords) || {};
       if (plaintext) pwMap[b.id] = plaintext; else delete pwMap[b.id];
       savePrefs({ bizPasswords: pwMap });
@@ -549,7 +576,7 @@
   function bizPasswordValue(b) {
     if (!b) return '';
     if (b.password) {
-      // Heal both backups opportunistically while we have a valid value.
+      // Heal all three backups opportunistically while we have a valid value.
       try {
         const map = JSON.parse(localStorage.getItem('infos-biz-pw') || '{}');
         if (map[b.id] !== b.password) {
@@ -558,6 +585,8 @@
         }
       } catch {}
       try {
+        state.bizPasswords = state.bizPasswords || {};
+        if (state.bizPasswords[b.id] !== b.password) state.bizPasswords[b.id] = b.password;
         const pwMap = (cachedPrefs && cachedPrefs.bizPasswords) || {};
         if (pwMap[b.id] !== b.password) {
           pwMap[b.id] = b.password;
@@ -571,12 +600,27 @@
       const map = JSON.parse(localStorage.getItem('infos-biz-pw') || '{}');
       if (map[b.id]) { b.password = map[b.id]; return map[b.id]; }
     } catch {}
-    // Fallback 2: owner's cloud-synced cachedPrefs (covers cross-device).
+    // Fallback 2: state.bizPasswords — synced via the owner's app_state cloud row
+    // (RLS-restricted, never delivered to business members). PRIMARY cross-device
+    // recovery: a new device pulls owner state, b.password was stripped in transit
+    // by sanitizeForCloud, but state.bizPasswords survives because it's stored as
+    // a separate field that sanitizeForCloud does NOT strip.
+    try {
+      if (state.bizPasswords && state.bizPasswords[b.id]) {
+        b.password = state.bizPasswords[b.id];
+        try {
+          const map = JSON.parse(localStorage.getItem('infos-biz-pw') || '{}');
+          map[b.id] = state.bizPasswords[b.id];
+          localStorage.setItem('infos-biz-pw', JSON.stringify(map));
+        } catch {}
+        return state.bizPasswords[b.id];
+      }
+    } catch {}
+    // Fallback 3: cachedPrefs.bizPasswords (local last-write cache, mirrors state).
     try {
       const pwMap = (cachedPrefs && cachedPrefs.bizPasswords) || {};
       if (pwMap[b.id]) {
         b.password = pwMap[b.id];
-        // Heal localStorage on this device too.
         try {
           const map = JSON.parse(localStorage.getItem('infos-biz-pw') || '{}');
           map[b.id] = pwMap[b.id];
@@ -3028,8 +3072,10 @@
 
     if (!state.__switchInProgress && !isBootRestore) {
       const shownName = (state.businesses && state.businesses[0] && state.businesses[0].name) || biz.name || 'your business';
-      // Hold the splash long enough for the user to actually read it (previously
-      // ~250ms which felt like a freeze + flash). 1.4s reads as deliberate.
+      // Update the splash now (in-place, no flash) so the user sees the business
+      // name during the remaining hold instead of the generic "Signing in…".
+      try { showLoadingSplash(shownName, { action: 'signing-in', subtitle: 'Loading your workspace', color: biz.color || null }); } catch {}
+      // 4s hold so the welcome message is comfortably readable.
       setTimeout(() => { hideLoadingSplash(); toast(`Signed in to ${shownName}`); }, 4000);
     }
   }
@@ -3360,6 +3406,11 @@
   function mergeCloudState(remote) {
     if (!remote || typeof remote !== 'object') return;
     const keep = new Set(['theme', 'accent', 'sidebarCollapsed', 'customAccent', 'onboarded', 'currentTab']);
+    // Capture the local bizPasswords BEFORE the remote-replaces-local merge below,
+    // so we can union them back in (a stale remote snapshot must NOT erase
+    // passwords the local device just migrated from b.password).
+    const localBizPasswords = (state.bizPasswords && typeof state.bizPasswords === 'object')
+      ? { ...state.bizPasswords } : {};
     Object.keys(remote).forEach(k => {
       if (keep.has(k)) return;
       if (k.startsWith('__cloud')) { state[k] = remote[k]; return; }
@@ -3370,6 +3421,29 @@
     state.businesses = state.businesses || [];
     state.accounts = state.accounts || [];
     state.tabOrder = state.tabOrder || ['notices','games','system','idpass','balance','schedule','businesses','trash'];
+    // Bring local-only bizPasswords entries back in: if local has a password
+    // for a business that remote doesn't, KEEP it (handles the v131 migration
+    // where local b.password values existed but cloud's bizPasswords map was
+    // still empty). For keys both sides have, REMOTE WINS (handles the normal
+    // cross-device case where owner changed a password on another device and
+    // uploaded — we must not stomp the fresh remote value with a stale local one).
+    state.bizPasswords = state.bizPasswords || {};
+    Object.keys(localBizPasswords).forEach(k => {
+      if (state.bizPasswords[k] == null && localBizPasswords[k] != null) {
+        state.bizPasswords[k] = localBizPasswords[k];
+      }
+    });
+    // Mirror cloud-synced biz passwords into cachedPrefs so any path that reads
+    // from cachedPrefs first (and into state.businesses[i].password so the eye-
+    // toggle/copy paths work without an extra lookup).
+    try {
+      if (state.bizPasswords && typeof state.bizPasswords === 'object') {
+        cachedPrefs.bizPasswords = { ...(cachedPrefs.bizPasswords || {}), ...state.bizPasswords };
+        (state.businesses || []).forEach(b => {
+          if (b && !b.password && state.bizPasswords[b.id]) b.password = state.bizPasswords[b.id];
+        });
+      }
+    } catch {}
     persistAll();
   }
 
@@ -3768,9 +3842,12 @@
     setActive('notices');
     if (!state.__switchInProgress) {
       state.__nextSplashAction = null;
-      // Guarantee a minimum 3s of splash visibility from when the user clicked
+      // Update the splash now (in-place, no flash) so the user sees their actual
+      // welcome message during the remaining hold, not the generic "Signing in…".
+      try { showLoadingSplash(name || (asBizId ? bizById(asBizId)?.name : ''), { action: 'signing-in', subtitle: 'Loading your workspace' }); } catch {}
+      // Guarantee a minimum 4s of splash visibility from when the user clicked
       // sign-in. If auth was fast, we wait out the rest. If auth was slow, we
-      // hide as soon as we get here. Either way the splash never flashes <3s.
+      // hide as soon as we get here. Either way the splash never flashes <4s.
       const __elapsed = Date.now() - (window.__signInClickedAt || Date.now());
       const __remaining = Math.max(0, 4000 - __elapsed);
       setTimeout(() => {
@@ -4053,11 +4130,12 @@
 
   function showLoadingSplash(displayName, opts) {
     let existing = document.getElementById('loading-splash');
-    // If a splash is already visible, just update its text content in place
-    // instead of remove-and-recreate (which caused a visible flash on sign-in,
-    // because the click handler shows a generic splash, then the success handler
-    // shows the name-specific one — two flashes back-to-back).
-    if (existing && existing.classList.contains('visible')) {
+    // Idempotency: if a splash element exists at all (even if .visible hasn't been
+    // attached yet — race between click-handler-show and success-handler-show),
+    // update its text in place rather than remove-and-recreate. Recreate caused a
+    // visible flash because in the gap between remove() and add() the page paints
+    // the dashboard underneath.
+    if (existing && !existing.classList.contains('exiting')) {
       const o2 = opts || {};
       const action2 = o2.action || 'signing-in';
       const verb = action2 === 'creating' ? 'Creating your account' : action2 === 'switching' ? 'Switching account' : 'Welcome';
@@ -4071,6 +4149,10 @@
       if (actionEl) actionEl.textContent = verb;
       if (nameEl && displayName) nameEl.textContent = displayName;
       if (subEl) subEl.textContent = sub;
+      // Update tint color if one was passed — previously a generic first-show
+      // would leave the splash in the default accent color even after the success
+      // handler called showLoadingSplash with the business's color.
+      if (o2.color) { try { existing.style.setProperty('--splash-tint', o2.color); } catch {} }
       return; // do NOT remove and recreate — that's what caused the flash
     }
     let el = existing;
@@ -4230,18 +4312,59 @@
   // plus each business (since the owner can switch into any of their businesses' read-only view).
   // The currently-signed-in account is filtered out.
   function listSwitchableAccounts() {
-    const out = [];
-    const currentEmail = state.user?.email?.toLowerCase();
-    const currentBizId = state.bizContext || null;
+    const isShared = !!state.__sharedMode;
+    const currentEmail = (isShared ? (state.__sharedEmail || '') : (state.user?.email || '')).toLowerCase();
+    const byEmail = new Map(); // email-lower → entry, last write wins for the freshest metadata
+
+    function isCurrent(entry) {
+      if (!entry || !entry.email) return false;
+      const k = entry.email.toLowerCase();
+      if (k !== currentEmail) return false;
+      // Same email → current iff the KIND matches the current session kind.
+      // (A business account uses its own auth identity; the email is the business
+      // member's email, not the owner's, so kind disambiguates.)
+      if (isShared) return entry.kind === 'business';
+      return entry.kind === 'owner';
+    }
+
+    function add(entry) {
+      if (!entry || !entry.email) return;
+      if (isCurrent(entry)) return;
+      const k = entry.email.toLowerCase();
+      const existing = byEmail.get(k);
+      if (!existing || (entry.lastSignIn || 0) > (existing.lastSignIn || 0)) {
+        byEmail.set(k, entry);
+      } else if (existing) {
+        // Fill in any missing fields from this entry without overwriting fresher ones.
+        if (!existing.name && entry.name) existing.name = entry.name;
+        if (!existing.bizId && entry.bizId) existing.bizId = entry.bizId;
+      }
+    }
+
+    // Source 1: explicit owner accounts on this device.
     (state.accounts || []).forEach(a => {
-      if (a.email.toLowerCase() === currentEmail && !currentBizId) return;
-      out.push({ kind: 'owner', email: a.email, name: a.name });
+      add({ kind: 'owner', email: a.email, name: a.name || a.email, lastSignIn: a.lastSignIn || 0 });
     });
+    // Source 2: businesses the owner created (only useful when this device IS the owner).
     (state.businesses || []).forEach(b => {
-      if (b.id === currentBizId) return;
-      out.push({ kind: 'business', email: b.email, name: b.name, bizId: b.id });
+      if (b && b.email) add({ kind: 'business', email: b.email, name: b.name, bizId: b.id, lastSignIn: 0 });
     });
-    return out;
+    // Source 3: recent sign-ins — covers business accounts signed in from THIS device
+    //  that aren't in state.businesses (because they belong to a different owner's
+    //  tree, or this device IS a business and never had an owner state). Without this,
+    //  signing into Business B from Business A's device left Business B invisible
+    //  in the switch picker.
+    (state.recentSignins || []).forEach(e => {
+      add({ kind: e.kind || 'owner', email: e.email, name: e.name || e.email, bizId: e.bizId || null, lastSignIn: e.lastSignIn || 0 });
+    });
+
+    // Order: most recently signed in first; ties → owners then businesses; then by name.
+    return Array.from(byEmail.values()).sort((a, b) => {
+      const ta = a.lastSignIn || 0, tb = b.lastSignIn || 0;
+      if (tb !== ta) return tb - ta;
+      if (a.kind !== b.kind) return a.kind === 'owner' ? -1 : 1;
+      return (a.name || '').localeCompare(b.name || '');
+    });
   }
 
   function openSwitchAccountPicker() {
@@ -4267,12 +4390,15 @@
       <div class="modal-body">
         ${accounts.length ? `<div class="form-hint" style="margin-bottom:14px;">Tap any account to switch instantly. No password needed — all accounts are saved on this device.</div>` : ''}
         <div class="switch-account-list">${rowsHtml}</div>
-        <div style="margin-top:16px;display:flex;flex-direction:column;gap:8px;">
-          <button type="button" id="switch-add-account" class="btn-secondary" style="display:inline-flex;align-items:center;justify-content:center;gap:8px;width:100%;">
-            <i class="ti ti-user-plus" style="font-size:16px;"></i>
-            Add another account
-          </button>
-        </div>
+        <div class="switch-add-divider"></div>
+        <button type="button" id="switch-add-account" class="switch-account-row switch-account-row-add">
+          <span class="recent-avatar recent-avatar-add"><i class="ti ti-plus"></i></span>
+          <span class="recent-meta">
+            <span class="recent-name">Add another account</span>
+            <span class="recent-sub">Sign in with a different email or business</span>
+          </span>
+          <i class="ti ti-arrow-right" style="font-size:16px;color:var(--text-tertiary);"></i>
+        </button>
       </div>
     `);
     $('#m-close').onclick = closeModal;
@@ -7551,7 +7677,7 @@
     app.classList.remove('collapsed');
     ['user','bizContext','activeBizId','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
      'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked','soundEnabled',
-     'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__sharedMode','__sharedBusinessId','__sharedEmail'].forEach(k => {
+     'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__sharedMode','__sharedBusinessId','__sharedEmail','__sharedVersion','bizPasswords'].forEach(k => {
       if (p[k] !== undefined) state[k] = p[k];
     });
     // bulkSelected is transient UI state and must always be a Set (it's never
@@ -7586,6 +7712,44 @@
         state.businesses.forEach(function (b) {
           if (b && !b.password && pwMap[b.id]) b.password = pwMap[b.id];
         });
+      }
+    } catch {}
+    // Heal business passwords from state.bizPasswords (cloud-synced via app_state).
+    // This is the cross-device path: state was pulled from cloud, b.password is
+    // missing because sanitizeForCloud strips it, but state.bizPasswords is a
+    // separate field that survives the round-trip.
+    try {
+      if (state.bizPasswords && Array.isArray(state.businesses)) {
+        state.businesses.forEach(function (b) {
+          if (b && !b.password && state.bizPasswords[b.id]) b.password = state.bizPasswords[b.id];
+        });
+        // Also seed localStorage so the synchronous backup is populated on this device.
+        try {
+          const lsMap = JSON.parse(localStorage.getItem('infos-biz-pw') || '{}');
+          let changed = false;
+          Object.keys(state.bizPasswords).forEach(function (k) {
+            if (lsMap[k] !== state.bizPasswords[k]) { lsMap[k] = state.bizPasswords[k]; changed = true; }
+          });
+          if (changed) localStorage.setItem('infos-biz-pw', JSON.stringify(lsMap));
+        } catch {}
+      }
+    } catch {}
+    // Migration: ensure state.bizPasswords contains every business's current
+    // password so the next push includes them. Without this step, an owner
+    // upgrading to this build wouldn't push their existing passwords to cloud
+    // (they're already in b.password but the new map is empty), leaving other
+    // devices stuck on "—".
+    try {
+      state.bizPasswords = state.bizPasswords || {};
+      if (Array.isArray(state.businesses)) {
+        let migrated = false;
+        state.businesses.forEach(function (b) {
+          if (b && b.password && !state.bizPasswords[b.id]) {
+            state.bizPasswords[b.id] = b.password;
+            migrated = true;
+          }
+        });
+        if (migrated) savePrefs({ bizPasswords: { ...state.bizPasswords } });
       }
     } catch {}
 
