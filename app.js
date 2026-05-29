@@ -392,7 +392,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '133.0.0';
+  const APP_VERSION = '137.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2916,6 +2916,22 @@
     // The Forgot? link only makes sense for sign-in
     const forgot = $('#forgot-link'); if (forgot) forgot.style.visibility = authMode === 'signup' ? 'hidden' : 'visible';
     $('#auth-error').hidden = true;
+    // If a cross-tree account switch stashed a target email before reload, pre-fill
+    // the auth email so the user just types their password.
+    if (mode === 'signin') {
+      try {
+        const pending = localStorage.getItem('infos-pending-signin-email');
+        if (pending) {
+          const emailEl = $('#auth-email');
+          if (emailEl && !emailEl.value) {
+            emailEl.value = pending;
+            const pwEl = $('#auth-password');
+            if (pwEl) setTimeout(() => { try { pwEl.focus(); } catch {} }, 50);
+          }
+          localStorage.removeItem('infos-pending-signin-email');
+        }
+      } catch {}
+    }
     renderRecentSignins();
   }
   // The link below the Sign in button flips between modes.
@@ -2925,7 +2941,22 @@
     const wrap = $('#recent-signins-wrap');
     const list = $('#recent-signins-list');
     if (!wrap || !list) return;
-    const items = (state.recentSignins || []);
+    // Merge state.recentSignins (per-account) + getDeviceAccounts() (device-level).
+    // Device list survives across all account switches, so this card shows every
+    // account ever signed in on this device even right after a fresh account
+    // loaded (state.recentSignins would otherwise be empty).
+    const byKey = new Map();
+    function consider(e) {
+      if (!e || !e.email) return;
+      const k = e.email.toLowerCase() + '|' + (e.kind || 'owner');
+      const existing = byKey.get(k);
+      if (!existing || (e.lastSignIn || 0) > (existing.lastSignIn || 0)) {
+        byKey.set(k, { email: e.email, name: e.name || e.email, kind: e.kind || 'owner', bizId: e.bizId || null, lastSignIn: e.lastSignIn || 0 });
+      }
+    }
+    (state.recentSignins || []).forEach(consider);
+    getDeviceAccounts().forEach(consider);
+    const items = Array.from(byKey.values()).sort((a, b) => (b.lastSignIn || 0) - (a.lastSignIn || 0));
     if (authMode !== 'signin' || !items.length) {
       wrap.hidden = true;
       list.innerHTML = ''; // clear stale entries so they don't reappear on next toggle
@@ -3056,7 +3087,7 @@
     } catch {}
     screenMain.classList.add('screen-active');
     state.history = [];
-    recordSignin({ email, name: state.user.name, kind: 'business', bizId: biz.id });
+    recordSignin({ email, name: (biz && biz.name) || state.user.name || email.split('@')[0], kind: 'business', bizId: biz.id });
     buildNav(); updateActiveBizDisplay();
     let bizRestoreTab = null;
     if (isBootRestore) { try { bizRestoreTab = localStorage.getItem('infos-last-tab'); } catch {} }
@@ -4289,11 +4320,59 @@
     state.recentSignins = state.recentSignins.filter(e => e.email !== entry.email);
     state.recentSignins.unshift({ ...entry, lastSignIn: Date.now() });
     if (state.recentSignins.length > 6) state.recentSignins = state.recentSignins.slice(0, 6);
+    // ALSO write to a DEVICE-LEVEL list (in localStorage, not in per-account state).
+    // state.recentSignins is per-account — when you sign in to Business B, B's IDB
+    // state loads and the previously-signed-in Owner A's recentSignins is gone.
+    // The device-level list survives across all account switches on this physical
+    // device, so the switcher always shows every account ever signed in here.
+    recordDeviceAccount(entry);
+  }
+
+  // DEVICE-LEVEL account list — survives across all account switches on this device.
+  function recordDeviceAccount(entry) {
+    if (!entry || !entry.email) return;
+    try {
+      const list = JSON.parse(localStorage.getItem('infos-device-accounts') || '[]');
+      const k = entry.email.toLowerCase();
+      // Dedupe by (email+kind) so the same email can exist once as owner and once as business.
+      const filtered = list.filter(e =>
+        !(e && e.email && e.email.toLowerCase() === k && (e.kind || 'owner') === (entry.kind || 'owner'))
+      );
+      filtered.unshift({
+        email: entry.email,
+        name: entry.name || entry.email,
+        kind: entry.kind || 'owner',
+        bizId: entry.bizId || null,
+        lastSignIn: Date.now()
+      });
+      if (filtered.length > 20) filtered.length = 20;
+      localStorage.setItem('infos-device-accounts', JSON.stringify(filtered));
+    } catch {}
+  }
+  function getDeviceAccounts() {
+    try {
+      const list = JSON.parse(localStorage.getItem('infos-device-accounts') || '[]');
+      return Array.isArray(list) ? list.filter(e => e && e.email) : [];
+    } catch { return []; }
+  }
+  function forgetDeviceAccount(email, kind) {
+    try {
+      const list = JSON.parse(localStorage.getItem('infos-device-accounts') || '[]');
+      const k = (email || '').toLowerCase();
+      const filtered = list.filter(e =>
+        !(e && e.email && e.email.toLowerCase() === k && (e.kind || 'owner') === (kind || 'owner'))
+      );
+      localStorage.setItem('infos-device-accounts', JSON.stringify(filtered));
+    } catch {}
   }
 
   // Remove a recent sign-in (e.g. from "forget" button on the chip).
   function forgetSignin(email) {
     state.recentSignins = (state.recentSignins || []).filter(e => e.email !== email);
+    // Also remove from the device-level list (both kinds, since the user is
+    // explicitly forgetting this email regardless of which auth type it was).
+    forgetDeviceAccount(email, 'owner');
+    forgetDeviceAccount(email, 'business');
     persistAll();
   }
   function doLogout() {
@@ -4349,12 +4428,18 @@
     (state.businesses || []).forEach(b => {
       if (b && b.email) add({ kind: 'business', email: b.email, name: b.name, bizId: b.id, lastSignIn: 0 });
     });
-    // Source 3: recent sign-ins — covers business accounts signed in from THIS device
-    //  that aren't in state.businesses (because they belong to a different owner's
-    //  tree, or this device IS a business and never had an owner state). Without this,
-    //  signing into Business B from Business A's device left Business B invisible
-    //  in the switch picker.
+    // Source 3: recent sign-ins from current account's state — covers business
+    //  accounts signed in from THIS device that aren't in state.businesses
+    //  (because they belong to a different owner's tree).
     (state.recentSignins || []).forEach(e => {
+      add({ kind: e.kind || 'owner', email: e.email, name: e.name || e.email, bizId: e.bizId || null, lastSignIn: e.lastSignIn || 0 });
+    });
+    // Source 4: DEVICE-LEVEL list (localStorage) — survives across all account
+    //  switches on this physical device. THIS is what makes the switcher show
+    //  every account ever signed in here, even after switching to a different
+    //  account wipes the per-account state.recentSignins. Critical for the
+    //  multi-account UX.
+    getDeviceAccounts().forEach(e => {
       add({ kind: e.kind || 'owner', email: e.email, name: e.name || e.email, bizId: e.bizId || null, lastSignIn: e.lastSignIn || 0 });
     });
 
@@ -4466,18 +4551,67 @@
     }
 
     let displayName, sub, switchColor = null;
+    let crossTree = false;
     if (kind === 'business') {
-      const b = bizById(bizId);
-      if (!b) { toast("That business is no longer available"); return; }
-      displayName = b.name;
-      sub = b.email;
-      switchColor = b.color || null;
+      let b = bizById(bizId);
+      // Fallback: bizId may have come from the device-level list (cloud UUID),
+      // but the same business by EMAIL might exist in this owner's local tree.
+      // In that case the switch is just a local view-change — no sign out needed.
+      if (!b && email) {
+        b = (state.businesses || []).find(x =>
+          x && x.email && x.email.toLowerCase() === email.toLowerCase());
+      }
+      if (b) {
+        displayName = b.name;
+        sub = b.email;
+        switchColor = b.color || null;
+        bizId = b.id;  // ensure downstream uses LOCAL id, not the cloud UUID
+      } else {
+        // No local match — this is a true cross-tree business (saved in device
+        // list but not part of this owner's state.businesses). Sign out + reload.
+        crossTree = true;
+        displayName = email && email.split ? email.split('@')[0] : 'Business';
+        sub = email || '';
+      }
     } else {
-      const acc = (state.accounts || []).find(a => a.email.toLowerCase() === email.toLowerCase());
-      if (!acc) { toast("That account is no longer available"); return; }
-      displayName = acc.name;
-      sub = acc.email;
-      switchColor = state.customAccent || null;
+      const acc = (state.accounts || []).find(a => a.email.toLowerCase() === (email || '').toLowerCase());
+      if (acc) {
+        displayName = acc.name;
+        sub = acc.email;
+        switchColor = state.customAccent || null;
+      } else {
+        // Owner email isn't in state.accounts — same cross-tree case as above.
+        crossTree = true;
+        displayName = email && email.split ? email.split('@')[0] : 'Account';
+        sub = email || '';
+      }
+    }
+    if (crossTree) {
+      showSwitchSplash(displayName, sub, kind, switchColor);
+      state.__switchInProgress = true;
+      (async () => {
+        try {
+          if (window.Sync && Sync.status().enabled) { try { await Sync.pushNow(state); } catch {} }
+          if (window.Sync) Sync.disable();
+        } catch {}
+        try {
+          if (window.InfosSupabase && window.InfosSupabase.Auth) {
+            await Promise.race([
+              window.InfosSupabase.Auth.signOut(),
+              new Promise(r => setTimeout(r, 2500))
+            ]);
+          }
+        } catch {}
+        try {
+          Object.keys(localStorage).forEach(k => {
+            if (/^sb-.*-auth-token$/.test(k) || /supabase\.auth\.token/.test(k)) localStorage.removeItem(k);
+          });
+        } catch {}
+        // Stash the desired sign-in email so the auth screen pre-fills it after reload.
+        try { localStorage.setItem('infos-pending-signin-email', email || ''); } catch {}
+        location.reload();
+      })();
+      return;
     }
     showSwitchSplash(displayName, sub, kind, switchColor);
     state.__switchInProgress = true;
@@ -4490,9 +4624,11 @@
       // Sign in as the chosen account
       if (kind === 'business') {
         const b = bizById(bizId);
+        if (!b) { state.__switchInProgress = false; hideSwitchSplash(); toast('That business is no longer available'); return; }
         login(b.name, b.email, b.id);
       } else {
-        const acc = (state.accounts || []).find(a => a.email.toLowerCase() === email.toLowerCase());
+        const acc = (state.accounts || []).find(a => a.email.toLowerCase() === (email || '').toLowerCase());
+        if (!acc) { state.__switchInProgress = false; hideSwitchSplash(); toast('That account is no longer available'); return; }
         login(acc.name, acc.email, null);
       }
       state.__switchInProgress = false;
@@ -5636,14 +5772,12 @@
         if (editing) editingBatch = [editing];
       }
     }
-    // For new entries: pre-fill the NAME of each row from the last-used set of names
-    // (so recurring players don't get retyped), but leave the BALANCE empty.
     // For edit: one row per existing entry in the batch.
+    // For new entries: start with a single empty row — the user types names
+    // manually each time, no suggestions from prior balance entries.
     let rows;
     if (editingBatch) {
       rows = editingBatch.map(it => ({ name: it.name || '', balance: it.balance || '', _id: it.id }));
-    } else if (Array.isArray(state.__lastBalNames) && state.__lastBalNames.length) {
-      rows = state.__lastBalNames.map(n => ({ name: n, balance: '' }));
     } else {
       rows = [{ name: '', balance: '' }];
     }
