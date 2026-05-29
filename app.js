@@ -214,7 +214,16 @@
     // on the same device). Persist just the lightweight device prefs locally and
     // push the real data to the shared row.
     if (state.__sharedMode) {
-      savePrefs({ theme: app.dataset.theme, accent: app.dataset.accent, customAccent: state.customAccent });
+      // Persist enough to RESTORE shared mode on a refresh: the mode flag,
+      // business cloud id, and the member email. Without these in IDB, a
+      // refresh wipes shared-mode and the device starts blank — which is the
+      // bug behind "sync isn't working, edits don't save, no realtime events".
+      savePrefs({
+        theme: app.dataset.theme, accent: app.dataset.accent, customAccent: state.customAccent,
+        __sharedMode: true,
+        __sharedBusinessId: state.__sharedBusinessId,
+        __sharedEmail: state.__sharedEmail
+      });
       // CRITICAL: do NOT push while applying a remote update. The realtime
       // callback applies the incoming snapshot then calls persistAll to save
       // locally; without this guard the business member would attempt to push
@@ -358,7 +367,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '125.0.0';
+  const APP_VERSION = '127.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2516,13 +2525,28 @@
   // Hide the header switch button when there's nothing to switch to.
   function refreshHeaderSwitchVisibility() {
     if (!headerSwitchBtn) return;
-    // For a business (view-only) login, always offer Switch account in the header
-    // top-right — the member needs a way to leave/switch even if no other accounts
-    // are saved on this device. For the owner, show it only when there are other
-    // saved accounts to switch to.
-    if (isViewOnly()) { headerSwitchBtn.hidden = false; return; }
-    const accs = (typeof listSwitchableAccounts === 'function') ? listSwitchableAccounts() : [];
-    headerSwitchBtn.hidden = accs.length === 0;
+    // Populate the name label so the user sees WHICH account is currently active.
+    try {
+      const nameEl = document.getElementById('header-switch-name');
+      if (nameEl) {
+        let label = '';
+        if (isViewOnly()) {
+          // Business member sees the business name they're signed into.
+          const b = (state.businesses && state.businesses[0]) || null;
+          label = (b && b.name) || 'Business';
+        } else if (state.user && state.user.name) {
+          label = state.user.name;
+        } else if (state.user && state.user.email) {
+          label = state.user.email.split('@')[0];
+        }
+        nameEl.textContent = label;
+      }
+    } catch {}
+    // The header button is always visible when signed in. It shows the current
+    // account name so the user knows who they're acting as, and offers Switch +
+    // Add account from the picker even when no other accounts are saved yet.
+    const signedIn = !!(state.user || state.__sharedMode);
+    headerSwitchBtn.hidden = !signedIn;
   }
   $('#bulk-cancel').onclick = () => toggleBulkMode();
   $('#bulk-all').onclick = () => {
@@ -4222,11 +4246,7 @@
 
   function openSwitchAccountPicker() {
     const accounts = listSwitchableAccounts();
-    if (!accounts.length) {
-      toast('No other accounts on this device yet');
-      return;
-    }
-    const rows = accounts.map(a => {
+    const rowsHtml = accounts.length ? accounts.map(a => {
       const initial = (a.name || a.email).charAt(0).toUpperCase();
       const kindLabel = a.kind === 'business' ? 'Business' : 'Owner';
       return `<button type="button" class="switch-account-row" data-switch-email="${esc(a.email)}" data-switch-kind="${a.kind}" data-switch-bizid="${esc(a.bizId || '')}">
@@ -4237,15 +4257,22 @@
         </span>
         <i class="ti ti-arrow-right" style="font-size:16px;color:var(--text-tertiary);"></i>
       </button>`;
-    }).join('');
+    }).join('') : `<div class="form-hint" style="text-align:center;padding:12px 4px;">No other accounts saved on this device yet.</div>`;
+
     openModal(`
       <div class="modal-head">
         <h3>Switch account</h3>
         <button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button>
       </div>
       <div class="modal-body">
-        <div class="form-hint" style="margin-bottom:14px;">Tap any account to switch instantly. No password needed — all accounts are saved on this device.</div>
-        <div class="switch-account-list">${rows}</div>
+        ${accounts.length ? `<div class="form-hint" style="margin-bottom:14px;">Tap any account to switch instantly. No password needed — all accounts are saved on this device.</div>` : ''}
+        <div class="switch-account-list">${rowsHtml}</div>
+        <div style="margin-top:16px;display:flex;flex-direction:column;gap:8px;">
+          <button type="button" id="switch-add-account" class="btn-secondary" style="display:inline-flex;align-items:center;justify-content:center;gap:8px;width:100%;">
+            <i class="ti ti-user-plus" style="font-size:16px;"></i>
+            Add another account
+          </button>
+        </div>
       </div>
     `);
     $('#m-close').onclick = closeModal;
@@ -4256,6 +4283,23 @@
       closeModal();
       performAccountSwitch({ email, kind, bizId });
     });
+    const addBtn = $('#switch-add-account');
+    if (addBtn) addBtn.onclick = () => {
+      closeModal();
+      // Show the sign-in screen so the user can add a new account. Existing
+      // accounts on this device remain in recentSignins / Storage so they'll
+      // appear in this picker after the new sign-in completes.
+      const sa = document.getElementById('screen-auth');
+      const sm = document.getElementById('screen-main');
+      if (sa && sm) {
+        sa.classList.add('screen-active');
+        sm.classList.remove('screen-active');
+        if (typeof setAuthMode === 'function') setAuthMode('signin');
+        ['#auth-name','#auth-email','#auth-password'].forEach(s => { const el = document.querySelector(s); if (el) el.value = ''; });
+        const errEl = document.querySelector('#auth-error'); if (errEl) errEl.hidden = true;
+        try { if (typeof renderRecentSignins === 'function') renderRecentSignins(); } catch {}
+      }
+    };
   }
 
   // Show a 2-second splash, then complete the switch.
@@ -7507,7 +7551,7 @@
     app.classList.remove('collapsed');
     ['user','bizContext','activeBizId','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
      'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked','soundEnabled',
-     'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs'].forEach(k => {
+     'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__sharedMode','__sharedBusinessId','__sharedEmail'].forEach(k => {
       if (p[k] !== undefined) state[k] = p[k];
     });
     // bulkSelected is transient UI state and must always be a Set (it's never

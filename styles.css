@@ -1704,8 +1704,19 @@ select:focus,
 /* Header: Switch-account button + back arrow visibility.
    On desktop the sidebar is always visible so tabs switch directly — the top
    back arrow is unnecessary there. Show it only on mobile (drawer layout). */
-.header-switch-btn { color: var(--text-secondary); }
+.header-switch-btn { color: var(--text-secondary); display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; width: auto; }
 .header-switch-btn:hover { color: var(--accent-solid); background: var(--accent-bg); }
+.header-switch-name {
+  font-size: 13px;
+  font-weight: 600;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 600px) {
+  .header-switch-name { max-width: 90px; font-size: 12px; }
+}
 /* The header back arrow is shown ONLY on detail/sub-pages (controlled in JS via
    backBtn.hidden). Main tabs never show it. */
 @media (min-width: 769px) {
