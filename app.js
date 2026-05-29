@@ -358,7 +358,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '123.0.0';
+  const APP_VERSION = '124.0.0';
 
   // ---------- State ----------
   const state = {
@@ -3088,7 +3088,7 @@
       sharedApplyingRemote = true;
       if (state.__sharedMode) {
         const __before = itemIdSnapshot();
-        const ms = Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail });
+        const ms = Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail, prevItems: state.items });
         Object.assign(state, ms);
         if (!state.bulkSelected || typeof state.bulkSelected.has !== 'function') state.bulkSelected = new Set();
         state.__sharedMode = true;
@@ -3184,7 +3184,7 @@
       sharedApplyingRemote = true;
       if (state.__sharedMode) {
         const __before = itemIdSnapshot();
-        const ms = Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail });
+        const ms = Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail, prevItems: state.items });
         Object.assign(state, ms);
       if (!state.bulkSelected || typeof state.bulkSelected.has !== "function") state.bulkSelected = new Set();
         state.__sharedMode = true;
@@ -4028,7 +4028,28 @@
   }
 
   function showLoadingSplash(displayName, opts) {
-    let el = document.getElementById('loading-splash');
+    let existing = document.getElementById('loading-splash');
+    // If a splash is already visible, just update its text content in place
+    // instead of remove-and-recreate (which caused a visible flash on sign-in,
+    // because the click handler shows a generic splash, then the success handler
+    // shows the name-specific one — two flashes back-to-back).
+    if (existing && existing.classList.contains('visible')) {
+      const o2 = opts || {};
+      const action2 = o2.action || 'signing-in';
+      const verb = action2 === 'creating' ? 'Creating your account' : action2 === 'switching' ? 'Switching account' : 'Welcome';
+      const sub = o2.subtitle ||
+        (action2 === 'creating' ? 'Setting up your private workspace' :
+         action2 === 'switching' ? 'Preparing your view' :
+         'Loading your workspace');
+      const actionEl = existing.querySelector('.splash-action-label');
+      const nameEl = existing.querySelector('.splash-display-name');
+      const subEl = existing.querySelector('.splash-subtitle');
+      if (actionEl) actionEl.textContent = verb;
+      if (nameEl && displayName) nameEl.textContent = displayName;
+      if (subEl) subEl.textContent = sub;
+      return; // do NOT remove and recreate — that's what caused the flash
+    }
+    let el = existing;
     if (el) el.remove();
     el = document.createElement('div');
     el.id = 'loading-splash';

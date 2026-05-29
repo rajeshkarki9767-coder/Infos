@@ -132,14 +132,39 @@
     slice = slice || {};
     opts = opts || {};
     var biz = slice.business || { id: slice.businessId || 'shared', name: 'Shared business', color: '#378ADD' };
+    // Merge with the current local items (if a previous state exists) so a
+    // just-made local edit isn't clobbered by a stale realtime payload that
+    // arrived between the local save and the cloud catching up. Compare
+    // updatedAt — keep whichever is newer.
+    var prev = (opts.prevItems && typeof opts.prevItems === 'object') ? opts.prevItems : null;
     var items = {
       notices: [], system: [], games: [], schedule: [], balance: [],
       'idpass-system': [], 'idpass-accounts': []
     };
     Object.keys(slice.items || {}).forEach(function (tab) {
-      // Exclude tombstones (items marked deleted) — they exist in the slice only
-      // to propagate deletions, and must not appear as live entries.
-      items[tab] = (slice.items[tab] || []).filter(function (it) { return !it || !it.deleted; });
+      var incoming = (slice.items[tab] || []).filter(function (it) { return !it || !it.deleted; });
+      if (!prev || !prev[tab] || !prev[tab].length) { items[tab] = incoming; return; }
+      // Build incoming-by-id map.
+      var incById = {};
+      incoming.forEach(function (it) { if (it && it.id != null) incById[String(it.id)] = it; });
+      // Walk previous items; if local copy is newer than incoming, keep local.
+      var seen = {};
+      var merged = [];
+      prev[tab].forEach(function (lit) {
+        if (!lit || lit.id == null) return;
+        var k = String(lit.id);
+        var inc = incById[k];
+        if (!inc) return; // not in incoming (and not a tombstone since we filtered) — drop
+        var lu = (typeof lit.updatedAt === 'number') ? lit.updatedAt : 0;
+        var iu = (typeof inc.updatedAt === 'number') ? inc.updatedAt : 0;
+        merged.push(iu >= lu ? inc : lit);
+        seen[k] = true;
+      });
+      // Add new incoming items not in prev.
+      incoming.forEach(function (it) {
+        if (it && it.id != null && !seen[String(it.id)]) merged.push(it);
+      });
+      items[tab] = merged;
     });
 
     // A shared (business) login is a FULL editor of this one business — they get
@@ -235,7 +260,16 @@
         var key = String(it.id);
         if (tombstoned[key]) { seen[key] = true; return; } // explicitly deleted remotely
         var inc = incomingById[key];
-        if (inc && !inc.deleted) { result.push(inc); seen[key] = true; } // newer cloud copy
+        if (inc && !inc.deleted) {
+          // Only replace with incoming if it's strictly NEWER than the local copy.
+          // Otherwise keep the local copy: it may be a just-made edit that hasn't
+          // been pushed yet, and a stale realtime payload would clobber it. The
+          // updatedAt fields are millisecond timestamps set on every edit.
+          var localUpd = (typeof it.updatedAt === 'number') ? it.updatedAt : 0;
+          var incUpd = (typeof inc.updatedAt === 'number') ? inc.updatedAt : 0;
+          if (incUpd >= localUpd) { result.push(inc); seen[key] = true; }
+          else { result.push(it); seen[key] = true; }
+        }
         else { result.push(it); } // keep — not in incoming slice, don't lose it
       });
       // Add brand-new incoming items (skip pure tombstones).

@@ -1013,8 +1013,11 @@ input, textarea, [contenteditable="true"] {
   border-bottom: 1px solid var(--border-soft);
 }
 /* Opaque backing above the bar covering the container's TOP padding, full width,
-   so nothing peeks over the top edge either. */
-.list-toolbar::before {
+   so nothing peeks over the top edge either. Only applies when the toolbar is
+   the very first thing in the scroll area — if there's content above it (e.g.
+   the Notices segmented tabs), the backing would overlay that content. */
+#page-content > .list-toolbar:first-child::before,
+#page-content > .list-page > .list-toolbar:first-child::before {
   content: '';
   position: absolute;
   left: 0; right: 0;
