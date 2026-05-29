@@ -358,7 +358,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '124.0.0';
+  const APP_VERSION = '125.0.0';
 
   // ---------- State ----------
   const state = {
@@ -3006,7 +3006,7 @@
       const shownName = (state.businesses && state.businesses[0] && state.businesses[0].name) || biz.name || 'your business';
       // Hold the splash long enough for the user to actually read it (previously
       // ~250ms which felt like a freeze + flash). 1.4s reads as deliberate.
-      setTimeout(() => { hideLoadingSplash(); toast(`Signed in to ${shownName}`); }, 1400);
+      setTimeout(() => { hideLoadingSplash(); toast(`Signed in to ${shownName}`); }, 4000);
     }
   }
 
@@ -3748,7 +3748,7 @@
       // sign-in. If auth was fast, we wait out the rest. If auth was slow, we
       // hide as soon as we get here. Either way the splash never flashes <3s.
       const __elapsed = Date.now() - (window.__signInClickedAt || Date.now());
-      const __remaining = Math.max(0, 3000 - __elapsed);
+      const __remaining = Math.max(0, 4000 - __elapsed);
       setTimeout(() => {
         hideLoadingSplash();
         if (asBizId) toast(`Signed in to ${bizById(asBizId)?.name}`); else toast(`Welcome, ${name}`);
