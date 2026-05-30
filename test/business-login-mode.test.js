@@ -26,7 +26,8 @@ check('enterSharedBusiness sets bizContext = biz.id (view-only scope)', /state\.
 check('does NOT null out bizContext (old full-editor model removed)', !/state\.bizContext\s*=\s*null/.test(esb));
 check('still marks __sharedMode (cloud-backed) for sync', /state\.__sharedMode\s*=\s*true/.test(esb));
 check('scopes activeBizId to the business', /state\.activeBizId\s*=\s*biz\.id/.test(esb));
-check('business login display name is the business name, NOT "<name> team"', !/\+\s*' team'/.test(esb) && /name:\s*\(biz\.name\s*\|\|\s*'Business'\)/.test(esb));
+check('business login display name is the business name, NOT "<name> team"', !/\+\s*' team'/.test(esb) && /state\.user\s*=\s*\{\s*name:\s*realBizName/.test(esb));
+check('business login resolves a real business name (not the placeholder param)', /const realBizName = bestKnownBizName\(email/.test(esb));
 
 console.log('\nno user-visible "team" wording for a business login:');
 check('login() splash subtitle does not say "team"', !/\$\{bizById\(asBizId\)\?\.name\} team/.test(src));

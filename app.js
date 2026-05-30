@@ -116,6 +116,10 @@
   // Convenience helpers the push paths call.
   window.__InfosSyncUploading = function () { try { window.__InfosRealtimeStatus('uploading'); } catch (e) {} };
   window.__InfosSyncDone = function () { try { window.__InfosRealtimeStatus('synced'); } catch (e) {} };
+  // Incoming real-time sync: show "Syncing…" while an incoming change is being
+  // pulled/applied, then settle to "Synced". Same visual as uploading — the user
+  // just needs to see that data is moving.
+  window.__InfosSyncReceiving = function () { try { window.__InfosRealtimeStatus('uploading'); } catch (e) {} };
 
   // Keep v7 key — v8 adds the optional `recentSignins` field but is otherwise shape-compatible
   // with v7, so we want existing users to keep their data.
@@ -392,7 +396,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '137.0.0';
+  const APP_VERSION = '140.0.0';
 
   // ---------- State ----------
   const state = {
@@ -3058,11 +3062,25 @@
     state.__sharedBusinessId = biz.id;
     state.__sharedVersion = (snap && snap.version) || 0;
     state.__sharedEmail = email;
+    // Resolve the REAL business name. The sign-in `biz` param is often a
+    // placeholder ('', 'Shared business') because getMemberBusiness is RLS-blocked
+    // or loadSharedState timed out. Prefer the slice's published name, then the
+    // member-state business name, then the last-known-good name from the device
+    // account list, before finally falling back to the email handle.
+    const realBizName = bestKnownBizName(email, [
+      (state.businesses && state.businesses[0] && state.businesses[0].name),
+      (slice.business && slice.business.name),
+      biz.name
+    ]);
+    // Heal the in-memory business record so the whole UI shows the real name.
+    if (state.businesses && state.businesses[0] && !isRealBizName(state.businesses[0].name) && isRealBizName(realBizName)) {
+      state.businesses[0].name = realBizName;
+    }
     // VIEW-ONLY scoped to this business (this is what makes it behave like the
     // owner's Business view: view-only everywhere, entries only on Balance).
     state.bizContext = biz.id;
     state.activeBizId = biz.id;
-    state.user = { name: (biz.name || 'Business'), email };
+    state.user = { name: realBizName, email };
     // Drop any owner-only collections that the member slice doesn't define, so a
     // previous owner session on this device leaves nothing in memory during the
     // business session. (Disk prefs are untouched — see persistAll's shared-mode
@@ -3080,14 +3098,14 @@
       const bs = document.getElementById('boot-splash'); if (bs) bs.remove();
     } catch {}
     if (!state.__switchInProgress && !isBootRestore) {
-      showLoadingSplash(biz.name || 'Business', { action: 'signing-in', subtitle: `Signing in to ${biz.name || 'your business'}`, color: biz.color || null });
+      showLoadingSplash(realBizName, { action: 'signing-in', subtitle: `Signing in to ${realBizName}`, color: biz.color || null });
     }
     try {
       const auth = document.getElementById('screen-auth'); if (auth) auth.classList.remove('screen-active');
     } catch {}
     screenMain.classList.add('screen-active');
     state.history = [];
-    recordSignin({ email, name: (biz && biz.name) || state.user.name || email.split('@')[0], kind: 'business', bizId: biz.id });
+    recordSignin({ email, name: realBizName, kind: 'business', bizId: biz.id });
     buildNav(); updateActiveBizDisplay();
     let bizRestoreTab = null;
     if (isBootRestore) { try { bizRestoreTab = localStorage.getItem('infos-last-tab'); } catch {} }
@@ -3102,12 +3120,13 @@
     subscribeShared(biz.id);
 
     if (!state.__switchInProgress && !isBootRestore) {
-      const shownName = (state.businesses && state.businesses[0] && state.businesses[0].name) || biz.name || 'your business';
+      const shownName = realBizName;
       // Update the splash now (in-place, no flash) so the user sees the business
       // name during the remaining hold instead of the generic "Signing in…".
       try { showLoadingSplash(shownName, { action: 'signing-in', subtitle: 'Loading your workspace', color: biz.color || null }); } catch {}
-      // 4s hold so the welcome message is comfortably readable.
-      setTimeout(() => { hideLoadingSplash(); toast(`Signed in to ${shownName}`); }, 4000);
+      // Hold matches the ring + stage animation (~2.6s) so the splash never sits
+      // frozen with everything already complete. Snappy but readable.
+      setTimeout(() => { hideLoadingSplash(); toast(`Signed in to ${shownName}`); }, 2600);
     }
   }
 
@@ -3153,18 +3172,20 @@
     window.__sharedPoll = setInterval(() => {
       if (!state.__sharedMode) return;
       bizPollTick++;
-      // Realtime is the primary path and is confirmed delivering full data
-      // (payloads carry hasData:true). If realtime delivered recently, the poll is
-      // unnecessary — skip it so we don't spam the slow full-blob fetch (which was
-      // timing out every second and bogging the main thread). Only when realtime
-      // has been quiet for a while do we do a lightweight version check, and only
-      // fetch the full row if that cheap check says the version actually advanced.
+      // ALWAYS run the cheap version check. The previous "skip if realtime applied
+      // in the last 8s" optimization had a subtle bug: when this business makes its
+      // own Balance entries, it receives its OWN realtime echoes, which kept
+      // __lastRealtimeApply fresh and made realtime look "healthy" — so the poll was
+      // perpetually skipped. If an OWNER edit's realtime event was then missed, the
+      // business never caught it (no fallback) and the owner's notices/games/etc.
+      // edits required a manual refresh. refreshSharedFromCloud(cid, false) only
+      // does the heavy data fetch when the cheap version integer actually advanced,
+      // so polling every couple seconds is inexpensive when nothing changed.
+      // Tiny anti-hammer guard: skip only if a realtime apply happened <1.5s ago.
       const sinceRealtime = Date.now() - (window.__lastRealtimeApply || 0);
-      if (sinceRealtime < 8000) return; // realtime healthy → no poll needed
-      // Realtime quiet: cheap version-only check (never times out); refreshShared
-      // already pre-checks the version and skips the heavy fetch when unchanged.
+      if (sinceRealtime < 1500) return;
       try { refreshSharedFromCloud(cloudBusinessId, false); } catch {}
-    }, 4000);
+    }, 2500);
   }
 
   // Apply a shared snapshot we ALREADY have in hand (e.g. from a realtime payload)
@@ -3186,6 +3207,7 @@
         window.__infosSyncLog.push({ t: Date.now(), biz: cloudBusinessId, cloudV: snap.version || 0, via: 'realtime-direct', mode: state.__sharedMode ? 'biz' : 'owner' });
         if (window.__infosSyncLog.length > 30) window.__infosSyncLog.shift();
       } catch (e) {}
+      try { if (window.__InfosSyncReceiving) window.__InfosSyncReceiving(); } catch (e) {}
       sharedApplyingRemote = true;
       if (state.__sharedMode) {
         const __before = itemIdSnapshot();
@@ -3195,7 +3217,8 @@
         state.__sharedMode = true;
         state.__sharedBusinessId = cloudBusinessId;
         state.__sharedVersion = snap.version || 0;
-        state.user = state.user || { name: (snap.data.business && snap.data.business.name || 'Business'), email: state.__sharedEmail };
+        state.user = state.user || { name: (snap.data.business && snap.data.business.name) || 'Business', email: state.__sharedEmail };
+        healSharedBizName();
         try { chimeForArrivals(__before); } catch (e) {}
         // ALWAYS re-render after a realtime apply. The previous "only render when
         // the current tab's signature changed" optimization could miss updates
@@ -3225,12 +3248,21 @@
         }
       }
       sharedApplyingRemote = false;
+      try { if (window.__InfosSyncDone) window.__InfosSyncDone(); } catch (e) {}
     } catch (e) { sharedApplyingRemote = false; }
   }
 
   // Pull the latest shared snapshot and re-render. Used by realtime + on resume.
   // `force` skips the version/content guards and always re-applies + re-renders.
   async function refreshSharedFromCloud(cloudBusinessId, force) {
+    let __startedReceiving = false;
+    // In-flight guard: with the poll now running every ~2.5s, two ticks could
+    // otherwise both detect the same version bump, both fetch the full blob, and
+    // both re-render — a visible double-render flicker. Skip if a non-forced pull
+    // for this business is already running. (Forced pulls always proceed.)
+    window.__refreshSharedInflight = window.__refreshSharedInflight || {};
+    if (!force && window.__refreshSharedInflight[cloudBusinessId]) return;
+    window.__refreshSharedInflight[cloudBusinessId] = true;
     try {
       // CHEAP PRE-CHECK: fetch just the version integer (fast, never times out)
       // before pulling the heavy data blob. The full-blob fetch on every poll was
@@ -3273,6 +3305,8 @@
         if (window.__infosSyncLog.length > 30) window.__infosSyncLog.shift();
       } catch (e) {}
       if (!proceed && !force) return;
+      __startedReceiving = true;
+      try { if (window.__InfosSyncReceiving) window.__InfosSyncReceiving(); } catch (e) {}
       // Don't yank the UI out from under an open modal or an in-progress edit —
       // that's what causes the flicker. Defer the refresh until the user is idle.
       const modalOpen = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
@@ -3291,7 +3325,8 @@
         state.__sharedMode = true;
         state.__sharedBusinessId = cloudBusinessId;
         state.__sharedVersion = snap.version || 0;
-        state.user = state.user || { name: (snap.data.business && snap.data.business.name || 'Business'), email: state.__sharedEmail };
+        state.user = state.user || { name: (snap.data.business && snap.data.business.name) || 'Business', email: state.__sharedEmail };
+        healSharedBizName();
         // Chime for any entries that just arrived from the owner via sync.
         try { chimeForArrivals(__before); } catch (e) {}
         // We got here only because the version OR content actually changed (or
@@ -3338,7 +3373,11 @@
         return;
       }
     } catch (e) { console.warn('refreshSharedFromCloud failed:', e); }
-    finally { sharedApplyingRemote = false; }
+    finally {
+      sharedApplyingRemote = false;
+      try { if (window.__refreshSharedInflight) window.__refreshSharedInflight[cloudBusinessId] = false; } catch (e) {}
+      if (__startedReceiving) { try { if (window.__InfosSyncDone) window.__InfosSyncDone(); } catch (e) {} }
+    }
   }
 
   // Push the current shared-business slice up to the cloud (debounced). Called
@@ -3416,19 +3455,20 @@
       ownerPollTick++;
       // Self-heal: re-push current state occasionally so a previously-failed push
       // isn't stranded (cheap no-op server-side when nothing changed).
-      if (ownerPollTick % 3 === 0 && !sharedApplyingRemote) {
+      if (ownerPollTick % 4 === 0 && !sharedApplyingRemote) {
         try { pushOwnerSharedBusinesses(); } catch {}
       }
-      // Realtime is the primary path (confirmed delivering full data). Only poll
-      // for incoming changes when realtime has been quiet, to avoid the slow
-      // full-blob fetch spamming timeouts every tick.
+      // ALWAYS run the cheap per-business version check (see the business poll for
+      // the full rationale): own realtime echoes can make realtime look "healthy"
+      // and starve the poll, so we must not skip on that basis. The version check
+      // is cheap; the heavy fetch only fires when a version actually advanced.
       const sinceRealtime = Date.now() - (window.__lastRealtimeApply || 0);
-      if (sinceRealtime < 8000) return;
+      if (sinceRealtime < 1500) return;
       Object.keys(state.bizCloudMap).forEach(lid => {
         const cid = state.bizCloudMap[lid];
         if (cid && bizById(lid)) { try { refreshSharedFromCloud(cid, false); } catch {} }
       });
-    }, 4000);
+    }, 2500);
     ownerSharedUnsubs.push(() => { try { clearInterval(window.__ownerSharedPoll); } catch {} });
     // Re-render in case the initial pull changed anything (silent — no flash).
     try { if (state.user) rerenderCurrentTab(); } catch {}
@@ -3876,11 +3916,11 @@
       // Update the splash now (in-place, no flash) so the user sees their actual
       // welcome message during the remaining hold, not the generic "Signing in…".
       try { showLoadingSplash(name || (asBizId ? bizById(asBizId)?.name : ''), { action: 'signing-in', subtitle: 'Loading your workspace' }); } catch {}
-      // Guarantee a minimum 4s of splash visibility from when the user clicked
-      // sign-in. If auth was fast, we wait out the rest. If auth was slow, we
-      // hide as soon as we get here. Either way the splash never flashes <4s.
+      // Guarantee a minimum ~2.6s of splash visibility from when the user clicked
+      // sign-in, matching the ring/stage animation. If auth was fast we wait out
+      // the rest; if slow we hide as soon as we get here.
       const __elapsed = Date.now() - (window.__signInClickedAt || Date.now());
-      const __remaining = Math.max(0, 4000 - __elapsed);
+      const __remaining = Math.max(0, 2600 - __elapsed);
       setTimeout(() => {
         hideLoadingSplash();
         if (asBizId) toast(`Signed in to ${bizById(asBizId)?.name}`); else toast(`Welcome, ${name}`);
@@ -4279,7 +4319,7 @@
     document.body.appendChild(el);
 
     // Drive the stage progression on a timeline so it feels purposeful, not random
-    const totalMs = o.totalMs || 2800;
+    const totalMs = o.totalMs || 2600;
     const stepEls = el.querySelectorAll('.splash-stage-step');
     stepEls[0]?.classList.add('active');
     setTimeout(() => {
@@ -4326,6 +4366,50 @@
     // The device-level list survives across all account switches on this physical
     // device, so the switcher always shows every account ever signed in here.
     recordDeviceAccount(entry);
+  }
+
+  // A "real" business name is anything other than the placeholders used before
+  // the synced slice arrives. Members fall back to these when loadSharedState
+  // times out, and we must never let a placeholder stick once we know better.
+  function isRealBizName(n) {
+    if (!n) return false;
+    const t = String(n).trim();
+    return t !== '' && t !== 'Business' && t !== 'Shared business';
+  }
+  // Resolve the best business name we can, preferring fresh sources but falling
+  // back to the last-known-good name stored in the device account list (so a
+  // returning member sees "Stark" immediately at sign-in, even before the slice
+  // loads, instead of the generic "Business").
+  function bestKnownBizName(email, candidates) {
+    const list = candidates || [];
+    for (let i = 0; i < list.length; i++) { if (isRealBizName(list[i])) return list[i]; }
+    try {
+      const k = (email || '').toLowerCase();
+      const dev = getDeviceAccounts().find(e =>
+        e.email && e.email.toLowerCase() === k && (e.kind || 'owner') === 'business' && isRealBizName(e.name));
+      if (dev) return dev.name;
+    } catch {}
+    return (email && email.split) ? email.split('@')[0] : 'Business';
+  }
+  // Once the synced slice gives us the REAL business name, propagate it to every
+  // place that may still show the placeholder: the user object, the header pill,
+  // the per-account recentSignins, and the device-level account list.
+  function healSharedBizName() {
+    try {
+      if (!state.__sharedMode) return;
+      const b = state.businesses && state.businesses[0];
+      if (!b || !isRealBizName(b.name)) return;
+      const realName = b.name;
+      const email = state.__sharedEmail || (state.user && state.user.email) || '';
+      if (state.user && state.user.name !== realName) state.user.name = realName;
+      (state.recentSignins || []).forEach(e => {
+        if (e && e.email && e.email.toLowerCase() === email.toLowerCase() && (e.kind || 'owner') === 'business') {
+          e.name = realName;
+        }
+      });
+      recordDeviceAccount({ email, name: realName, kind: 'business', bizId: state.__sharedBusinessId });
+      if (typeof refreshHeaderSwitchVisibility === 'function') refreshHeaderSwitchVisibility();
+    } catch {}
   }
 
   // DEVICE-LEVEL account list — survives across all account switches on this device.
@@ -7885,6 +7969,23 @@
         });
         if (migrated) savePrefs({ bizPasswords: { ...state.bizPasswords } });
       }
+    } catch {}
+
+    // One-time cleanup: device-account entries recorded before the name-heal fix
+    // stored the generic "Business" / "Shared business" placeholder as the name.
+    // Replace those with the email handle so the switcher/auth cards stop showing
+    // "Business" for everything. (The real name re-heals on next sign-in via the
+    // synced slice — see healSharedBizName.)
+    try {
+      const list = JSON.parse(localStorage.getItem('infos-device-accounts') || '[]');
+      let changed = false;
+      list.forEach(function (e) {
+        if (e && e.email && !isRealBizName(e.name)) {
+          e.name = e.email.split('@')[0];
+          changed = true;
+        }
+      });
+      if (changed) localStorage.setItem('infos-device-accounts', JSON.stringify(list));
     } catch {}
 
     // Re-apply custom accent now that state is hydrated

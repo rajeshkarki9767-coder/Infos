@@ -2118,6 +2118,13 @@ body.dark .idpass-segtabs > button.active,
   letter-spacing: -0.02em;
   display: flex;
   align-items: center;
+  animation: splashAvatarPop 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+}
+@keyframes splashAvatarPop {
+  0%   { opacity: 0; transform: scale(0.5); }
+  60%  { opacity: 1; transform: scale(1.06); }
+  100% { opacity: 1; transform: scale(1); }
+}
   justify-content: center;
   box-shadow:
     0 18px 40px color-mix(in srgb, var(--splash-tint, var(--accent-solid)) 38%, transparent),
@@ -2174,6 +2181,18 @@ body.dark .idpass-segtabs > button.active,
   text-align: center;
   margin-bottom: 6px;
   animation: fadeUp 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) 0.28s backwards;
+  position: relative;
+  background-image: linear-gradient(100deg, transparent 20%, color-mix(in srgb, var(--splash-tint, var(--accent-solid)) 55%, transparent) 50%, transparent 80%);
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: fadeUp 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) 0.28s backwards,
+             splashNameShimmer 2.2s ease-in-out 0.6s 1 forwards;
+}
+@keyframes splashNameShimmer {
+  0%   { background-position: 140% 0; }
+  100% { background-position: -40% 0; }
 }
 .splash-subtitle {
   font-size: 14px;
