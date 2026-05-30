@@ -13,6 +13,7 @@ const suites = [
   ['Persistence (cloud map/versions)', 'persistence.test.js'],
   ['Scroll preservation (Load more)', 'scroll-preserve.test.js'],
   ['Business login mode (view-only + glitch fix)', 'business-login-mode.test.js'],
+  ['Account isolation (cross-account contamination P1)', 'account-isolation.test.js'],
   ['Detail-view ctx guard (v108 blank-page crash)', 'detail-ctx-guard.test.js'],
   ['End-to-end shared flow (pglite)', 'e2e.test.js'],
   ['DOM smoke (jsdom)', 'smoke.test.js'],

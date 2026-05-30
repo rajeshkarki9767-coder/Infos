@@ -284,6 +284,7 @@
       bizCloudVersions: state.bizCloudVersions,
       accounts: state.accounts,
       recentSignins: state.recentSignins,
+      __activeOwnerEmail: state.__activeOwnerEmail,
       currentTab: state.currentTab,
       globalActivity: state.globalActivity,
       itemOrder: state.itemOrder,
@@ -396,7 +397,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '140.0.0';
+  const APP_VERSION = '143.0.0';
 
   // ---------- State ----------
   const state = {
@@ -473,7 +474,7 @@
   app.classList.remove('collapsed');
   ['user','bizContext','activeBizId','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
    'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked','soundEnabled',
-   'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs'].forEach(k => {
+   'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__activeOwnerEmail'].forEach(k => {
     if (prefs[k] !== undefined) state[k] = prefs[k];
   });
 
@@ -3105,7 +3106,7 @@
     } catch {}
     screenMain.classList.add('screen-active');
     state.history = [];
-    recordSignin({ email, name: realBizName, kind: 'business', bizId: biz.id });
+    recordSignin({ email, name: realBizName, kind: 'business', bizId: biz.id, color: (state.businesses && state.businesses[0] && state.businesses[0].color) || biz.color || null, logo: (state.businesses && state.businesses[0] && state.businesses[0].logo) || null });
     buildNav(); updateActiveBizDisplay();
     let bizRestoreTab = null;
     if (isBootRestore) { try { bizRestoreTab = localStorage.getItem('infos-last-tab'); } catch {} }
@@ -3474,6 +3475,31 @@
     try { if (state.user) rerenderCurrentTab(); } catch {}
   }
 
+  // Clear one owner's workspace data so a DIFFERENT owner signing in on the same
+  // device starts from a clean slate (the cloud is the source of truth for cloud
+  // owners). Without this, signing in as owner B after owner A signed out — when
+  // owner B's cloud snapshot is empty or partial — would leave owner A's items /
+  // businesses in memory and render them under owner B (cross-account leak).
+  // UI prefs (theme/accent), the local account registry, and the device-level
+  // account list are intentionally preserved.
+  function resetOwnerDataBaseline() {
+    state.items = {};
+    state.businesses = [];
+    state.globalActivity = [];
+    state.itemOrder = {};
+    state.globalRenames = {};
+    state.hiddenTabs = [];
+    state.customTabs = [];
+    state.bizAllowedTabs = {};
+    state.bizTabOrder = {};
+    state.bizCloudMap = {};
+    state.bizCloudVersions = {};
+    state.bizPasswords = {};
+    state.tabOrder = ['notices', 'games', 'system', 'idpass', 'balance', 'schedule', 'businesses', 'trash'];
+    state.nextBizId = 1; state.nextItemId = 1; state.nextTabId = 100;
+    state.activeBizId = 'all'; state.bizContext = null; state.activeTagId = null;
+  }
+
   function mergeCloudState(remote) {
     if (!remote || typeof remote !== 'object') return;
     const keep = new Set(['theme', 'accent', 'sidebarCollapsed', 'customAccent', 'onboarded', 'currentTab']);
@@ -3648,10 +3674,19 @@
         // Turn on sync and pull any existing cloud state for this user.
         try {
           await Sync.enable('supabase');
+          // SHARED-DEVICE SAFETY: if a DIFFERENT owner was previously loaded in
+          // this tab (signed out without a reload), clear their workspace data
+          // before pulling so their items/businesses can't bleed into this
+          // account — especially when this account's cloud snapshot is new/empty.
+          const prevOwner = (state.__activeOwnerEmail || '').toLowerCase();
+          if (prevOwner && prevOwner !== email.toLowerCase()) {
+            resetOwnerDataBaseline();
+          }
           const remote = await Sync.pullNow();
           if (remote && typeof remote === 'object') {
             mergeCloudState(remote);
           }
+          state.__activeOwnerEmail = email;
         } catch (syncErr) {
           // Auth succeeded but sync failed — continue locally, surface a soft note.
           console.warn('Sync after auth failed:', syncErr);
@@ -4376,6 +4411,12 @@
     const t = String(n).trim();
     return t !== '' && t !== 'Business' && t !== 'Shared business';
   }
+  // Capitalize the first letter (used so an email-handle fallback like "marvel"
+  // displays as "Marvel" instead of lowercase).
+  function capitalizeFirst(s) {
+    s = String(s || '');
+    return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+  }
   // Resolve the best business name we can, preferring fresh sources but falling
   // back to the last-known-good name stored in the device account list (so a
   // returning member sees "Stark" immediately at sign-in, even before the slice
@@ -4389,7 +4430,7 @@
         e.email && e.email.toLowerCase() === k && (e.kind || 'owner') === 'business' && isRealBizName(e.name));
       if (dev) return dev.name;
     } catch {}
-    return (email && email.split) ? email.split('@')[0] : 'Business';
+    return (email && email.split) ? capitalizeFirst(email.split('@')[0]) : 'Business';
   }
   // Once the synced slice gives us the REAL business name, propagate it to every
   // place that may still show the placeholder: the user object, the header pill,
@@ -4407,7 +4448,7 @@
           e.name = realName;
         }
       });
-      recordDeviceAccount({ email, name: realName, kind: 'business', bizId: state.__sharedBusinessId });
+      recordDeviceAccount({ email, name: realName, kind: 'business', bizId: state.__sharedBusinessId, color: (b && b.color) || null, logo: (b && b.logo) || null });
       if (typeof refreshHeaderSwitchVisibility === 'function') refreshHeaderSwitchVisibility();
     } catch {}
   }
@@ -4427,6 +4468,11 @@
         name: entry.name || entry.email,
         kind: entry.kind || 'owner',
         bizId: entry.bizId || null,
+        color: entry.color || null,
+        // Only persist a logo if it's reasonably small (<40KB as base64) to avoid
+        // blowing the localStorage quota across many accounts. Larger logos are
+        // resolved live from state.businesses at render time instead.
+        logo: (entry.logo && typeof entry.logo === 'string' && entry.logo.length < 40000) ? entry.logo : null,
         lastSignIn: Date.now()
       });
       if (filtered.length > 20) filtered.length = 20;
@@ -4497,10 +4543,19 @@
       const existing = byEmail.get(k);
       if (!existing || (entry.lastSignIn || 0) > (existing.lastSignIn || 0)) {
         byEmail.set(k, entry);
+        // Preserve any avatar data the previous (older) entry had if this fresher
+        // one lacks it.
+        if (existing) {
+          if (!entry.color && existing.color) entry.color = existing.color;
+          if (!entry.logo && existing.logo) entry.logo = existing.logo;
+          if (!entry.bizId && existing.bizId) entry.bizId = existing.bizId;
+        }
       } else if (existing) {
         // Fill in any missing fields from this entry without overwriting fresher ones.
         if (!existing.name && entry.name) existing.name = entry.name;
         if (!existing.bizId && entry.bizId) existing.bizId = entry.bizId;
+        if (!existing.color && entry.color) existing.color = entry.color;
+        if (!existing.logo && entry.logo) existing.logo = entry.logo;
       }
     }
 
@@ -4510,21 +4565,16 @@
     });
     // Source 2: businesses the owner created (only useful when this device IS the owner).
     (state.businesses || []).forEach(b => {
-      if (b && b.email) add({ kind: 'business', email: b.email, name: b.name, bizId: b.id, lastSignIn: 0 });
+      if (b && b.email) add({ kind: 'business', email: b.email, name: b.name, bizId: b.id, color: b.color || null, logo: b.logo || null, lastSignIn: 0 });
     });
-    // Source 3: recent sign-ins from current account's state — covers business
-    //  accounts signed in from THIS device that aren't in state.businesses
-    //  (because they belong to a different owner's tree).
+    // Source 3: recent sign-ins from current account's state.
     (state.recentSignins || []).forEach(e => {
-      add({ kind: e.kind || 'owner', email: e.email, name: e.name || e.email, bizId: e.bizId || null, lastSignIn: e.lastSignIn || 0 });
+      add({ kind: e.kind || 'owner', email: e.email, name: e.name || e.email, bizId: e.bizId || null, color: e.color || null, logo: e.logo || null, lastSignIn: e.lastSignIn || 0 });
     });
     // Source 4: DEVICE-LEVEL list (localStorage) — survives across all account
-    //  switches on this physical device. THIS is what makes the switcher show
-    //  every account ever signed in here, even after switching to a different
-    //  account wipes the per-account state.recentSignins. Critical for the
-    //  multi-account UX.
+    //  switches on this physical device.
     getDeviceAccounts().forEach(e => {
-      add({ kind: e.kind || 'owner', email: e.email, name: e.name || e.email, bizId: e.bizId || null, lastSignIn: e.lastSignIn || 0 });
+      add({ kind: e.kind || 'owner', email: e.email, name: e.name || e.email, bizId: e.bizId || null, color: e.color || null, logo: e.logo || null, lastSignIn: e.lastSignIn || 0 });
     });
 
     // Order: most recently signed in first; ties → owners then businesses; then by name.
@@ -4536,15 +4586,67 @@
     });
   }
 
+  // Build an avatar for a switch-account row: prefer the business logo, then a
+  // colored initial (business color), then a neutral kind-colored initial.
+  function switchAccountAvatarHTML(a) {
+    const dispName = capitalizeFirst(a.name || (a.email ? a.email.split('@')[0] : '?'));
+    const initial = esc(dispName.charAt(0).toUpperCase());
+    // Try to resolve a richer avatar (logo) from the owner's local businesses by
+    // email, in case the device-list entry didn't carry the logo.
+    let logo = a.logo || null, color = a.color || null;
+    if (a.kind === 'business' && (!logo || !color)) {
+      const b = (state.businesses || []).find(x => x && x.email && x.email.toLowerCase() === (a.email || '').toLowerCase());
+      if (b) { logo = logo || b.logo || null; color = color || b.color || null; }
+    }
+    if (logo) {
+      return `<span class="recent-avatar" style="padding:0;overflow:hidden;background:${color ? esc(color) + '33' : 'var(--accent-bg)'};"><img src="${esc(logo)}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:inherit;"/></span>`;
+    }
+    if (color) {
+      return `<span class="recent-avatar" style="background:${esc(color)}33;color:${esc(readableColor(color))};">${initial}</span>`;
+    }
+    return `<span class="recent-avatar recent-avatar-${a.kind}">${initial}</span>`;
+  }
+
   function openSwitchAccountPicker() {
     const accounts = listSwitchableAccounts();
-    const rowsHtml = accounts.length ? accounts.map(a => {
-      const initial = (a.name || a.email).charAt(0).toUpperCase();
-      const kindLabel = a.kind === 'business' ? 'Business' : 'Owner';
-      return `<button type="button" class="switch-account-row" data-switch-email="${esc(a.email)}" data-switch-kind="${a.kind}" data-switch-bizid="${esc(a.bizId || '')}">
-        <span class="recent-avatar recent-avatar-${a.kind}">${esc(initial)}</span>
+    // Build a "current account" entry so the user sees which one is active.
+    const isShared = !!state.__sharedMode;
+    let currentEntry = null;
+    if (isShared) {
+      const b = state.businesses && state.businesses[0];
+      currentEntry = {
+        kind: 'business',
+        email: state.__sharedEmail || (state.user && state.user.email) || '',
+        name: (b && b.name) || (state.user && state.user.name) || 'Business',
+        color: (b && b.color) || null,
+        logo: (b && b.logo) || null
+      };
+    } else if (state.user) {
+      currentEntry = {
+        kind: 'owner',
+        email: state.user.email || '',
+        name: state.user.name || (state.user.email ? state.user.email.split('@')[0] : 'Account'),
+        color: state.customAccent || null,
+        logo: null
+      };
+    }
+    const currentHtml = currentEntry ? `
+      <div class="switch-current-row">
+        ${switchAccountAvatarHTML(currentEntry)}
         <span class="recent-meta">
-          <span class="recent-name">${esc(a.name)}</span>
+          <span class="recent-name">${esc(capitalizeFirst(currentEntry.name))}</span>
+          <span class="recent-sub">${currentEntry.kind === 'business' ? 'Business' : 'Owner'} · ${esc(currentEntry.email)}</span>
+        </span>
+        <span class="switch-current-badge">Current</span>
+      </div>` : '';
+
+    const rowsHtml = accounts.length ? accounts.map(a => {
+      const kindLabel = a.kind === 'business' ? 'Business' : 'Owner';
+      const dispName = capitalizeFirst(a.name || (a.email ? a.email.split('@')[0] : ''));
+      return `<button type="button" class="switch-account-row" data-switch-email="${esc(a.email)}" data-switch-kind="${a.kind}" data-switch-bizid="${esc(a.bizId || '')}">
+        ${switchAccountAvatarHTML(a)}
+        <span class="recent-meta">
+          <span class="recent-name">${esc(dispName)}</span>
           <span class="recent-sub">${kindLabel} · ${esc(a.email)}</span>
         </span>
         <i class="ti ti-arrow-right" style="font-size:16px;color:var(--text-tertiary);"></i>
@@ -4557,7 +4659,8 @@
         <button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button>
       </div>
       <div class="modal-body">
-        ${accounts.length ? `<div class="form-hint" style="margin-bottom:14px;">Tap any account to switch instantly. No password needed — all accounts are saved on this device.</div>` : ''}
+        ${currentHtml}
+        ${accounts.length ? `<div class="form-hint" style="margin:${currentEntry ? '12px 0 14px' : '0 0 14px'};">Tap any account to switch instantly. No password needed — all accounts are saved on this device.</div>` : ''}
         <div class="switch-account-list">${rowsHtml}</div>
         <div class="switch-add-divider"></div>
         <button type="button" id="switch-add-account" class="switch-account-row switch-account-row-add">
@@ -5000,10 +5103,10 @@
       const tone = it.tone || 'info';
       iconHTML = `<div style="width:34px;height:34px;border-radius:var(--radius-md);background:var(--${tone}-bg);color:var(--${tone}-fg);display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i class="ti ti-${it.icon || 'info-circle'}" style="font-size:17px;"></i></div>`;
     } else if (tabKey === 'schedule' && it.photo) {
-      iconHTML = `<div class="schedule-thumb" data-schedule-photo="${esc(it.id)}" style="width:46px;height:46px;border-radius:var(--radius-sm);background:var(--surface-1);overflow:hidden;flex-shrink:0;cursor:zoom-in;"><img src="${esc(it.photo)}" alt="" style="width:100%;height:100%;object-fit:cover;display:block;"/></div>`;
+      iconHTML = `<div class="schedule-thumb" data-schedule-photo="${esc(it.id)}" style="width:46px;height:46px;border-radius:var(--radius-sm);background:var(--surface-1);overflow:hidden;flex-shrink:0;cursor:zoom-in;"><img src="${esc(it.photo)}" alt="" loading="lazy" decoding="async" style="width:100%;height:100%;object-fit:cover;display:block;"/></div>`;
     } else if (it.photo && state.customTabs.some(t => t.id === tabKey)) {
       // Custom-tab item with an optional picture → show thumbnail
-      iconHTML = `<div class="schedule-thumb" data-schedule-photo="${esc(it.id)}" style="width:46px;height:46px;border-radius:var(--radius-sm);background:var(--surface-1);overflow:hidden;flex-shrink:0;cursor:zoom-in;"><img src="${esc(it.photo)}" alt="" style="width:100%;height:100%;object-fit:cover;display:block;"/></div>`;
+      iconHTML = `<div class="schedule-thumb" data-schedule-photo="${esc(it.id)}" style="width:46px;height:46px;border-radius:var(--radius-sm);background:var(--surface-1);overflow:hidden;flex-shrink:0;cursor:zoom-in;"><img src="${esc(it.photo)}" alt="" loading="lazy" decoding="async" style="width:100%;height:100%;object-fit:cover;display:block;"/></div>`;
     }
     // For all other tabs (Games, System, ID & Pass, Balance, custom tabs without a
     // photo) NO generic placeholder icon is shown to the left of the entry name —
@@ -6658,7 +6761,7 @@
           <a class="btn-link-sm" href="${esc(it.photo)}" download="${esc((it.title || it.name || 'attachment').replace(/[^a-z0-9._-]+/gi, '_').slice(0, 60))}.png"><i class="ti ti-download" style="font-size:13px;vertical-align:-2px;margin-right:4px;"></i>Download</a>
         </div>
         <div style="border-radius:var(--radius-md);overflow:hidden;cursor:zoom-in;background:var(--surface-1);" id="dm-photo">
-          <img src="${esc(it.photo)}" alt="${esc(title)}" style="width:100%;display:block;"/>
+          <img src="${esc(it.photo)}" alt="${esc(title)}" loading="lazy" decoding="async" style="width:100%;display:block;"/>
         </div>
       </div>`);
     }
@@ -6770,7 +6873,7 @@
           <a class="btn-link-sm" href="${esc(it.photo)}" download="${esc((it.title || it.name || 'attachment').replace(/[^a-z0-9._-]+/gi, '_').slice(0, 60))}.png"><i class="ti ti-download" style="font-size:13px;vertical-align:-2px;margin-right:4px;"></i>Download</a>
         </div>
         <div style="border-radius:var(--radius-md);overflow:hidden;cursor:zoom-in;background:var(--surface-1);" id="d-photo">
-          <img src="${esc(it.photo)}" alt="${esc(it.title || it.name || 'Attachment')}" style="width:100%;display:block;"/>
+          <img src="${esc(it.photo)}" alt="${esc(it.title || it.name || 'Attachment')}" loading="lazy" decoding="async" style="width:100%;display:block;"/>
         </div>
       </div>` : '';
 
@@ -7895,7 +7998,7 @@
     app.classList.remove('collapsed');
     ['user','bizContext','activeBizId','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
      'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked','soundEnabled',
-     'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__sharedMode','__sharedBusinessId','__sharedEmail','__sharedVersion','bizPasswords'].forEach(k => {
+     'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__sharedMode','__sharedBusinessId','__sharedEmail','__sharedVersion','bizPasswords','__activeOwnerEmail'].forEach(k => {
       if (p[k] !== undefined) state[k] = p[k];
     });
     // bulkSelected is transient UI state and must always be a Set (it's never
@@ -7981,7 +8084,7 @@
       let changed = false;
       list.forEach(function (e) {
         if (e && e.email && !isRealBizName(e.name)) {
-          e.name = e.email.split('@')[0];
+          e.name = e.email.split('@')[0].charAt(0).toUpperCase() + e.email.split('@')[0].slice(1);
           changed = true;
         }
       });

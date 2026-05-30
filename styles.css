@@ -128,6 +128,14 @@
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 [hidden] { display: none !important; }
+/* Eliminate the legacy 300ms tap delay on interactive controls so taps register
+   instantly on mobile. `manipulation` keeps scroll/zoom but drops double-tap-zoom
+   waiting. Applied to controls only, never to scroll containers. */
+button, a, [role="button"], .clickable, .nav-item, .btn-primary, .btn-secondary,
+.btn-icon, .btn-block, .switch-account-row, .recent-signin-chip, .biz-filter-trigger,
+.search-trigger, input[type="checkbox"], input[type="radio"], label, select {
+  touch-action: manipulation;
+}
 
 .ti-svg-wrap { display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; line-height: 1; }
 .ti-svg-wrap .ti-svg { width: 100%; height: 100%; display: block; }
@@ -397,8 +405,8 @@ body.drawer-locked { overflow: hidden; touch-action: none; }
 .page-enter-left { animation: slideInLeft 0.28s cubic-bezier(0.2, 0.8, 0.2, 1); }
 .page-enter-fade { animation: fadeIn 0.22s ease; }
 
-.card-row { background: var(--surface-elevated); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); padding: 15px 16px; margin-bottom: 10px; color: var(--text-primary); transition: border-color 0.15s, transform 0.15s, background 0.15s, box-shadow 0.15s; position: relative; }
-.card-row.clickable { cursor: pointer; }
+.card-row { background: var(--surface-elevated); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); padding: 15px 16px; margin-bottom: 10px; color: var(--text-primary); transition: border-color 0.15s, transform 0.15s, background 0.15s, box-shadow 0.15s; position: relative; content-visibility: auto; contain-intrinsic-size: auto 76px; }
+.card-row.clickable { cursor: pointer; touch-action: manipulation; }
 .card-row.clickable:hover { border-color: var(--border-strong); box-shadow: 0 2px 10px rgba(0,0,0,0.04); }
 .card-row.clickable:active { transform: scale(0.995); }
 .card-row.pinned { border-left: 3px solid var(--accent-solid); }
@@ -1672,6 +1680,29 @@ select:focus,
 }
 .switch-account-row:active { transform: scale(0.99); }
 
+/* Current account row (non-clickable, shown at top of the switcher). */
+.switch-current-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--accent-bg);
+  border: 1px solid color-mix(in srgb, var(--accent-solid) 30%, transparent);
+}
+.switch-current-badge {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--accent-solid);
+  background: color-mix(in srgb, var(--accent-solid) 14%, transparent);
+  padding: 3px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
 /* Subtle divider between the existing accounts and the "Add another account" row,
    so the action is grouped but visually distinct from real accounts. */
 .switch-add-divider {
@@ -2118,13 +2149,6 @@ body.dark .idpass-segtabs > button.active,
   letter-spacing: -0.02em;
   display: flex;
   align-items: center;
-  animation: splashAvatarPop 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
-}
-@keyframes splashAvatarPop {
-  0%   { opacity: 0; transform: scale(0.5); }
-  60%  { opacity: 1; transform: scale(1.06); }
-  100% { opacity: 1; transform: scale(1); }
-}
   justify-content: center;
   box-shadow:
     0 18px 40px color-mix(in srgb, var(--splash-tint, var(--accent-solid)) 38%, transparent),
