@@ -570,6 +570,14 @@
             .subscribe((status) => {
               if (closed || tearingDown) return;   // ignore events during teardown
               try {
+                if (typeof window !== 'undefined') {
+                  window.__infosRealtimeState = status;
+                  window.__infosSyncLog = window.__infosSyncLog || [];
+                  window.__infosSyncLog.push({ t: Date.now(), via: 'realtime-status', status: status, biz: businessCloudId });
+                  if (window.__infosSyncLog.length > 40) window.__infosSyncLog.shift();
+                }
+              } catch (e) {}
+              try {
                 if (typeof window !== 'undefined' && window.__InfosRealtimeStatus) {
                   if (status === 'SUBSCRIBED') window.__InfosRealtimeStatus('live');
                   else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') window.__InfosRealtimeStatus('error');

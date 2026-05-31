@@ -126,7 +126,10 @@
   const STORAGE_KEY = 'infos-state-v7';
   const $ = (sel, root) => (root || document).querySelector(sel);
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
-  const BIZ_COLORS = ['#378ADD', '#1D9E75', '#7F77DD', '#D85A30', '#BA7517', '#D4537E'];
+  // Full accent palette — kept in sync with the Settings accent swatches so the
+  // business add/edit color picker offers the same choices. (The original 6 are
+  // a subset and appear first, so existing businesses keep their colors.)
+  const BIZ_COLORS = ['#378ADD', '#1D9E75', '#0E7C5A', '#7F77DD', '#4F46B5', '#2A4A7F', '#D85A30', '#B23A2E', '#7E3045', '#BA7517', '#D4537E', '#4A5568'];
   const haptic = (ms) => { try { navigator.vibrate && navigator.vibrate(ms || 10); } catch {} };
 
   // Cached prefs object. Loaded from Storage at startup, written back on every change.
@@ -420,7 +423,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '155.0.0';
+  const APP_VERSION = '157.0.0';
 
   // ---------- State ----------
   const state = {
@@ -3396,7 +3399,16 @@
           ? (state.__sharedVersion || 0)
           : ((state.bizCloudVersions && state.bizCloudVersions[cloudBusinessId]) || 0);
         let cloudV = null;
-        try { cloudV = await window.InfosSupabase.adapter.loadSharedVersion(cloudBusinessId); } catch (e) {}
+        let versionErr = null;
+        try { cloudV = await window.InfosSupabase.adapter.loadSharedVersion(cloudBusinessId); }
+        catch (e) { versionErr = String((e && e.message) || e); }
+        // Record every version check — including failures — so the in-app Sync
+        // Diagnostics can show whether the poll is reaching the cloud at all.
+        try {
+          window.__infosSyncLog = window.__infosSyncLog || [];
+          window.__infosSyncLog.push({ t: Date.now(), via: 'poll-version', biz: cloudBusinessId, cloudV: (cloudV == null ? 'null' : cloudV), appliedV, err: versionErr, mode: state.__sharedMode ? 'biz' : 'owner' });
+          if (window.__infosSyncLog.length > 40) window.__infosSyncLog.shift();
+        } catch (e) {}
         // null = the cheap read failed; fall through to a full load to be safe.
         if (cloudV != null && cloudV <= appliedV) return; // nothing newer — no expensive fetch
       }
@@ -3495,7 +3507,14 @@
         sharedApplyingRemote = false;
         return;
       }
-    } catch (e) { console.warn('refreshSharedFromCloud failed:', e); }
+    } catch (e) {
+      console.warn('refreshSharedFromCloud failed:', e);
+      try {
+        window.__infosSyncLog = window.__infosSyncLog || [];
+        window.__infosSyncLog.push({ t: Date.now(), via: 'poll-fetch-ERROR', biz: cloudBusinessId, err: String((e && e.message) || e) });
+        if (window.__infosSyncLog.length > 40) window.__infosSyncLog.shift();
+      } catch (_) {}
+    }
     finally {
       sharedApplyingRemote = false;
       try { if (window.__refreshSharedInflight) window.__refreshSharedInflight[cloudBusinessId] = false; } catch (e) {}
@@ -7358,8 +7377,58 @@
         </div>
       </div>
       <p style="font-size:14px;color:var(--text-secondary);line-height:1.7;">Manage multiple businesses, their notices, credentials, and accounts. Business logins can view their business and add balance entries. Cloud sync across your devices, secured with per-account data isolation.</p>
+      <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border);">
+        <button type="button" class="btn-outline btn-block" id="about-sync-diag"><i class="ti ti-activity" style="font-size:14px;vertical-align:-2px;margin-right:8px;"></i>Sync Diagnostics</button>
+        <div id="sync-diag-panel" style="display:none;margin-top:12px;"></div>
+      </div>
       <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border);font-size:12px;color:var(--text-tertiary);">Infos v${esc(APP_VERSION)}</div>
     </div>`;
+    const diagBtn = $('#about-sync-diag');
+    const diagPanel = $('#sync-diag-panel');
+    let diagTimer = null;
+    function renderDiag() {
+      if (!diagPanel) return;
+      const log = (window.__infosSyncLog || []).slice(-18).reverse();
+      const now = Date.now();
+      const fmt = (t) => { const s = Math.round((now - t) / 1000); return s < 1 ? 'now' : s + 's ago'; };
+      const rt = window.__infosRealtimeState || 'unknown';
+      const rtColor = rt === 'SUBSCRIBED' ? 'var(--success-fg,#1D9E75)' : (rt === 'CHANNEL_ERROR' || rt === 'TIMED_OUT' ? 'var(--danger-fg)' : 'var(--text-tertiary)');
+      const rows = log.length ? log.map(e => {
+        const bits = [];
+        if (e.via) bits.push(e.via);
+        if (e.status) bits.push('status=' + e.status);
+        if (e.cloudV !== undefined) bits.push('cloudV=' + e.cloudV);
+        if (e.appliedV !== undefined) bits.push('appliedV=' + e.appliedV);
+        if (e.newer !== undefined) bits.push(e.newer ? 'NEWER' : 'same-v');
+        if (e.err) bits.push('ERR:' + e.err);
+        const isErr = !!e.err || /ERROR/.test(e.via || '');
+        return `<div style="font-family:var(--font-mono);font-size:11px;padding:5px 0;border-bottom:1px solid var(--border-soft);color:${isErr ? 'var(--danger-fg)' : 'var(--text-secondary)'};"><span style="color:var(--text-tertiary);">${fmt(e.t)}</span> · ${esc(bits.join(' · '))}</div>`;
+      }).join('') : `<div style="font-size:12px;color:var(--text-tertiary);padding:8px 0;">No sync activity recorded yet. Leave this open ~10s.</div>`;
+      diagPanel.innerHTML = `
+        <div style="background:var(--surface-elevated);border:1px solid var(--border-soft);border-radius:var(--radius-lg);padding:12px;">
+          <div style="font-size:12px;line-height:1.9;color:var(--text-secondary);margin-bottom:8px;">
+            <div>Mode: <strong>${state.__sharedMode ? 'Business (shared)' : 'Owner'}</strong></div>
+            <div>Business cloud id: <strong style="font-family:var(--font-mono);">${esc(state.__sharedBusinessId || (state.bizContext || '—'))}</strong></div>
+            <div>Applied version: <strong>${esc(String(state.__sharedVersion || 0))}</strong></div>
+            <div>Realtime: <strong style="color:${rtColor};">${esc(rt)}</strong></div>
+            <div>Poll: <strong>${window.__sharedPoll ? 'running (2.5s)' : 'not running'}</strong></div>
+          </div>
+          <div style="font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-tertiary);margin:6px 0;">Recent sync events</div>
+          ${rows}
+          <button type="button" class="btn-outline btn-block" id="sync-diag-force" style="margin-top:10px;"><i class="ti ti-refresh" style="font-size:13px;vertical-align:-2px;margin-right:6px;"></i>Force pull now</button>
+        </div>`;
+      const fb = $('#sync-diag-force');
+      if (fb) fb.onclick = () => {
+        const cid = state.__sharedBusinessId || state.bizContext;
+        if (cid) { try { refreshSharedFromCloud(cid, true); toast('Forced a pull'); } catch (e) { toast('Pull failed'); } }
+        setTimeout(renderDiag, 600);
+      };
+    }
+    if (diagBtn) diagBtn.onclick = () => {
+      const open = diagPanel.style.display !== 'none';
+      if (open) { diagPanel.style.display = 'none'; if (diagTimer) { clearInterval(diagTimer); diagTimer = null; } }
+      else { diagPanel.style.display = 'block'; renderDiag(); diagTimer = setInterval(renderDiag, 1500); }
+    };
   }
   function renderPrivacy(c) {
     const bizCtx = state.bizContext ? bizById(state.bizContext) : null;
