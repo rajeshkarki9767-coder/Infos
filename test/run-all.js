@@ -15,6 +15,7 @@ const suites = [
   ['Business login mode (view-only + glitch fix)', 'business-login-mode.test.js'],
   ['Account isolation (cross-account contamination P1)', 'account-isolation.test.js'],
   ['Sync echo write-loop prevention', 'sync-echo-loop.test.js'],
+  ['Shared refresh deferral (stale timer)', 'shared-refresh-deferral.test.js'],
   ['Account switch (passwordless session restore)', 'account-switch-session.test.js'],
   ['Detail-view ctx guard (v108 blank-page crash)', 'detail-ctx-guard.test.js'],
   ['End-to-end shared flow (pglite)', 'e2e.test.js'],

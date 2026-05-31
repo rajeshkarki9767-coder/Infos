@@ -452,7 +452,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '169.0.0';
+  const APP_VERSION = '170.0.0';
 
   // ---------- State ----------
   const state = {
@@ -3600,7 +3600,14 @@
     if (sharedApplyingRemote) return;            // don't echo a remote apply
     if (!(window.InfosSupabase && window.InfosSupabase.configured())) return;
     clearTimeout(sharedSaveTimer);
+    sharedSaveTimer = null;
     const doPush = async () => {
+      // Clear the pending-push marker the moment we start running. A fired
+      // setTimeout id is still a positive (truthy) integer, so leaving it set made
+      // refreshSharedFromCloud's "edit in progress" deferral guard true FOREVER —
+      // the member then detected every update as NEWER but deferred applying it
+      // forever, so it stuck on an old version and showed "Synced" with no content.
+      sharedSaveTimer = null;
       try {
         if (state.__sharedMode) {
           const slice = Slice.memberStateToSlice(state);
@@ -5028,7 +5035,7 @@
         } catch {}
         try { if (sharedRealtimeUnsub) sharedRealtimeUnsub(); } catch {}
         sharedRealtimeUnsub = null;
-        try { clearTimeout(sharedSaveTimer); } catch {}
+        try { clearTimeout(sharedSaveTimer); sharedSaveTimer = null; } catch {}
         try {
           await window.InfosSupabase.Auth.restoreSession(stashed.access_token, stashed.refresh_token);
           // The active Supabase session is now the target account. Reload; boot
@@ -5071,7 +5078,7 @@
           if (sharedRealtimeUnsub) sharedRealtimeUnsub();
         } catch {}
         sharedRealtimeUnsub = null;
-        clearTimeout(sharedSaveTimer);
+        clearTimeout(sharedSaveTimer); sharedSaveTimer = null;
         state.__sharedMode = false; state.__sharedBusinessId = null; state.__sharedVersion = 0;
         try {
           if (window.InfosSupabase && window.InfosSupabase.Auth) {
@@ -5294,7 +5301,7 @@
       try { pushSharedState(true); } catch {}
       try { if (sharedRealtimeUnsub) sharedRealtimeUnsub(); } catch {}
       sharedRealtimeUnsub = null;
-      clearTimeout(sharedSaveTimer);
+      clearTimeout(sharedSaveTimer); sharedSaveTimer = null;
     }
     // Push any final local changes to the cloud, then sign out of Supabase.
     if (window.InfosSupabase && window.InfosSupabase.configured()) {
