@@ -420,7 +420,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '153.0.0';
+  const APP_VERSION = '155.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2192,10 +2192,10 @@
       const rawVal = editing ? (editing[f.k] || '') : '';
       const val = esc(rawVal);
       if (f.type === 'textarea') {
-        return `<textarea id="if-${f.k}" placeholder="${esc(f.placeholder || f.lbl)}" rows="3">${val}</textarea>`;
+        return `<textarea id="if-${f.k}" rows="3">${val}</textarea>`;
       }
       if (f.type === 'password') {
-        return `<div class="input-wrap"><input id="if-${f.k}" type="password" placeholder="${esc(f.placeholder || f.lbl)}" value="${val}" autocomplete="off"/><button type="button" class="input-icon-btn" data-pw-toggle="if-${f.k}"><i class="ti ti-eye"></i></button></div>`;
+        return `<div class="input-wrap"><input id="if-${f.k}" type="password" value="${val}" autocomplete="off"/><button type="button" class="input-icon-btn" data-pw-toggle="if-${f.k}"><i class="ti ti-eye"></i></button></div>`;
       }
       if (f.type === 'photo') {
         const existing = editing?.[f.k];
@@ -2207,7 +2207,7 @@
         </div>`;
       }
       const type = f.type || 'text';
-      return `<input id="if-${f.k}" type="${type}" placeholder="${esc(f.placeholder || f.lbl)}" value="${val}"/>`;
+      return `<input id="if-${f.k}" type="${type}" value="${val}"/>`;
     }
 
     openModal(`
@@ -3187,8 +3187,6 @@
     try {
       const bs = document.getElementById('boot-splash'); if (bs) bs.remove();
     } catch {}
-    window.__bootRendered = true;
-    try { clearTimeout(window.__bootWatchdog); } catch {}
     if (!state.__switchInProgress && !isBootRestore) {
       showLoadingSplash(realBizName, { action: 'signing-in', subtitle: `Signing in to ${realBizName}`, color: biz.color || null });
     }
@@ -3210,6 +3208,10 @@
 
     // Go live: any change to the shared row re-hydrates this device.
     subscribeShared(biz.id);
+    // Render is complete — disarm the boot watchdog now (not before, so an
+    // earlier failure still triggers the safety-net render).
+    window.__bootRendered = true;
+    try { clearTimeout(window.__bootWatchdog); } catch {}
     // Stash this business's session tokens for passwordless account switching.
     try { stashAccountSession(email, 'business', biz.id); } catch {}
 
@@ -8219,7 +8221,7 @@
         screenMain.classList.add('screen-active');
         showSkeleton(4);
         // WATCHDOG: guarantee we never sit on the skeleton forever. If boot hasn't
-        // rendered real content within 12s (some unforeseen stall beyond the
+        // rendered real content within 8s (some unforeseen stall beyond the
         // per-call timeouts), force a render from cached state, or fall back to
         // the auth screen if there's no usable session.
         try { clearTimeout(window.__bootWatchdog); } catch {}
@@ -8231,14 +8233,17 @@
               screenAuth.classList.remove('screen-active');
               screenMain.classList.add('screen-active');
               buildNav(); updateActiveBizDisplay();
-              setActive(state.currentTab || 'notices');
+              // A business (shared) session can't see owner-only tabs; pick a safe tab.
+              let t = state.currentTab;
+              if (state.bizContext && t && getTabDef(t) && getTabDef(t).ownerOnly) t = null;
+              setActive(t || 'notices');
             } else {
               screenMain.classList.remove('screen-active');
               screenAuth.classList.add('screen-active');
               try { renderRecentSignins(); } catch {}
             }
           } catch (e) { console.warn('boot watchdog render failed:', e); }
-        }, 12000);
+        }, 8000);
       }
     } catch {}
     // Wait for Storage to be ready, then load prefs into cachedPrefs. Both calls
@@ -8396,7 +8401,12 @@
     // Wait for Supabase config to load (from /api/config) before deciding auth.
     try { const sub = document.getElementById('boot-splash-sub'); if (sub) sub.textContent = 'Checking your session…'; } catch {}
     if (window.InfosSupabase && window.InfosSupabase.ready) {
-      try { await window.InfosSupabase.ready; } catch {}
+      try {
+        await Promise.race([
+          Promise.resolve(window.InfosSupabase.ready).catch(() => null),
+          new Promise(r => setTimeout(r, 4000))
+        ]);
+      } catch {}
     }
     if (window.InfosSupabase && window.InfosSupabase.configured()) {
       const __BOOT_TIMEOUT = Symbol('boot-timeout');
