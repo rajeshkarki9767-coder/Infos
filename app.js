@@ -353,24 +353,6 @@
         sig = stableStringify(slice.items || {}) + '|' + stableStringify(slice.business || {});
       } catch (e) { continue; }
       if (window.__ownerPushSig[cloudId] !== sig) {
-        // DIAGNOSTIC: capture WHERE the old vs new signature diverges so we can
-        // see which field is mutating and driving the re-push. Logged to the
-        // in-app Sync Diagnostics panel.
-        try {
-          const prev = window.__ownerPushSig[cloudId];
-          if (prev != null) {
-            let i = 0; const n = Math.min(prev.length, sig.length);
-            while (i < n && prev[i] === sig[i]) i++;
-            window.__infosSyncLog = window.__infosSyncLog || [];
-            window.__infosSyncLog.push({
-              t: Date.now(), via: 'owner-push-DIFF', biz: cloudId,
-              at: i,
-              old: prev.slice(Math.max(0, i - 30), i + 50),
-              new: sig.slice(Math.max(0, i - 30), i + 50)
-            });
-            if (window.__infosSyncLog.length > 40) window.__infosSyncLog.shift();
-          }
-        } catch (e) {}
         pending.push({ localId, cloudId, slice, sig });
       }
     }
@@ -402,9 +384,7 @@
       } catch (e) {
         anyFailed = true;
         try {
-          window.__infosSyncLog = window.__infosSyncLog || [];
-          window.__infosSyncLog.push({ t: Date.now(), pushFail: String(e && e.message || e), biz: p.cloudId });
-          if (window.__infosSyncLog.length > 30) window.__infosSyncLog.shift();
+          syncLog({ pushFail: String(e && e.message || e), biz: p.cloudId });
         } catch (_) {}
       }
     }
@@ -452,7 +432,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '170.0.0';
+  const APP_VERSION = '174.0.0';
 
   // ---------- State ----------
   const state = {
@@ -592,16 +572,6 @@
     return allowed.includes(key);
   }
   function bizById(id) { return state.businesses.find(b => b.id === id); }
-  function bizPasswordPlain(b) {
-    if (!b) return null;
-    if (b.password !== undefined && b.password !== null) return b.password;
-    return null;
-  }
-  async function bizPasswordDecrypt(b) {
-    // Encryption removed — passwords are stored as plaintext and always readable.
-    if (!b) return null;
-    return b.password != null ? b.password : null;
-  }
   async function bizSetPassword(b, plaintext) {
     // Always store plaintext (encryption feature removed).
     b.password = plaintext;
@@ -691,11 +661,6 @@
     } catch {}
     return '';
   }
-  function bizPasswordMasked(b) {
-    if (b.password) return '.'.repeat(Math.min(b.password.length, 10));
-    return '';
-  }
-  function tagById(biz, tagId) { return biz?.tags.find(t => t.id === tagId); }
   function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]); }
 
   // Canonical, key-order-independent JSON. Postgres jsonb does NOT preserve object
@@ -710,6 +675,21 @@
     if (Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']';
     const keys = Object.keys(v).sort();
     return '{' + keys.map(k => JSON.stringify(k) + ':' + stableStringify(v[k])).join(',') + '}';
+  }
+
+  // Lightweight sync diagnostics log. To avoid writing to memory on every ~2.5s
+  // poll during normal use, ROUTINE entries are only recorded while the Sync
+  // Diagnostics panel is open (window.__infosSyncDebug). ERRORS are always
+  // recorded (entry.err / entry.pushFail) so failures aren't missed.
+  function syncLog(entry) {
+    try {
+      const isError = entry && (entry.err || entry.pushFail);
+      if (!isError && !window.__infosSyncDebug) return;
+      window.__infosSyncLog = window.__infosSyncLog || [];
+      entry.t = entry.t || Date.now();
+      window.__infosSyncLog.push(entry);
+      if (window.__infosSyncLog.length > 40) window.__infosSyncLog.shift();
+    } catch (e) {}
   }
 
   // True when the owner is signed into a cloud (Supabase) account — i.e. data
@@ -1011,10 +991,6 @@
     return sorted.map(id => bizChipHTML(id, small)).join('');
   }
   // Render chips for an item, normalizing legacy bizId vs bizIds.
-  function itemBizChipsHTML(it, small) {
-    const ids = itemBizIds(it);
-    return bizChipsHTML(ids, small);
-  }
   function tagChipsHTML(bizId, tagIds) {
     if (!bizId || !tagIds || !tagIds.length) return '';
     const b = bizById(bizId); if (!b) return '';
@@ -1334,15 +1310,6 @@
     return tag ? `Filtered by tag: ${tag.name}` : '';
   }
 
-  function onFab(tab) {
-    if (isViewOnly()) return;
-    if (tab === 'businesses') openBusinessModal();
-    else if (state.items[tab]) openItemModal(tab);
-    else {
-      const ct = state.customTabs.find(t => t.id === tab);
-      if (ct) { if (!state.items[tab]) state.items[tab] = []; openItemModal(tab); }
-    }
-  }
 
   function goBack() {
     if (state.history.length < 2) return;
@@ -1753,17 +1720,36 @@
   shortcutsModal.onclick = e => { if (e.target === shortcutsModal) shortcutsModal.hidden = true; };
 
   // ---------- Modal helpers ----------
+  let __modalReturnFocus = null;
   function openModal(html) {
     modalContent.innerHTML = html;
+    // Accessibility: mark as a modal dialog and move focus inside it.
+    try {
+      modal.setAttribute('role', 'dialog');
+      modal.setAttribute('aria-modal', 'true');
+      __modalReturnFocus = document.activeElement; // restore on close
+    } catch (e) {}
     modal.hidden = false;
+    // Focus the first sensible control inside the modal (or the close button).
+    try {
+      const focusable = modalContent.querySelector('input, textarea, select, button, [tabindex]:not([tabindex="-1"])');
+      if (focusable) setTimeout(() => { try { focusable.focus(); } catch (e) {} }, 30);
+    } catch (e) {}
     // Close on backdrop click — but only if the press STARTED on the backdrop too.
     // This prevents a text-selection drag that ends on the backdrop from closing the modal.
     let downOnBackdrop = false;
     modal.onmousedown = e => { downOnBackdrop = (e.target === modal); };
     modal.ontouchstart = e => { downOnBackdrop = (e.target === modal); };
-    modal.onclick = e => { if (e.target === modal && downOnBackdrop) modal.hidden = true; downOnBackdrop = false; };
+    modal.onclick = e => { if (e.target === modal && downOnBackdrop) closeModal(); downOnBackdrop = false; };
+    // Escape closes the modal (standard dialog behavior).
+    modal.onkeydown = e => { if (e.key === 'Escape') { e.stopPropagation(); closeModal(); } };
   }
-  function closeModal() { modal.hidden = true; }
+  function closeModal() {
+    modal.hidden = true;
+    // Restore focus to whatever was focused before the modal opened.
+    try { if (__modalReturnFocus && __modalReturnFocus.focus) __modalReturnFocus.focus(); } catch (e) {}
+    __modalReturnFocus = null;
+  }
 
   // In-app confirmation dialog. Replaces all native confirm() calls.
   // opts: { title, message, confirmLabel, cancelLabel, danger, requireTwice, typeToConfirm, typeToConfirmLabel, onConfirm }
@@ -1775,7 +1761,7 @@
     const needsType = !!opts.typeToConfirm;
     const typeLabel = opts.typeToConfirmLabel || `Type "${opts.typeToConfirm}" to confirm`;
     openModal(`
-      <div class="modal-head"><h3>${esc(opts.title || 'Confirm')}</h3><button id="m-close" class="btn-icon"><i class="ti ti-x"></i></button></div>
+      <div class="modal-head"><h3>${esc(opts.title || 'Confirm')}</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
       <div class="modal-body">
         <div style="font-size:14px;line-height:1.6;color:var(--text-primary);">${esc(opts.message || '')}</div>
         ${needsType ? `
@@ -1809,7 +1795,7 @@
         // Open second confirmation after a tick
         setTimeout(() => {
           openModal(`
-            <div class="modal-head"><h3>${esc(opts.title2 || 'Are you absolutely sure?')}</h3><button id="m-close" class="btn-icon"><i class="ti ti-x"></i></button></div>
+            <div class="modal-head"><h3>${esc(opts.title2 || 'Are you absolutely sure?')}</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
             <div class="modal-body">
               <div class="info-banner" style="background:var(--danger-bg);color:var(--danger-fg);"><i class="ti ti-alert-triangle"></i><span><strong>Final confirmation:</strong> ${esc(opts.message2 || opts.message || 'This cannot be undone.')}</span></div>
             </div>
@@ -1914,64 +1900,6 @@
   // the team can sign in on their own devices and get the FULL app on the SAME
   // live data (not view-only). Registers the cloud row, creates the team login,
   // and pushes the current slice.
-  async function shareBusinessWithTeam(bizId) {
-    const b = bizById(bizId);
-    if (!b) return;
-    if (!(window.InfosSupabase && window.InfosSupabase.configured())) {
-      toast('Cloud is not configured — cannot share.');
-      return;
-    }
-    // Need the business login email + password to create the member account.
-    let pwPlain = b.password || '';
-    if (!b.email || !pwPlain) {
-      toast('Set a business email and password first (in Edit business).');
-      return;
-    }
-    confirmAction({
-      title: 'Enable business login',
-      message: `This lets "${b.name}" sign in on any device using the email (${b.email}) and password you set. On every device they'll see exactly what you see for this business — live and synced. They can VIEW everything but can't create or manage businesses; they can only add entries on entry tabs (like Balance). Continue?`,
-      confirmLabel: 'Enable',
-      onConfirm: async () => {
-        showFullScreenMessage({ icon: 'ti-cloud-share', title: 'Setting up business login…', message: 'Publishing this business and setting up the login. One moment.', spinner: true });
-        try {
-          const existingCloudId = (state.bizCloudMap && state.bizCloudMap[bizId]) || null;
-          const cloudId = await window.InfosSupabase.adapter.ensureSharedBusiness({ cloudId: existingCloudId, name: b.name, color: b.color });
-          if (!state.bizCloudMap) state.bizCloudMap = {};
-          state.bizCloudMap[bizId] = cloudId;
-          // Create (or refresh) the hidden member account from the business login.
-          const allowed = (state.bizAllowedTabs && state.bizAllowedTabs[bizId]) || Object.keys(state.items);
-          let memberMsg = '';
-          try {
-            await window.InfosSupabase.Auth.createMember(cloudId, b.email, pwPlain, allowed);
-            memberMsg = 'The business login is ready.';
-          } catch (memErr) {
-            // Most common: the member already exists from a previous share.
-            memberMsg = /already|exists|registered/i.test(String(memErr && memErr.message))
-              ? 'The business login already existed (data updated).'
-              : 'Set up, but the business login could not be created: ' + (memErr && memErr.message || 'error');
-          }
-          // Push the current shared slice up.
-          const Slice = window.InfosSharedSlice;
-          const slice = Slice.buildSharedSlice(state, bizId, cloudId);
-          const expected = (state.bizCloudVersions && state.bizCloudVersions[cloudId]) || 0;
-          const v = await window.InfosSupabase.adapter.saveSharedState(cloudId, slice, expected);
-          if (!state.bizCloudVersions) state.bizCloudVersions = {};
-          state.bizCloudVersions[cloudId] = v;
-          persistAll();
-          const fsm = document.getElementById('fullscreen-message'); if (fsm) fsm.remove();
-          confirmAction({
-            title: 'Business login enabled',
-            message: `"${b.name}" can now be signed in to on any device. ${memberMsg}\n\nSign in with:\nEmail: ${b.email}\nPassword: (the business password you set)\n\nThat login sees this business exactly as you do — view-only, with entries allowed on entry tabs like Balance. It can't create or manage businesses.`,
-            confirmLabel: 'Done',
-            onConfirm: () => {}
-          });
-        } catch (e) {
-          const fsm = document.getElementById('fullscreen-message'); if (fsm) fsm.remove();
-          confirmAction({ title: 'Could not share', message: 'Sharing failed: ' + (e && e.message || 'Unknown error') + '\n\nYour local data is unchanged.', confirmLabel: 'OK', onConfirm: () => {} });
-        }
-      }
-    });
-  }
 
   async function openBusinessModal(editId) {
     if (isViewOnly()) return;
@@ -2172,11 +2100,11 @@
       { k: 'link', lbl: 'Link (optional)', type: 'url', placeholder: 'https://…' },
       { k: 'description', lbl: 'Description (optional)', type: 'textarea' }
     ];
-    // System / Games: shared shape
+    // System / Games: shared shape — Link is REQUIRED here (unlike Notices).
     return [
       { k: 'name', lbl: 'Name', required: true },
       { k: 'shortName', lbl: 'Short name (optional)' },
-      { k: 'link', lbl: 'Link (optional)', type: 'url', placeholder: 'https://…' },
+      { k: 'link', lbl: 'Link', type: 'url', required: true, placeholder: 'https://…' },
       { k: 'description', lbl: 'Description (optional)', type: 'textarea' }
     ];
   }
@@ -2430,49 +2358,6 @@
   }
 
   // ---------- Tag modal ----------
-  function openTagModal(bizId, editTagId) {
-    if (isViewOnly()) return;
-    const b = bizById(bizId); if (!b) return;
-    if (!b.nextTagId) b.nextTagId = b.tags.length + 1;
-    const editing = editTagId ? b.tags.find(t => t.id === editTagId) : null;
-    let chosenColor = editing ? editing.color : BIZ_COLORS[b.tags.length % BIZ_COLORS.length];
-    openModal(`
-      <div class="modal-head"><h3>${editing ? 'Edit tag' : 'New tag'}</h3><button id="m-close" class="btn-icon"><i class="ti ti-x"></i></button></div>
-      <div class="modal-body">
-        <div class="field" style="margin-bottom:12px;"><label>Tag name</label><input id="t-name" placeholder="e.g. Engineering" value="${editing ? esc(editing.name) : ''}"/></div>
-        <div class="field"><label>Color</label><div class="color-row">${BIZ_COLORS.map(c => `<div class="color-swatch t-color" data-c="${c}" style="background:${c};${chosenColor === c ? 'border-color:var(--text-primary);' : ''}"></div>`).join('')}</div></div>
-      </div>
-      <div class="modal-foot ${editing ? 'between' : ''}">${editing ? `<button class="btn-danger" id="t-delete">Delete</button>` : ''}<div style="display:flex;gap:8px;"><button class="btn-outline" id="m-cancel">Cancel</button><button class="btn-primary" id="t-save">${editing ? 'Save' : 'Create'}</button></div></div>
-    `);
-    $$('.t-color').forEach(el => el.onclick = () => { chosenColor = el.dataset.c; $$('.t-color').forEach(x => x.style.borderColor = 'transparent'); el.style.borderColor = 'var(--text-primary)'; });
-    $('#m-close').onclick = closeModal;
-    $('#m-cancel').onclick = closeModal;
-    $('#t-save').onclick = () => {
-      const name = $('#t-name').value.trim();
-      if (!name) { toast('Enter a tag name'); return; }
-      if (editing) { editing.name = name; editing.color = chosenColor; }
-      else { b.tags.push({ id: 't' + (b.nextTagId++), name, color: chosenColor }); }
-      recordActivity(b, editing ? 'edited' : 'added', `${editing ? 'Edited' : 'Added'} tag: ${name}`);
-      closeModal(); persistAll();
-      const cur = state.history[state.history.length-1];
-      if (cur && cur.startsWith('biz-detail')) { state.history.pop(); setActive('biz-detail','fade',{bizId:b.id,title:b.name,sub:b.email}); }
-      toast(editing ? 'Saved' : 'Created'); haptic();
-    };
-    if (editing) $('#t-delete').onclick = () => {
-      confirmAction({
-        title: 'Delete tag?',
-        message: `"${editing.name}" will be removed from all items it's assigned to.`,
-        confirmLabel: 'Delete',
-        onConfirm: () => {
-          b.tags = b.tags.filter(t => t.id !== editing.id);
-          Object.values(state.items).flat().forEach(it => { if (it.tagIds) it.tagIds = it.tagIds.filter(tid => tid !== editing.id); });
-          closeModal(); persistAll();
-          state.history.pop(); setActive('biz-detail','fade',{bizId:b.id,title:b.name,sub:b.email});
-          toast('Tag deleted');
-        }
-      });
-    };
-  }
 
   // ---------- Custom tab delete (shared by modal + management header) ----------
   function deleteCustomTab(id) {
@@ -2507,7 +2392,7 @@
     const ct = editTabId ? state.customTabs.find(t => t.id === editTabId) : null;
     let chosenIcon = ct ? ct.icon : 'star';
     openModal(`
-      <div class="modal-head"><h3>${ct ? 'Edit tab' : 'New custom tab'}</h3><button id="m-close" class="btn-icon"><i class="ti ti-x"></i></button></div>
+      <div class="modal-head"><h3>${ct ? 'Edit tab' : 'New custom tab'}</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
       <div class="modal-body">
         <div style="display:flex;gap:12px;align-items:flex-end;margin-bottom:12px;">
           <div><label style="font-size:12px;color:var(--text-secondary);display:block;margin-bottom:4px;">Icon</label><button id="tab-icon-btn" class="btn-outline" style="width:44px;height:42px;padding:0;display:flex;align-items:center;justify-content:center;"><i class="ti ti-${chosenIcon}" style="font-size:18px;"></i></button></div>
@@ -2560,7 +2445,7 @@
   // ---------- E2E encryption modals ----------
   function openCryptoSetupModal() {
     openModal(`
-      <div class="modal-head"><h3>Enable encryption</h3><button id="m-close" class="btn-icon"><i class="ti ti-x"></i></button></div>
+      <div class="modal-head"><h3>Enable encryption</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
       <div class="modal-body">
         <div class="info-banner" style="margin-bottom:14px;background:var(--warning-bg);color:var(--warning-fg);"><i class="ti ti-alert-triangle"></i><span><strong>Read carefully:</strong> your master password is never stored. If you forget it, encrypted business passwords are permanently unrecoverable. Write it down somewhere safe.</span></div>
         <div class="field" style="margin-bottom:10px;"><label>Master password</label><input id="mp" type="password" placeholder="At least 8 characters" autocomplete="new-password"/></div>
@@ -2596,7 +2481,7 @@
   }
   function openCryptoUnlockModal() {
     openModal(`
-      <div class="modal-head"><h3>Unlock</h3><button id="m-close" class="btn-icon"><i class="ti ti-x"></i></button></div>
+      <div class="modal-head"><h3>Unlock</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
       <div class="modal-body">
         <div class="field" style="margin-bottom:10px;"><label>Master password</label><input id="mp" type="password" placeholder="Enter master password" autocomplete="current-password"/></div>
         <div id="mp-err" class="error-msg" hidden></div>
@@ -2636,7 +2521,7 @@
       }
     };
     openModal(`
-      <div class="modal-head"><h3>Rename "${esc(def.name)}" ${esc(scopeLbl)}</h3><button id="m-close" class="btn-icon"><i class="ti ti-x"></i></button></div>
+      <div class="modal-head"><h3>Rename "${esc(def.name)}" ${esc(scopeLbl)}</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
       <div class="modal-body">
         <div style="display:flex;gap:12px;align-items:flex-end;margin-bottom:12px;">
           <div><label style="font-size:12px;color:var(--text-secondary);display:block;margin-bottom:4px;">Icon</label><button id="ren-icon-btn" class="btn-outline" style="width:44px;height:42px;padding:0;"><i class="ti ti-${chosenIcon}" style="font-size:18px;"></i></button></div>
@@ -2798,7 +2683,7 @@
     if (!dests.length) { toast('No other tab to move to'); return; }
     let chosen = '';
     openModal(`
-      <div class="modal-head"><h3>Move ${state.bulkSelected.size} item${state.bulkSelected.size === 1 ? '' : 's'}</h3><button id="m-close" class="btn-icon"><i class="ti ti-x"></i></button></div>
+      <div class="modal-head"><h3>Move ${state.bulkSelected.size} item${state.bulkSelected.size === 1 ? '' : 's'}</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
       <div class="modal-body">
         <div class="field"><label>Move to tab</label>
           <div id="move-dest" style="display:flex;flex-direction:column;gap:6px;">
@@ -2836,7 +2721,7 @@
   function openBulkAssign() {
     let chosenBiz = '';
     openModal(`
-      <div class="modal-head"><h3>Assign ${state.bulkSelected.size} item(s)</h3><button id="m-close" class="btn-icon"><i class="ti ti-x"></i></button></div>
+      <div class="modal-head"><h3>Assign ${state.bulkSelected.size} item(s)</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
       <div class="modal-body">
         <div class="field"><label>Business</label>
           <div id="if-biz" style="display:flex;flex-wrap:wrap;gap:6px;">
@@ -3387,9 +3272,7 @@
         }
       } catch (e) { /* if comparison fails, fall through and apply */ }
       try {
-        window.__infosSyncLog = window.__infosSyncLog || [];
-        window.__infosSyncLog.push({ t: Date.now(), biz: cloudBusinessId, cloudV: snap.version || 0, via: 'realtime-direct', mode: state.__sharedMode ? 'biz' : 'owner' });
-        if (window.__infosSyncLog.length > 30) window.__infosSyncLog.shift();
+        syncLog({ biz: cloudBusinessId, cloudV: snap.version || 0, via: 'realtime-direct', mode: state.__sharedMode ? 'biz' : 'owner' });
       } catch (e) {}
       try { if (window.__InfosSyncReceiving) window.__InfosSyncReceiving(); } catch (e) {}
       sharedApplyingRemote = true;
@@ -3426,6 +3309,7 @@
           }
         }
         if (localBizId) {
+          const __beforeOwnerRT = itemIdSnapshot();
           Slice.applySliceToOwnerState(state, snap.data, localBizId);
           if (!state.bizCloudVersions) state.bizCloudVersions = {};
           state.bizCloudVersions[cloudBusinessId] = snap.version || 0;
@@ -3437,6 +3321,10 @@
           try { persistAll(); } finally { state.__suppressOwnerPush = false; }
           rerenderPreservingScroll(() => rerenderCurrentTab());
           try { updateBadges(); buildNav(); } catch (e) {}
+          // Sound/notification for items a member just added (e.g. a balance entry).
+          // This realtime path applied silently before, so the owner heard nothing
+          // until — if ever — the slower poll re-detected it. Chime here.
+          try { chimeForArrivals(__beforeOwnerRT); } catch (e) {}
         }
       }
       sharedApplyingRemote = false;
@@ -3471,9 +3359,7 @@
         // Record every version check — including failures — so the in-app Sync
         // Diagnostics can show whether the poll is reaching the cloud at all.
         try {
-          window.__infosSyncLog = window.__infosSyncLog || [];
-          window.__infosSyncLog.push({ t: Date.now(), via: 'poll-version', biz: cloudBusinessId, cloudV: (cloudV == null ? 'null' : cloudV), appliedV, err: versionErr, mode: state.__sharedMode ? 'biz' : 'owner' });
-          if (window.__infosSyncLog.length > 40) window.__infosSyncLog.shift();
+          syncLog({ via: 'poll-version', biz: cloudBusinessId, cloudV: (cloudV == null ? 'null' : cloudV), appliedV, err: versionErr, mode: state.__sharedMode ? 'biz' : 'owner' });
         } catch (e) {}
         // null = the cheap read failed; fall through to a full load to be safe.
         if (cloudV != null && cloudV <= appliedV) return; // nothing newer — no expensive fetch
@@ -3501,9 +3387,7 @@
         proceed = !sameContent; // content differs despite version → apply anyway
       }
       try {
-        window.__infosSyncLog = window.__infosSyncLog || [];
-        window.__infosSyncLog.push({ t: Date.now(), biz: cloudBusinessId, cloudV: snap.version || 0, appliedV: appliedVersion, newer: versionNewer, same: sameContent, mode: state.__sharedMode ? 'biz' : 'owner' });
-        if (window.__infosSyncLog.length > 30) window.__infosSyncLog.shift();
+        syncLog({ biz: cloudBusinessId, cloudV: snap.version || 0, appliedV: appliedVersion, newer: versionNewer, same: sameContent, mode: state.__sharedMode ? 'biz' : 'owner' });
       } catch (e) {}
       if (!proceed && !force) return;
       __startedReceiving = true;
@@ -3581,9 +3465,7 @@
     } catch (e) {
       console.warn('refreshSharedFromCloud failed:', e);
       try {
-        window.__infosSyncLog = window.__infosSyncLog || [];
-        window.__infosSyncLog.push({ t: Date.now(), via: 'poll-fetch-ERROR', biz: cloudBusinessId, err: String((e && e.message) || e) });
-        if (window.__infosSyncLog.length > 40) window.__infosSyncLog.shift();
+        syncLog({ via: 'poll-fetch-ERROR', biz: cloudBusinessId, err: String((e && e.message) || e) });
       } catch (_) {}
     }
     finally {
@@ -3990,7 +3872,7 @@
   // has the blurred backdrop). Tells the user to confirm via email, then sign in.
   function openTermsModal() {
     openModal(`
-      <div class="modal-head"><h3>Terms &amp; Conditions</h3><button id="m-close" class="btn-icon"><i class="ti ti-x"></i></button></div>
+      <div class="modal-head"><h3>Terms &amp; Conditions</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
       <div class="modal-body" style="line-height:1.7;font-size:13px;color:var(--text-secondary);">
         <p style="margin:0 0 12px;color:var(--text-primary);"><strong>Effective: ${new Date().toLocaleDateString()}</strong></p>
         <h4 class="guide-h3" style="margin-top:0;">1. Your account &amp; data</h4>
@@ -4018,7 +3900,7 @@
 
   function openPrivacyPreviewModal() {
     openModal(`
-      <div class="modal-head"><h3>Privacy Policy</h3><button id="m-close" class="btn-icon"><i class="ti ti-x"></i></button></div>
+      <div class="modal-head"><h3>Privacy Policy</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
       <div class="modal-body" style="line-height:1.7;font-size:13px;color:var(--text-secondary);">
         <p style="margin:0 0 12px;color:var(--text-primary);"><strong>How your data is handled.</strong></p>
         <p>When you use a cloud account, your data — businesses, items, balances, attachments, and preferences — is stored on our backend (Supabase) so it can sync across your devices. Authentication is handled by Supabase; your password is securely hashed and never stored in plain text on the server.</p>
@@ -4342,13 +4224,13 @@
     } catch {}
   }
   // Backwards-compatible name used elsewhere.
-  function playNoticeChime() { playSelfEntrySound(); }
-  // Louder, sharper, bolder set. Higher volume, faster attack (sharper), and
   // bolder waveforms (triangle/sawtooth carry more harmonics than a pure sine).
   // You added an entry yourself — bright bold ascending two-note.
   function playSelfEntrySound() { playChord([659.25, 987.77], { gap: 0.09, dur: 0.32, vol: 0.28, type: 'triangle', attack: 0.008 }); }
   // You added a BALANCE entry — bold low "coin" two-note (sawtooth).
   function playBalanceSound() { playChord([523.25, 392.00], { gap: 0.08, dur: 0.30, vol: 0.30, type: 'sawtooth', attack: 0.006 }); }
+  // A BALANCE entry was deleted (synced from another login) — reuses the same
+  // "cash-out" descending sound as a local balance delete (defined below).
   // A NEW entry arrived from another login via sync — bold three rising notes.
   function playIncomingSound() { playChord([587.33, 783.99, 1046.50], { gap: 0.09, dur: 0.30, vol: 0.26, type: 'triangle', attack: 0.008 }); }
   // A reminder arrived for a business — sharp urgent double-pulse (square).
@@ -4391,12 +4273,25 @@
       else if (gotBalance) playBalanceSound();
       else if (gotOther) playIncomingSound();
 
+      // DELETIONS: an item present before the sync is now gone (the other login
+      // deleted it). Detect balance removals specifically and play a distinct
+      // descending tone — on BOTH owner and business sides. Only sound a deletion
+      // when no arrival already chimed, to avoid two overlapping sounds.
+      let gotBalanceDelete = false;
+      try {
+        const afterSet = itemIdSnapshot();
+        beforeSet.forEach(function (key) {
+          if (!afterSet.has(key) && key.indexOf('balance:') === 0) gotBalanceDelete = true;
+        });
+      } catch (e) {}
+      if (gotBalanceDelete && !gotReminder && !gotBalance && !gotOther) playBalanceDeleteSound();
+
       // Fire a browser/push notification too (if the user granted permission),
       // so arrivals are noticed even when the app isn't focused.
       try {
-        if ((gotReminder || gotBalance || gotOther) && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-          var title = gotReminder ? 'New reminder' : (gotBalance ? 'New balance entry' : 'New entry');
-          var body = gotReminder ? 'A new reminder just arrived.' : (gotBalance ? 'A balance entry was just added.' : 'A new entry was just added.');
+        if ((gotReminder || gotBalance || gotOther || gotBalanceDelete) && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          var title = gotReminder ? 'New reminder' : (gotBalance ? 'New balance entry' : (gotOther ? 'New entry' : 'Balance entry removed'));
+          var body = gotReminder ? 'A new reminder just arrived.' : (gotBalance ? 'A balance entry was just added.' : (gotOther ? 'A new entry was just added.' : 'A balance entry was just deleted.'));
           var n = new Notification('Infos — ' + title, { body: body, icon: 'icons/icon-192.png', tag: 'infos-arrival' });
           setTimeout(function () { try { n.close(); } catch (e) {} }, 6000);
         }
@@ -5399,7 +5294,7 @@
     let tag = null;
     state.businesses.forEach(b => { if (!tag) tag = b.tags.find(t => t.id === state.activeTagId); });
     if (!tag) return '';
-    return `<div class="info-banner" style="margin-bottom:14px;background:${tag.color}22;color:${readableColor(tag.color)};border:1px solid ${tag.color}55;"><i class="ti ti-tag"></i><span>Filtered by tag: <strong>${esc(tag.name)}</strong></span><button class="btn-icon" id="clear-tag-filter" style="margin-left:auto;color:inherit;"><i class="ti ti-x"></i></button></div>`;
+    return `<div class="info-banner" style="margin-bottom:14px;background:${tag.color}22;color:${readableColor(tag.color)};border:1px solid ${tag.color}55;"><i class="ti ti-tag"></i><span>Filtered by tag: <strong>${esc(tag.name)}</strong></span><button class="btn-icon" id="clear-tag-filter" style="margin-left:auto;color:inherit;" aria-label="Clear tag filter"><i class="ti ti-x"></i></button></div>`;
   }
   function bindClearTagFilter() {
     const btn = $('#clear-tag-filter');
@@ -5414,8 +5309,6 @@
       ${ctaLabel ? `<button class="cta-button" id="empty-cta"><i class="ti ti-plus"></i>${esc(ctaLabel)}</button>` : ''}
     </div>`;
   }
-  function bindEmptyCTA(fn) { const b = $('#empty-cta'); if (b) b.onclick = fn; }
-
   function skeletonList(n) {
     let html = '';
     for (let i = 0; i < (n || 4); i++) {
@@ -6391,7 +6284,7 @@
     }
 
     openModal(`
-      <div class="modal-head"><h3>${editing ? 'Edit Balance Entry' : 'New Balance Entries'}</h3><button id="m-close" class="btn-icon"><i class="ti ti-x"></i></button></div>
+      <div class="modal-head"><h3>${editing ? 'Edit Balance Entry' : 'New Balance Entries'}</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
       <div class="modal-body">
         <div class="settings-hint" style="margin-bottom:10px;">${editing ? 'Edit this entry.' : 'Type who is recording these entries, then add one or more name + balance rows.'}</div>
         <div class="field" style="margin-bottom:12px;">
@@ -7277,7 +7170,7 @@
           ${isViewOnly() ? '' : `<button class="btn-link-sm" id="d-add-att"><i class="ti ti-paperclip" style="font-size:13px;vertical-align:-2px;"></i> Add file</button>`}
         </div>
         <input type="file" id="d-att-input" style="display:none;"/>
-        <div id="d-att-list">${(it.attachments || []).map((a, i) => `<div class="attachment-tile"><i class="ti ti-file"></i><div style="flex:1;min-width:0;"><div>${esc(a.name)}</div><div class="attachment-meta">${(a.size / 1024).toFixed(1)} KB</div></div><a href="${a.data}" download="${esc(a.name)}" class="btn-icon" style="text-decoration:none;"><i class="ti ti-download"></i></a>${isViewOnly() ? '' : `<button class="btn-icon" data-att-rm="${i}"><i class="ti ti-x"></i></button>`}</div>`).join('') || '<div style="font-size:12px;color:var(--text-tertiary);">No attachments.</div>'}</div>
+        <div id="d-att-list">${(it.attachments || []).map((a, i) => `<div class="attachment-tile"><i class="ti ti-file"></i><div style="flex:1;min-width:0;"><div>${esc(a.name)}</div><div class="attachment-meta">${(a.size / 1024).toFixed(1)} KB</div></div><a href="${a.data}" download="${esc(a.name)}" class="btn-icon" style="text-decoration:none;"><i class="ti ti-download"></i></a>${isViewOnly() ? '' : `<button class="btn-icon" data-att-rm="${i}" aria-label="Remove attachment"><i class="ti ti-x"></i></button>`}</div>`).join('') || '<div style="font-size:12px;color:var(--text-tertiary);">No attachments.</div>'}</div>
       </div>
       <div class="detail-section">
         <div class="section-label" style="margin-bottom:8px;">History</div>
@@ -7499,7 +7392,7 @@
         if (e.appliedV !== undefined) bits.push('appliedV=' + e.appliedV);
         if (e.newer !== undefined) bits.push(e.newer ? 'NEWER' : 'same-v');
         if (e.err) bits.push('ERR:' + e.err);
-        if (e.via === 'owner-push-DIFF') { bits.push('@' + e.at); bits.push('old=…' + (e.old || '')); bits.push('new=…' + (e.new || '')); }
+        if (e.pushFail) bits.push('PUSH-FAIL:' + e.pushFail);
         const isErr = !!e.err || /ERROR/.test(e.via || '');
         return `<div style="font-family:var(--font-mono);font-size:11px;padding:5px 0;border-bottom:1px solid var(--border-soft);color:${isErr ? 'var(--danger-fg)' : 'var(--text-secondary)'};"><span style="color:var(--text-tertiary);">${fmt(e.t)}</span> · ${esc(bits.join(' · '))}</div>`;
       }).join('') : `<div style="font-size:12px;color:var(--text-tertiary);padding:8px 0;">No sync activity recorded yet. Leave this open ~10s.</div>`;
@@ -7530,8 +7423,8 @@
     }
     diagBtn.onclick = () => {
       const open = diagPanel.style.display !== 'none';
-      if (open) { diagPanel.style.display = 'none'; if (diagTimer) { clearInterval(diagTimer); diagTimer = null; } }
-      else { diagPanel.style.display = 'block'; renderDiag(); diagTimer = setInterval(renderDiag, 1500); }
+      if (open) { diagPanel.style.display = 'none'; window.__infosSyncDebug = false; if (diagTimer) { clearInterval(diagTimer); diagTimer = null; } }
+      else { window.__infosSyncDebug = true; diagPanel.style.display = 'block'; renderDiag(); diagTimer = setInterval(renderDiag, 1500); }
     };
   }
   function renderPrivacy(c) {
@@ -7693,7 +7586,7 @@
   function openChangeEmailModal() {
     const oldEmail = state.user.email;
     openModal(`
-      <div class="modal-head"><h3>Change email</h3><button id="m-close" class="btn-icon"><i class="ti ti-x"></i></button></div>
+      <div class="modal-head"><h3>Change email</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
       <div class="modal-body">
         <div class="field" style="margin-bottom:10px;"><label>Current email</label><div class="info-pill" style="font-size:13px;">${esc(oldEmail)}</div></div>
         <div class="field" style="margin-bottom:10px;"><label>New email</label><input id="ce-new" type="email" placeholder="you@example.com" autocomplete="email" inputmode="email"/></div>
