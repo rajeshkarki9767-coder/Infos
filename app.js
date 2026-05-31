@@ -452,7 +452,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '163.0.0';
+  const APP_VERSION = '167.0.0';
 
   // ---------- State ----------
   const state = {
@@ -710,6 +710,21 @@
     if (Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']';
     const keys = Object.keys(v).sort();
     return '{' + keys.map(k => JSON.stringify(k) + ':' + stableStringify(v[k])).join(',') + '}';
+  }
+
+  // True when the owner is signed into a cloud (Supabase) account — i.e. data
+  // syncs across devices. Also self-corrects the legacy footgun where a cloud
+  // account got left on the local "loopback (demo)" adapter, which silently
+  // routed the owner's backup to a no-op instead of Supabase.
+  function isCloudAccount() {
+    const cloud = state.syncAdapter === 'supabase'
+      || !!(state.user && state.accounts && state.accounts.some(a => a && a.cloud && a.email === state.user.email))
+      || !!(window.InfosSupabase && window.InfosSupabase.configured && window.InfosSupabase.configured() && state.user && !state.__sharedMode && (state.accounts || []).some(a => a && a.cloud));
+    if (cloud && state.syncAdapter !== 'supabase') {
+      state.syncAdapter = 'supabase';
+      try { if (window.Sync && window.Sync.enable) window.Sync.enable('supabase'); } catch (e) {}
+    }
+    return cloud;
   }
 
   // Robust clipboard copy. navigator.clipboard is unavailable in non-secure
@@ -7483,6 +7498,11 @@
             <div>Realtime: <strong style="color:${rtColor};">${esc(rt)}</strong></div>
             <div>Poll: <strong>${window.__sharedPoll ? 'running (2.5s)' : 'not running'}</strong></div>
           </div>
+          ${!state.__sharedMode && state.bizCloudMap ? `
+          <div style="font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-tertiary);margin:6px 0;">Business → cloud id (compare to member's id above)</div>
+          <div style="font-size:11px;line-height:1.8;color:var(--text-secondary);margin-bottom:8px;">
+            ${Object.keys(state.bizCloudMap).map(lid => { const b = (state.businesses||[]).find(x=>x&&x.id===lid); return `<div><strong>${esc((b&&b.name)||lid)}</strong>: <span style="font-family:var(--font-mono);">${esc(state.bizCloudMap[lid]||'—')}</span></div>`; }).join('') || '<div>(no businesses mapped)</div>'}
+          </div>` : ''}
           <div style="font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-tertiary);margin:6px 0;">Recent sync events</div>
           ${rows}
           <button type="button" class="btn-outline btn-block" id="sync-diag-force" style="margin-top:10px;"><i class="ti ti-refresh" style="font-size:13px;vertical-align:-2px;margin-right:6px;"></i>Force pull now</button>
@@ -8025,15 +8045,12 @@
           <div class="settings-hint" style="margin-top:10px;">For single-business export, open that business and use its Data section.</div>
         </div>
         <div class="settings-section">
-          <div class="section-label" style="margin-bottom:8px;">Backend sync</div>
-          <div class="settings-hint" style="margin-bottom:12px;">Optional. Adapters in SYNC.md.</div>
-          <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
-            <select id="sync-adapter" style="padding:9px 12px;border-radius:var(--radius-md);border:1px solid var(--border-soft);background:var(--surface-elevated);color:var(--text-primary);font-family:inherit;font-size:13px;">
-              <option value="">Disabled</option>
-              <option value="loopback" ${state.syncAdapter === 'loopback' ? 'selected' : ''}>Local loopback (demo)</option>
-            </select>
-            <button class="btn-outline btn-sm" id="sync-now" ${!state.syncAdapter ? 'disabled' : ''}><i class="ti ti-refresh" style="font-size:13px;vertical-align:-2px;"></i> Sync now</button>
-          </div>
+          <div class="section-label" style="margin-bottom:8px;">Sync</div>
+          ${(isCloudAccount() || state.__sharedMode) ? `
+            <span class="info-pill" style="font-size:13px;display:inline-flex;align-items:center;gap:7px;"><span style="width:8px;height:8px;border-radius:50%;background:var(--success-fg,#1D9E75);display:inline-block;"></span>Syncing automatically across your devices</span>
+          ` : `
+            <div class="settings-hint">Sign in with a cloud account to sync across your devices.</div>
+          `}
         </div>
         <div class="settings-section">
           <div class="section-label" style="margin-bottom:8px;">Storage</div>
@@ -8269,23 +8286,6 @@
           window.location.reload();
         }
       });
-    };
-    const sa = $('#sync-adapter');
-    if (sa) sa.onchange = async () => {
-      const val = sa.value;
-      if (!val) { await window.Sync.disable(); state.syncAdapter = null; }
-      else { try { await window.Sync.enable(val); state.syncAdapter = val; } catch (e) { toast(e.message); sa.value = state.syncAdapter || ''; return; } }
-      persistAll();
-      state.history.pop(); setActive('settings','fade');
-    };
-    const sn = $('#sync-now');
-    if (sn) sn.onclick = async () => {
-      sn.disabled = true; toast('Syncing…');
-      const merged = await window.Sync.syncNow(cachedPrefs);
-      if (merged && merged !== cachedPrefs) {
-        await window.Storage.replace(merged);
-        window.location.reload();
-      } else { toast('Sync complete'); sn.disabled = false; }
     };
   }
 
