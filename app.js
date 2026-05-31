@@ -369,6 +369,15 @@
         state.bizCloudVersions[p.cloudId] = v;
         // Record the signature ONLY on success, so a failed push is retried next time.
         window.__ownerPushSig[p.cloudId] = p.sig;
+        // ALSO record the realtime guard's signature for this slice. The owner is
+        // subscribed to its own businesses' realtime, so this very push echoes back
+        // as a realtime event. Without this, the guard wouldn't recognize the echo,
+        // would re-apply it, and the cycle would churn the version endlessly. The
+        // formula MUST match the guard's owner-branch sig exactly.
+        try {
+          window.__ownerSliceSig = window.__ownerSliceSig || {};
+          window.__ownerSliceSig[p.cloudId] = JSON.stringify((p.slice && p.slice.items) || {}) + '|' + JSON.stringify((p.slice && p.slice.business) || {});
+        } catch (e) {}
         pushedAny = true;
       } catch (e) {
         anyFailed = true;
@@ -423,7 +432,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '160.0.0';
+  const APP_VERSION = '161.0.0';
 
   // ---------- State ----------
   const state = {

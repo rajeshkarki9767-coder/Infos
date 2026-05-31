@@ -24,3 +24,16 @@ check('owner push change-detection intact', /window\.__ownerPushSig\[cloudId\] !
 
 if (failed) { console.log('\n  ' + failed + ' failed'); process.exit(1); }
 console.log('  ' + 6 + ' passed, 0 failed');
+
+// v161: owner must record the realtime-guard signature on push so it recognizes
+// and skips its OWN echo (owner is subscribed to its businesses' realtime).
+(function(){
+  const fs2 = require('fs'); const path2 = require('path');
+  const app2 = fs2.readFileSync(path2.join(__dirname, '..', 'app.js'), 'utf8');
+  let f2 = 0; const ck2 = (n,x)=>{ console.log((x?'  \u2713 ':'  \u2717 ')+n); if(!x)f2++; };
+  ck2('owner push records __ownerSliceSig (echo recognition)', /window\.__ownerSliceSig\[p\.cloudId\] = JSON\.stringify\(\(p\.slice && p\.slice\.items\)/.test(app2));
+  ck2('formula matches realtime guard owner-branch sig', /JSON\.stringify\(snap\.data\.items \|\| \{\}\) \+ '\|' \+ JSON\.stringify\(snap\.data\.business/.test(app2));
+  ck2('owner push still records __ownerPushSig (self-heal dedup)', /window\.__ownerPushSig\[p\.cloudId\] = p\.sig;/.test(app2));
+  if (f2) { console.log('\n  '+f2+' failed'); process.exit(1); }
+  console.log('  3 passed (v161 owner echo guard)');
+})();
