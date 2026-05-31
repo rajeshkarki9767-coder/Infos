@@ -423,7 +423,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '158.0.0';
+  const APP_VERSION = '160.0.0';
 
   // ---------- State ----------
   const state = {
@@ -3345,6 +3345,9 @@
         state.__sharedVersion = snap.version || 0;
         state.user = state.user || { name: (snap.data.business && snap.data.business.name) || 'Business', email: state.__sharedEmail };
         healSharedBizName();
+        // Record the content we just applied as the dedup baseline, so the push
+        // that this apply may schedule sees identical content and skips (no echo).
+        try { const sl = Slice.memberStateToSlice(state); window.__lastSharedContentSig = JSON.stringify(sl.items || {}) + '|' + JSON.stringify(sl.business || {}) + '|' + JSON.stringify(sl.activity || []); } catch (e) {}
         try { chimeForArrivals(__before); } catch (e) {}
         // ALWAYS re-render after a realtime apply. The previous "only render when
         // the current tab's signature changed" optimization could miss updates
@@ -3368,7 +3371,12 @@
           Slice.applySliceToOwnerState(state, snap.data, localBizId);
           if (!state.bizCloudVersions) state.bizCloudVersions = {};
           state.bizCloudVersions[cloudBusinessId] = snap.version || 0;
-          persistAll();
+          // Record the applied content as the owner's push baseline so the ~10s
+          // self-heal doesn't re-push (and re-bump the version on) what we just
+          // received — the other half of breaking the echo write-loop.
+          try { const sl = Slice.buildSharedSlice(state, localBizId, cloudBusinessId); window.__ownerPushSig = window.__ownerPushSig || {}; window.__ownerPushSig[cloudBusinessId] = JSON.stringify(sl.items || {}) + '|' + JSON.stringify(sl.business || {}); } catch (e) {}
+          state.__suppressOwnerPush = true;
+          try { persistAll(); } finally { state.__suppressOwnerPush = false; }
           rerenderPreservingScroll(() => rerenderCurrentTab());
           try { updateBadges(); buildNav(); } catch (e) {}
         }
@@ -3462,6 +3470,8 @@
         state.__sharedVersion = snap.version || 0;
         state.user = state.user || { name: (snap.data.business && snap.data.business.name) || 'Business', email: state.__sharedEmail };
         healSharedBizName();
+        // Record applied content as the dedup baseline (see pushSharedState).
+        try { const sl = Slice.memberStateToSlice(state); window.__lastSharedContentSig = JSON.stringify(sl.items || {}) + '|' + JSON.stringify(sl.business || {}) + '|' + JSON.stringify(sl.activity || []); } catch (e) {}
         // Chime for any entries that just arrived from the owner via sync.
         try { chimeForArrivals(__before); } catch (e) {}
         // We got here only because the version OR content actually changed (or
@@ -3491,6 +3501,9 @@
         Slice.applySliceToOwnerState(state, snap.data, localBizId);
         if (!state.bizCloudVersions) state.bizCloudVersions = {};
         state.bizCloudVersions[cloudBusinessId] = snap.version || 0;
+        // Record applied content as the owner's push baseline so the self-heal
+        // doesn't re-push what we just received (breaks the echo write-loop).
+        try { if (localBizId) { const sl = Slice.buildSharedSlice(state, localBizId, cloudBusinessId); window.__ownerPushSig = window.__ownerPushSig || {}; window.__ownerPushSig[cloudBusinessId] = JSON.stringify(sl.items || {}) + '|' + JSON.stringify(sl.business || {}); } } catch (e) {}
         // Persist locally without echoing a push back (breaks the poll→push loop).
         state.__suppressOwnerPush = true;
         try { persistAll(); } finally { state.__suppressOwnerPush = false; }
@@ -3532,12 +3545,22 @@
     const doPush = async () => {
       try {
         if (state.__sharedMode) {
-          try { if (window.__InfosSyncUploading) window.__InfosSyncUploading(); } catch {}
           const slice = Slice.memberStateToSlice(state);
           if (!slice) return;
+          // CONTENT DEDUP: never push a slice identical to what we last pushed or
+          // last received from the cloud. Applying a remote update would otherwise
+          // schedule a push of that same content, which bumps the version, which
+          // the other side receives and echoes back — a runaway write loop that
+          // inflated rows to thousands of versions and stalled reads. The version
+          // only advances on a genuine local change now.
+          let sig;
+          try { sig = JSON.stringify(slice.items || {}) + '|' + JSON.stringify(slice.business || {}) + '|' + JSON.stringify(slice.activity || []); } catch (e) { sig = null; }
+          if (sig != null && sig === window.__lastSharedContentSig) return; // nothing actually changed
+          try { if (window.__InfosSyncUploading) window.__InfosSyncUploading(); } catch {}
           const v = await window.InfosSupabase.adapter.saveSharedState(
             state.__sharedBusinessId, slice, state.__sharedVersion || 0);
           state.__sharedVersion = v;
+          if (sig != null) window.__lastSharedContentSig = sig;
           try { if (window.__InfosSyncDone) window.__InfosSyncDone(); } catch {}
         }
       } catch (e) { console.warn('pushSharedState failed:', e); }
@@ -7388,6 +7411,9 @@
     let diagTimer = null;
     function renderDiag() {
       if (!diagPanel) return;
+      // Self-stop if the panel was removed from the DOM (user navigated away from
+      // About without closing it) — otherwise this 1.5s interval would leak.
+      if (!document.body.contains(diagPanel)) { if (diagTimer) { clearInterval(diagTimer); diagTimer = null; } return; }
       const log = (window.__infosSyncLog || []).slice(-18).reverse();
       const now = Date.now();
       const fmt = (t) => { const s = Math.round((now - t) / 1000); return s < 1 ? 'now' : s + 's ago'; };
