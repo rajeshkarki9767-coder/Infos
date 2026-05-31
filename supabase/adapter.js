@@ -137,6 +137,31 @@
       await c.auth.signOut();
     },
 
+    // --- Multi-account session switching ---------------------------------------
+    // Read the CURRENT session's tokens so we can stash them per-account and
+    // restore later without a password. Returns null if there's no session.
+    async getSessionTokens() {
+      const c = getClient(); if (!c) return null;
+      try {
+        const { data } = await c.auth.getSession();
+        const s = data && data.session;
+        if (!s || !s.access_token || !s.refresh_token) return null;
+        return { access_token: s.access_token, refresh_token: s.refresh_token };
+      } catch { return null; }
+    },
+    // Restore a previously-stashed session (passwordless account switch). Throws
+    // if the tokens are invalid/expired so the caller can fall back to a password
+    // sign-in. On success the Supabase client (and its localStorage session) is
+    // now this account, so a reload boots straight into it.
+    async restoreSession(access_token, refresh_token) {
+      const c = getClient(); if (!c) throw new Error('Supabase not configured');
+      if (!access_token || !refresh_token) throw new Error('Missing session tokens');
+      const { data, error } = await c.auth.setSession({ access_token, refresh_token });
+      if (error) throw error;
+      if (!data || !data.session) throw new Error('Session could not be restored');
+      return data.user || null;
+    },
+
     // STAGE 2: create a hidden member account for a business login via the
     // server function. Owner-only; the server verifies ownership. Returns the
     // new member's uid. Requires api/create-member.js deployed.

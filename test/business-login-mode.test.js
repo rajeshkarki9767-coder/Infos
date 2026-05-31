@@ -60,10 +60,12 @@ check('owner cannot EDIT Balance batches', /const canEditBatch = \(b\) => \{\s*i
 check('owner CAN DELETE Balance batches (view + delete, no edit)', /const canDeleteBatch = \(b\) => \{\s*if \(!isViewOnly\(\)\) return true;/.test(src));
 check('Cmd+N on Balance restricted to business login', /state\.items\.balance && isViewOnly\(\)\) openBalanceModal\(\)/.test(src));
 
-console.log('\naccount switch — leaving a business (shared) session reloads cleanly (no stuck splash):');
-const pas = src.slice(src.indexOf('function performAccountSwitch'), src.indexOf('function performAccountSwitch') + 2200);
-check('performAccountSwitch handles __sharedMode by signing out + reloading', /if \(state\.__sharedMode\)/.test(pas) && /location\.reload\(\)/.test(pas));
+console.log('\naccount switch — passwordless session restore, with sign-out+reload fallback:');
+const pas = src.slice(src.indexOf('function performAccountSwitch'), src.indexOf('function performAccountSwitch') + 5200);
+check('switch tries passwordless session restore first', /stashed\.access_token && stashed\.refresh_token && !isOwnLocalBiz/.test(pas) && /restoreSession\(stashed\.access_token/.test(pas));
+check('switch falls back to sign-out + reload (shared)', /if \(state\.__sharedMode\)/.test(pas) && /location\.reload\(\)/.test(pas));
 check('shared switch awaits signOut before reload', /await Promise\.race/.test(pas));
+check('fallback pre-fills target email', /infos-pending-signin-email/.test(pas));
 
 console.log('\nview-only gating is driven by bizContext (so it behaves like owner business view):');
 check('isViewOnly() is true when bizContext set', /function isViewOnly\(\)\s*\{\s*return\s*!!state\.bizContext/.test(src));

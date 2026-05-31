@@ -420,7 +420,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '149.0.0';
+  const APP_VERSION = '153.0.0';
 
   // ---------- State ----------
   const state = {
@@ -665,6 +665,31 @@
   }
   function tagById(biz, tagId) { return biz?.tags.find(t => t.id === tagId); }
   function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]); }
+
+  // Robust clipboard copy. navigator.clipboard is unavailable in non-secure
+  // contexts and some mobile webviews, so fall back to a hidden textarea +
+  // execCommand('copy'). Shows a toast on success, a soft note on failure.
+  function copyText(text, label) {
+    text = String(text == null ? '' : text);
+    if (!text) return;
+    const ok = () => { try { toast(`${label || 'Value'} copied`); } catch {} try { haptic(); } catch {} };
+    const fallback = () => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed'; ta.style.top = '-1000px'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, text.length);
+        const done = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (done) ok(); else { try { toast('Press and hold to copy'); } catch {} }
+      } catch { try { toast('Press and hold to copy'); } catch {} }
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(ok).catch(fallback);
+      } else { fallback(); }
+    } catch { fallback(); }
+  }
 
   // The exact app logo (matches icons/icon.svg). `mono` renders the glyph only,
   // inheriting currentColor (used where the logo sits on a tinted background).
@@ -3162,6 +3187,8 @@
     try {
       const bs = document.getElementById('boot-splash'); if (bs) bs.remove();
     } catch {}
+    window.__bootRendered = true;
+    try { clearTimeout(window.__bootWatchdog); } catch {}
     if (!state.__switchInProgress && !isBootRestore) {
       showLoadingSplash(realBizName, { action: 'signing-in', subtitle: `Signing in to ${realBizName}`, color: biz.color || null });
     }
@@ -3183,6 +3210,8 @@
 
     // Go live: any change to the shared row re-hydrates this device.
     subscribeShared(biz.id);
+    // Stash this business's session tokens for passwordless account switching.
+    try { stashAccountSession(email, 'business', biz.id); } catch {}
 
     if (!state.__switchInProgress && !isBootRestore) {
       const shownName = realBizName;
@@ -3492,7 +3521,7 @@
         }
       } catch (e) { console.warn('pushSharedState failed:', e); }
     };
-    if (immediate) doPush(); else sharedSaveTimer = setTimeout(doPush, 900);
+    if (immediate) return doPush(); else sharedSaveTimer = setTimeout(doPush, 900);
   }
 
   // OWNER side: subscribe to live changes on every business the owner has shared
@@ -3716,6 +3745,9 @@
           btn.textContent = original; btn.disabled = false;
           return;
         }
+        // Stash this account's session tokens (NOT the password) so the user can
+        // switch back to it later with no password. Fire-and-forget.
+        try { stashAccountSession(email); } catch {}
         // Is this a business login (a member account linked to a shared
         // business)? If so, load the FULL editable app pointed at the shared
         // cloud row — not a special screen, and not view-only.
@@ -3791,6 +3823,7 @@
         persistAll();
         state.__nextSplashAction = authMode === 'signup' ? 'creating' : 'signing-in';
         login(displayName, email, null);
+        try { stashAccountSession(email, 'owner', null); } catch {}
         try { await Sync.pushNow(state); } catch {}
         btn.textContent = original; btn.disabled = false;
         return;
@@ -4601,6 +4634,54 @@
       );
       localStorage.setItem('infos-device-accounts', JSON.stringify(filtered));
     } catch {}
+    // Also drop any stashed session for this email so a forgotten account can't
+    // be silently switched back into.
+    forgetAccountSession(email);
+  }
+
+  // --- Multi-account session stash (passwordless switching) --------------------
+  // We store each signed-in account's Supabase session tokens (NOT the password)
+  // keyed by email, so switching accounts can restore the session with no
+  // password — exactly how multi-account switching works in mainstream apps.
+  // SECURITY: refresh tokens live in localStorage (as Supabase already does for
+  // the active session). Anyone with physical device access could reuse them;
+  // that is the standard trade-off for "stay signed in / switch accounts". They
+  // are device-local only — never synced to the cloud (tokens are device- and
+  // session-specific and short-lived, so cloud storage would be useless and less
+  // safe).
+  const ACCOUNT_SESSIONS_KEY = 'infos-account-sessions';
+  function getAccountSessions() {
+    try { return JSON.parse(localStorage.getItem(ACCOUNT_SESSIONS_KEY) || '{}') || {}; }
+    catch { return {}; }
+  }
+  async function stashAccountSession(email, kind, bizId) {
+    if (!email || !(window.InfosSupabase && window.InfosSupabase.Auth && window.InfosSupabase.Auth.getSessionTokens)) return;
+    try {
+      const tokens = await window.InfosSupabase.Auth.getSessionTokens();
+      if (!tokens) return;
+      const all = getAccountSessions();
+      all[email.toLowerCase()] = {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        kind: kind || 'owner',
+        bizId: bizId || null,
+        savedAt: Date.now()
+      };
+      localStorage.setItem(ACCOUNT_SESSIONS_KEY, JSON.stringify(all));
+    } catch {}
+  }
+  function getStashedSession(email) {
+    if (!email) return null;
+    const all = getAccountSessions();
+    return all[email.toLowerCase()] || null;
+  }
+  function forgetAccountSession(email) {
+    if (!email) return;
+    try {
+      const all = getAccountSessions();
+      delete all[email.toLowerCase()];
+      localStorage.setItem(ACCOUNT_SESSIONS_KEY, JSON.stringify(all));
+    } catch {}
   }
 
   // Remove a recent sign-in (e.g. from "forget" button on the chip).
@@ -4809,6 +4890,70 @@
 
   // Show a 2-second splash, then complete the switch.
   function performAccountSwitch({ email, kind, bizId }) {
+    // PASSWORDLESS SWITCH: if we have a stashed Supabase session for the target
+    // account, restore it and reload — boot then enters that account with no
+    // password. This is the multi-account switch the picker promises. An owner
+    // switching to one of THEIR OWN local businesses is just a view change
+    // (handled further below), so skip the session path for that case.
+    const stashed = getStashedSession(email);
+    const isOwnLocalBiz = kind === 'business' && !!(bizById(bizId) ||
+      (state.businesses || []).some(x => x && x.email && x.email.toLowerCase() === (email || '').toLowerCase()));
+    if (stashed && stashed.access_token && stashed.refresh_token && !isOwnLocalBiz &&
+        window.InfosSupabase && window.InfosSupabase.Auth && window.InfosSupabase.Auth.restoreSession) {
+      const devName = (getDeviceAccounts().find(e =>
+        e.email && e.email.toLowerCase() === (email || '').toLowerCase() && (e.kind || 'owner') === (kind || 'owner')) || {}).name;
+      const dispName = capitalizeFirst(devName || (email ? email.split('@')[0] : (kind === 'business' ? 'Business' : 'Account')));
+      showSwitchSplash(dispName, email || '', kind, null);
+      state.__switchInProgress = true;
+      (async () => {
+        // Re-stash the CURRENT account's (possibly rotated) tokens first, so
+        // switching back to it later still works without a password.
+        try {
+          const curEmail = state.__sharedEmail || (state.user && state.user.email);
+          if (curEmail && curEmail.toLowerCase() !== (email || '').toLowerCase()) {
+            await stashAccountSession(curEmail, state.__sharedMode ? 'business' : 'owner', state.__sharedBusinessId || null);
+          }
+        } catch {}
+        // Flush any pending shared edit before leaving (bounded so it can't hang
+        // the switch), then tear down realtime.
+        try {
+          if (state.__sharedMode) {
+            await Promise.race([
+              Promise.resolve(pushSharedState(true)),
+              new Promise(r => setTimeout(r, 2500))
+            ]);
+          }
+        } catch {}
+        try { if (sharedRealtimeUnsub) sharedRealtimeUnsub(); } catch {}
+        sharedRealtimeUnsub = null;
+        try { clearTimeout(sharedSaveTimer); } catch {}
+        try {
+          await window.InfosSupabase.Auth.restoreSession(stashed.access_token, stashed.refresh_token);
+          // The active Supabase session is now the target account. Reload; boot
+          // reads the restored session and enters the account cleanly.
+          location.reload();
+        } catch (e) {
+          // Token expired/invalid → drop it and fall back to a password sign-in
+          // with the email pre-filled (never leave the user stuck).
+          console.warn('Session restore failed; falling back to password sign-in:', e);
+          forgetAccountSession(email);
+          try { localStorage.setItem('infos-pending-signin-email', email || ''); } catch {}
+          try {
+            if (window.InfosSupabase && window.InfosSupabase.Auth) {
+              await Promise.race([window.InfosSupabase.Auth.signOut(), new Promise(r => setTimeout(r, 2000))]);
+            }
+          } catch {}
+          try {
+            Object.keys(localStorage).forEach(k => {
+              if (/^sb-.*-auth-token$/.test(k) || /supabase\.auth\.token/.test(k)) localStorage.removeItem(k);
+            });
+          } catch {}
+          location.reload();
+        }
+      })();
+      return;
+    }
+
     // If we're currently in a BUSINESS (shared cloud) session, we cannot hot-swap
     // identities in place — the business holds a live Supabase session and the
     // owner/other account needs its own real sign-in. Sign out cleanly and reload;
@@ -4839,6 +4984,9 @@
             if (/^sb-.*-auth-token$/.test(k) || /supabase\.auth\.token/.test(k)) localStorage.removeItem(k);
           });
         } catch {}
+        // No stashed session for the target → pre-fill its email so the user just
+        // types the password after reload (instead of landing on a blank login).
+        try { localStorage.setItem('infos-pending-signin-email', email || ''); } catch {}
         location.reload();
       })();
       return;
@@ -5468,11 +5616,7 @@
     // Copy-link buttons
     c.querySelectorAll('.copy-link-btn[data-copy]').forEach(btn => btn.onclick = (e) => {
       e.stopPropagation();
-      const text = btn.dataset.copy;
-      const label = btn.dataset.copyLabel || 'Link';
-      navigator.clipboard?.writeText(text);
-      toast(`${label} copied`);
-      haptic();
+      copyText(btn.dataset.copy, btn.dataset.copyLabel || 'Link');
     });
     c.querySelectorAll('[data-pw-show]').forEach(btn => btn.onclick = (e) => {
       e.stopPropagation();
@@ -5603,8 +5747,7 @@
     `);
     $('#m-close').onclick = closeModal;
     document.querySelectorAll('.long-press-detail [data-copy]').forEach(btn => btn.onclick = () => {
-      const v = btn.dataset.copy;
-      navigator.clipboard?.writeText(v).then(() => toast(`Copied ${btn.dataset.copyLabel || 'value'}`));
+      copyText(btn.dataset.copy, btn.dataset.copyLabel || 'Value');
     });
     const lpPhoto = $('#lp-photo');
     if (lpPhoto) lpPhoto.onclick = () => { closeModal(); openPhotoLightbox(it.photo, it.title || it.name); };
@@ -6349,7 +6492,7 @@
       <div class="info-pill" style="margin-bottom:20px;">
         <div class="section-label" style="margin-bottom:10px;">Sign-in credentials</div>
         <div style="display:flex;flex-direction:column;gap:8px;font-size:13px;">
-          <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-mail" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Email</span><strong style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${esc(b.email || '—')}</strong></div>
+          <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-mail" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Email</span><strong style="color:var(--text-primary);font-family:var(--font-mono);font-weight:500;">${esc(b.email || '—')}</strong>${b.email ? `<button class="btn-icon copy-link-btn" data-copy="${esc(b.email)}" data-copy-label="Email" style="padding:2px;margin-left:auto;" aria-label="Copy email" title="Copy email"><i class="ti ti-copy" style="font-size:13px;"></i></button>` : ''}</div>
           <div style="display:flex;align-items:center;gap:8px;"><i class="ti ti-lock" style="font-size:13px;color:var(--text-secondary);"></i><span style="width:64px;color:var(--text-secondary);">Password</span>${(() => {
             const __pw = bizPasswordValue(b);
             if (!__pw) {
@@ -6539,6 +6682,12 @@
       ${!isViewOnly() ? `<button class="btn-danger" id="biz-delete" style="font-size:12px;font-weight:500;"><i class="ti ti-trash" style="font-size:13px;vertical-align:-2px;"></i> Delete business</button>` : ''}
     `;
     if (!isViewOnly()) $('#biz-edit').onclick = () => openBusinessModal(b.id);
+    // Bind copy buttons (email + password). This view previously bound only the
+    // password toggle, so the copy buttons did nothing.
+    c.querySelectorAll('.copy-link-btn[data-copy]').forEach(btn => btn.onclick = (e) => {
+      e.stopPropagation();
+      copyText(btn.dataset.copy, btn.dataset.copyLabel || 'Value');
+    });
     const pwToggleBtn = $('#biz-pw-toggle');
     if (pwToggleBtn) pwToggleBtn.onclick = () => {
       const el = $('#biz-pw'); if (!el) return;
@@ -6908,8 +7057,7 @@
     // Copy buttons
     modalEl.querySelectorAll('.copy-link-btn[data-copy]').forEach(btn => btn.onclick = (e) => {
       e.stopPropagation();
-      navigator.clipboard?.writeText(btn.dataset.copy);
-      toast(`${btn.dataset.copyLabel || 'Link'} copied`); haptic();
+      copyText(btn.dataset.copy, btn.dataset.copyLabel || 'Link');
     });
     // Password show/hide
     modalEl.querySelectorAll('[data-pw-show]').forEach(btn => btn.onclick = (e) => {
@@ -7031,9 +7179,7 @@
     // Copy buttons
     c.querySelectorAll('.copy-link-btn[data-copy]').forEach(btn => btn.onclick = (e) => {
       e.stopPropagation();
-      navigator.clipboard?.writeText(btn.dataset.copy);
-      toast(`${btn.dataset.copyLabel || 'Link'} copied`);
-      haptic();
+      copyText(btn.dataset.copy, btn.dataset.copyLabel || 'Link');
     });
     // Password show/hide
     c.querySelectorAll('[data-pw-show]').forEach(btn => btn.onclick = (e) => {
@@ -8072,6 +8218,27 @@
         screenAuth.classList.remove('screen-active');
         screenMain.classList.add('screen-active');
         showSkeleton(4);
+        // WATCHDOG: guarantee we never sit on the skeleton forever. If boot hasn't
+        // rendered real content within 12s (some unforeseen stall beyond the
+        // per-call timeouts), force a render from cached state, or fall back to
+        // the auth screen if there's no usable session.
+        try { clearTimeout(window.__bootWatchdog); } catch {}
+        window.__bootWatchdog = setTimeout(() => {
+          if (window.__bootRendered) return;
+          try {
+            if (state.user) {
+              window.__bootRendered = true;
+              screenAuth.classList.remove('screen-active');
+              screenMain.classList.add('screen-active');
+              buildNav(); updateActiveBizDisplay();
+              setActive(state.currentTab || 'notices');
+            } else {
+              screenMain.classList.remove('screen-active');
+              screenAuth.classList.add('screen-active');
+              try { renderRecentSignins(); } catch {}
+            }
+          } catch (e) { console.warn('boot watchdog render failed:', e); }
+        }, 12000);
       }
     } catch {}
     // Wait for Storage to be ready, then load prefs into cachedPrefs. Both calls
@@ -8232,9 +8399,20 @@
       try { await window.InfosSupabase.ready; } catch {}
     }
     if (window.InfosSupabase && window.InfosSupabase.configured()) {
+      const __BOOT_TIMEOUT = Symbol('boot-timeout');
+      const raceT = (p, ms) => Promise.race([
+        Promise.resolve(p).catch(() => __BOOT_TIMEOUT),
+        new Promise(r => setTimeout(() => r(__BOOT_TIMEOUT), ms))
+      ]);
       try {
-        const sbUser = await window.InfosSupabase.Auth.currentUser();
-        if (sbUser) {
+        const sbUser = await raceT(window.InfosSupabase.Auth.currentUser(), 6000);
+        if (sbUser === __BOOT_TIMEOUT) {
+          // Couldn't confirm the session in time (slow/stalled network). Do NOT
+          // clear the session or sit on the skeleton forever — fall through and
+          // render with cached local state; sync reconciles once the network is
+          // back. This is the fix for "keeps loading" after a switch/reload.
+          console.warn('Boot: session check timed out — rendering cached state');
+        } else if (sbUser) {
           // HARD GATE: if this Supabase session is a BUSINESS LOGIN (member),
           // load the shared app and never touch the owner data path. Compute
           // member status from the user we ALREADY fetched (no extra round-trip),
@@ -8248,7 +8426,7 @@
             }
             // Member flag but no business id — one fallback table lookup.
             let biz = null;
-            try { biz = await window.InfosSupabase.Auth.getMemberBusiness(); } catch {}
+            try { const r = await raceT(window.InfosSupabase.Auth.getMemberBusiness(), 5000); if (r && r !== __BOOT_TIMEOUT) biz = r; } catch {}
             if (biz) { await enterSharedBusiness(biz, sbUser.email || '', { bootRestore: true }); return; }
             // Can't resolve a business → don't degrade to owner; clean sign-in.
             try { await window.InfosSupabase.Auth.signOut(); } catch {}
@@ -8258,18 +8436,18 @@
           }
           // Older member accounts (no metadata) — check the membership table too.
           try {
-            const biz = await window.InfosSupabase.Auth.getMemberBusiness();
-            if (biz) {
+            const biz = await raceT(window.InfosSupabase.Auth.getMemberBusiness(), 5000);
+            if (biz && biz !== __BOOT_TIMEOUT) {
               hideBootSplash();
               await enterSharedBusiness(biz, sbUser.email || '', { bootRestore: true });
               return;
             }
           } catch (memErr) { console.warn('Business-login bootstrap check failed:', memErr); }
           try { const sub = document.getElementById('boot-splash-sub'); if (sub) sub.textContent = 'Syncing your data…'; } catch {}
-          await window.Sync.enable('supabase');
+          await raceT(window.Sync.enable('supabase'), 5000);
           state.syncAdapter = 'supabase';
-          const remote = await window.Sync.pullNow();
-          if (remote && typeof remote === 'object') mergeCloudState(remote);
+          const remote = await raceT(window.Sync.pullNow(), 8000);
+          if (remote && remote !== __BOOT_TIMEOUT && typeof remote === 'object') mergeCloudState(remote);
           // Ensure a local mirror of the owner so the app renders signed-in.
           const email = (sbUser.email || '').toLowerCase();
           const nm = (sbUser.user_metadata && sbUser.user_metadata.name) || (email ? email.split('@')[0] : 'You');
@@ -8278,6 +8456,8 @@
             state.accounts.push({ email, name: nm, cloud: true, createdAt: Date.now() });
           }
           if (!state.user && email) state.user = { name: nm, email };
+          // Stash this owner's session for passwordless account switching.
+          try { stashAccountSession(email, 'owner', null); } catch {}
           // OWNER: go live on any shared businesses so members' edits appear.
           try { await startOwnerSharedSync(); } catch (e) { console.warn('owner shared sync start failed', e); }
         } else {
@@ -8315,6 +8495,8 @@
       headerBadge.hidden = !state.bizContext;
       screenAuth.classList.remove('screen-active');
       screenMain.classList.add('screen-active');
+      window.__bootRendered = true;
+      try { clearTimeout(window.__bootWatchdog); } catch {}
       buildNav(); updateActiveBizDisplay();
       let restoreTab = state.currentTab;
       if (!restoreTab) { try { restoreTab = localStorage.getItem('infos-last-tab'); } catch {} }
@@ -8347,6 +8529,8 @@
         }
       }
     } else {
+      window.__bootRendered = true;
+      try { clearTimeout(window.__bootWatchdog); } catch {}
       // Capture any share-target URL params so they survive sign-in
       handleShareTarget();
       if (!state.onboarded) {
