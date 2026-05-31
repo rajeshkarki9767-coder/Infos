@@ -432,7 +432,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '174.0.0';
+  const APP_VERSION = '175.0.0';
 
   // ---------- State ----------
   const state = {
@@ -3865,8 +3865,19 @@
   ['#auth-email','#auth-password','#auth-name'].forEach(s => $(s).addEventListener('keydown', e => { if (e.key === 'Enter') authSubmit(); }));
 
   // Terms & Privacy preview modals from auth screen
-  $('#show-terms').onclick = (e) => { e.preventDefault(); openTermsModal(); };
-  $('#show-privacy-link').onclick = (e) => { e.preventDefault(); openPrivacyPreviewModal(); };
+  // Open the standalone, hosted legal pages (the canonical versions used for the
+  // Play Store listing). If opening a new tab is blocked (rare in-app webviews),
+  // fall back to the in-app modal so the text is still reachable.
+  $('#show-terms').onclick = (e) => {
+    e.preventDefault();
+    const w = window.open('terms.html', '_blank', 'noopener');
+    if (!w) openTermsModal();
+  };
+  $('#show-privacy-link').onclick = (e) => {
+    e.preventDefault();
+    const w = window.open('privacy.html', '_blank', 'noopener');
+    if (!w) openPrivacyPreviewModal();
+  };
 
   // Popup shown right after a successful signup. Uses the standard modal (which
   // has the blurred backdrop). Tells the user to confirm via email, then sign in.
@@ -7477,6 +7488,9 @@
         <div class="guide-section">
           <h3 class="guide-h3">Your rights</h3>
           <p class="guide-p">Export your data any time, or permanently delete your account and its backend data from Settings.</p>
+        </div>
+        <div class="guide-section">
+          <p class="guide-p" style="font-size:13px;"><a href="privacy.html" target="_blank" rel="noopener" style="color:var(--accent-text);">Full Privacy Policy</a> · <a href="terms.html" target="_blank" rel="noopener" style="color:var(--accent-text);">Terms &amp; Conditions</a></p>
         </div>
       </div>`;
     }

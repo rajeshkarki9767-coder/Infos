@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy Policy — Infos</title>
+<meta name="description" content="Privacy Policy for the Infos app — how your data is stored, synced, and protected.">
+<link rel="icon" href="icons/icon-192.png">
+<style>
+  :root{
+    --bg:#FAFAF7; --surface:#FFFFFF; --text:#1A1A18; --text-2:#5F5E5A; --text-3:#888780;
+    --accent:#378ADD; --border:rgba(0,0,0,0.10); --shadow:0 1px 3px rgba(0,0,0,0.06),0 8px 24px rgba(0,0,0,0.05);
+    --font:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,sans-serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#1A1A18; --surface:#242421; --text:#F1EFE8; --text-2:#B4B2A9; --text-3:#888780;
+      --accent:#5AA0E8; --border:rgba(255,255,255,0.10); --shadow:0 1px 3px rgba(0,0,0,0.4),0 8px 24px rgba(0,0,0,0.3); }
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html{-webkit-text-size-adjust:100%;}
+  body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.65;
+    font-size:16px;padding:0 20px 80px;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:720px;margin:0 auto;}
+  header{display:flex;align-items:center;gap:14px;padding:32px 0 28px;border-bottom:1px solid var(--border);margin-bottom:36px;}
+  .logo{width:44px;height:44px;border-radius:12px;flex:none;}
+  .brand{font-size:18px;font-weight:700;letter-spacing:-0.01em;}
+  .brand span{display:block;font-size:12px;font-weight:500;color:var(--text-3);letter-spacing:0;}
+  h1{font-size:30px;font-weight:800;letter-spacing:-0.02em;margin-bottom:8px;line-height:1.15;}
+  .lead{color:var(--text-2);font-size:16px;margin-bottom:6px;}
+  .updated{color:var(--text-3);font-size:13px;margin-bottom:36px;}
+  h2{font-size:19px;font-weight:700;letter-spacing:-0.01em;margin:34px 0 10px;padding-top:6px;}
+  h2:first-of-type{margin-top:0;}
+  p{color:var(--text-2);margin-bottom:14px;}
+  p strong, li strong{color:var(--text);font-weight:600;}
+  ul{margin:0 0 16px;padding-left:22px;color:var(--text-2);}
+  li{margin-bottom:7px;}
+  a{color:var(--accent);text-decoration:none;}
+  a:hover{text-decoration:underline;}
+  .callout{background:var(--surface);border:1px solid var(--border);border-radius:14px;
+    padding:16px 18px;margin:18px 0;box-shadow:var(--shadow);}
+  .callout p:last-child{margin-bottom:0;}
+  .tag{display:inline-block;font-size:12px;font-weight:600;color:var(--accent);
+    background:color-mix(in srgb,var(--accent) 12%,transparent);padding:3px 10px;border-radius:999px;margin-bottom:14px;}
+  footer{margin-top:48px;padding-top:24px;border-top:1px solid var(--border);
+    color:var(--text-3);font-size:13px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;}
+  footer a{color:var(--text-2);font-weight:500;}
+  @media(max-width:480px){ body{font-size:15px;padding:0 16px 64px;} h1{font-size:25px;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <svg class="logo" viewBox="0 0 512 512" fill="none" aria-hidden="true"><rect width="512" height="512" rx="128" fill="#378ADD"/><rect x="234" y="148" width="44" height="44" rx="11" fill="#fff"/><rect x="206" y="220" width="100" height="20" rx="10" fill="#fff" opacity="0.55"/><rect x="206" y="268" width="100" height="96" rx="18" fill="#fff"/><rect x="234" y="296" width="44" height="12" rx="6" fill="#378ADD"/><rect x="234" y="324" width="44" height="12" rx="6" fill="#378ADD"/></svg>
+    <div class="brand">Infos<span>Business information manager</span></div>
+  </header>
+
+  <span class="tag">Privacy Policy</span>
+  <h1>Privacy Policy</h1>
+  <p class="lead">This policy explains what information Infos ("the app", "we") collects, how it is stored and used, and the choices you have. It applies to all users of the app, in every country where it is available.</p>
+  <p class="updated">Last updated: 1 June 2026</p>
+
+  <h2>1. Who this applies to</h2>
+  <p>Infos is a tool for managing business information — businesses, items, balances, tags, attachments, and related notes. This policy covers the app's owner accounts and the read‑only "business sign‑in" accounts the owner creates.</p>
+
+  <h2>2. What we collect</h2>
+  <p>We only process the information you choose to put into the app, plus the minimum needed to run your account:</p>
+  <ul>
+    <li><strong>Account details</strong> — the email address and password you sign up with. Passwords are never stored by us in readable form (see "Authentication").</li>
+    <li><strong>Your content</strong> — the businesses, items, balances, tags, preferences, and attachments you create.</li>
+    <li><strong>Technical data</strong> — basic information required for sync and security (such as session tokens and timestamps).</li>
+  </ul>
+  <p>We do <strong>not</strong> collect advertising identifiers, contacts, location, or device sensors.</p>
+
+  <h2>3. How your data is stored &amp; synced</h2>
+  <p>When you sign in with a cloud account, your data is stored on our backend provider, <strong>Supabase</strong>, so it can sync across your devices. If you use the app without a cloud account, your data stays <strong>locally on your device</strong> and is not transmitted to us.</p>
+
+  <h2>4. Authentication &amp; security</h2>
+  <p>Sign‑in is handled by Supabase Auth. Your password is securely hashed by the provider and is <strong>never stored in plain text</strong> on the server. Sessions use short‑lived tokens that refresh automatically.</p>
+
+  <h2>5. Data isolation</h2>
+  <p>Database row‑level security restricts access so that each account can only read and write its own data. <strong>One account cannot access another account's data.</strong></p>
+
+  <h2>6. Business sign‑in accounts</h2>
+  <p>When someone signs in with a business's credentials, they receive <strong>read‑only</strong> access to only the items assigned to that business. They cannot see other businesses, unassigned items, or any owner settings.</p>
+
+  <h2>7. What we don't do</h2>
+  <p>We do not sell your data, rent it, or use it for advertising or profiling. We do not share your content with third parties except the infrastructure provider (Supabase) strictly to operate the service.</p>
+
+  <h2>8. Your rights &amp; choices</h2>
+  <ul>
+    <li><strong>Export</strong> — you can export all of your data at any time from Settings.</li>
+    <li><strong>Delete</strong> — you can permanently delete your account and its backend data from Settings. Deletion is irreversible.</li>
+    <li><strong>Access &amp; correction</strong> — your data is visible and editable within the app at any time.</li>
+  </ul>
+
+  <h2>9. Data retention</h2>
+  <p>We keep your data for as long as your account exists. When you delete your account, your associated backend data is removed. Locally stored data is removed when you clear it on the device or uninstall the app.</p>
+
+  <h2>10. Children</h2>
+  <p>Infos is intended for business use by adults and is not directed to children under 13 (or the minimum age of digital consent in your country). We do not knowingly collect data from children.</p>
+
+  <h2>11. International users</h2>
+  <p>The app is available to users in all countries. By using it, you understand your data may be processed on infrastructure located in other regions, subject to the protections described here.</p>
+
+  <h2>12. Changes to this policy</h2>
+  <p>We may update this policy from time to time. Material changes will be reflected by updating the "Last updated" date above. Continued use after changes means you accept the revised policy.</p>
+
+  <h2>13. Contact</h2>
+  <div class="callout">
+    <p>For privacy questions or data requests, contact us at <strong>[YOUR-CONTACT-EMAIL]</strong>.</p>
+  </div>
+
+  <footer>
+    <span>© 2026 Infos</span>
+    <a href="terms.html">Terms &amp; Conditions</a>
+    <a href="index.html">Back to app</a>
+  </footer>
+</div>
+</body>
+</html>

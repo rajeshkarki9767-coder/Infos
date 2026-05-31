@@ -1,5 +1,5 @@
-const CACHE_VERSION = 'infos-v174.0.0';
-const RUNTIME_CACHE = 'infos-runtime-v174';
+const CACHE_VERSION = 'infos-v175.0.0';
+const RUNTIME_CACHE = 'infos-runtime-v175';
 
 const PRECACHE_URLS = [
   '/',
@@ -14,6 +14,8 @@ const PRECACHE_URLS = [
   '/supabase/shared-slice.js',
   '/supabase/adapter.js',
   '/manifest.json',
+  '/privacy.html',
+  '/terms.html',
   '/icons/icon.svg',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
