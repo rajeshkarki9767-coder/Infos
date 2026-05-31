@@ -352,7 +352,27 @@
         slice = Slice.buildSharedSlice(state, localId, cloudId);
         sig = stableStringify(slice.items || {}) + '|' + stableStringify(slice.business || {});
       } catch (e) { continue; }
-      if (window.__ownerPushSig[cloudId] !== sig) pending.push({ localId, cloudId, slice, sig });
+      if (window.__ownerPushSig[cloudId] !== sig) {
+        // DIAGNOSTIC: capture WHERE the old vs new signature diverges so we can
+        // see which field is mutating and driving the re-push. Logged to the
+        // in-app Sync Diagnostics panel.
+        try {
+          const prev = window.__ownerPushSig[cloudId];
+          if (prev != null) {
+            let i = 0; const n = Math.min(prev.length, sig.length);
+            while (i < n && prev[i] === sig[i]) i++;
+            window.__infosSyncLog = window.__infosSyncLog || [];
+            window.__infosSyncLog.push({
+              t: Date.now(), via: 'owner-push-DIFF', biz: cloudId,
+              at: i,
+              old: prev.slice(Math.max(0, i - 30), i + 50),
+              new: sig.slice(Math.max(0, i - 30), i + 50)
+            });
+            if (window.__infosSyncLog.length > 40) window.__infosSyncLog.shift();
+          }
+        } catch (e) {}
+        pending.push({ localId, cloudId, slice, sig });
+      }
     }
     if (!pending.length) {
       // Nothing changed — no upload, no indicator churn.
@@ -432,7 +452,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '162.0.0';
+  const APP_VERSION = '163.0.0';
 
   // ---------- State ----------
   const state = {
@@ -7450,6 +7470,7 @@
         if (e.appliedV !== undefined) bits.push('appliedV=' + e.appliedV);
         if (e.newer !== undefined) bits.push(e.newer ? 'NEWER' : 'same-v');
         if (e.err) bits.push('ERR:' + e.err);
+        if (e.via === 'owner-push-DIFF') { bits.push('@' + e.at); bits.push('old=…' + (e.old || '')); bits.push('new=…' + (e.new || '')); }
         const isErr = !!e.err || /ERROR/.test(e.via || '');
         return `<div style="font-family:var(--font-mono);font-size:11px;padding:5px 0;border-bottom:1px solid var(--border-soft);color:${isErr ? 'var(--danger-fg)' : 'var(--text-secondary)'};"><span style="color:var(--text-tertiary);">${fmt(e.t)}</span> · ${esc(bits.join(' · '))}</div>`;
       }).join('') : `<div style="font-size:12px;color:var(--text-tertiary);padding:8px 0;">No sync activity recorded yet. Leave this open ~10s.</div>`;
