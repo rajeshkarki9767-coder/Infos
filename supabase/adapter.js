@@ -451,12 +451,13 @@
           .select('data, version, updated_at')
           .eq('business_cloud_id', businessCloudId)
           .maybeSingle();
-        // Full data fetch budget. Kept tight (4s) so a slow/stalled fetch can't
-        // leave boot or a login sitting on the skeleton; callers fall back to an
-        // empty slice and reconcile via the realtime/poll path afterwards.
+        // Full data fetch budget. The data blob can be large (embedded logos /
+        // photo attachments), so this needs real headroom — a tight ceiling made
+        // every poll time out and sync never delivered. Boot is bounded separately
+        // (watchdog + cached-state fallback), so a longer ceiling here is safe.
         const result = _setTimeout ? await Promise.race([
           query,
-          new Promise(resolve => _setTimeout(() => resolve({ data: null, error: null, __timedOut: true }), 4000))
+          new Promise(resolve => _setTimeout(() => resolve({ data: null, error: null, __timedOut: true }), 15000))
         ]) : await query;
         if (result && result.__timedOut) { try { console.warn('loadSharedState timed out'); } catch {} return null; }
         const { data, error } = result;
