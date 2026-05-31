@@ -452,7 +452,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '167.0.0';
+  const APP_VERSION = '169.0.0';
 
   // ---------- State ----------
   const state = {
@@ -7464,8 +7464,15 @@
       </div>
       <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border);font-size:12px;color:var(--text-tertiary);">Infos v${esc(APP_VERSION)}</div>
     </div>`;
+    wireSyncDiagnostics();
+  }
+
+  // Wires the Sync Diagnostics button + live panel. Reused by the Settings→About
+  // sub-tab and the standalone About screen.
+  function wireSyncDiagnostics() {
     const diagBtn = $('#about-sync-diag');
     const diagPanel = $('#sync-diag-panel');
+    if (!diagBtn || !diagPanel) return;
     let diagTimer = null;
     function renderDiag() {
       if (!diagPanel) return;
@@ -7514,7 +7521,7 @@
         setTimeout(renderDiag, 600);
       };
     }
-    if (diagBtn) diagBtn.onclick = () => {
+    diagBtn.onclick = () => {
       const open = diagPanel.style.display !== 'none';
       if (open) { diagPanel.style.display = 'none'; if (diagTimer) { clearInterval(diagTimer); diagTimer = null; } }
       else { diagPanel.style.display = 'block'; renderDiag(); diagTimer = setInterval(renderDiag, 1500); }
@@ -8110,6 +8117,10 @@
           <svg viewBox="0 0 512 512" width="56" height="56" style="border-radius:14px;"><rect x="0" y="0" width="512" height="512" rx="128" fill="var(--accent-solid)"/><rect x="234" y="148" width="44" height="44" rx="11" fill="#FFFFFF"/><rect x="206" y="220" width="100" height="20" rx="10" fill="#FFFFFF" opacity="0.55"/><rect x="206" y="268" width="100" height="96" rx="18" fill="#FFFFFF"/><rect x="234" y="296" width="44" height="12" rx="6" fill="var(--accent-solid)"/><rect x="234" y="324" width="44" height="12" rx="6" fill="var(--accent-solid)"/></svg>
           <div><div style="font-size:20px;font-weight:700;color:var(--text-primary);">Infos</div><div style="font-size:13px;color:var(--text-secondary);">A Progressive Web App for managing businesses</div></div>
         </div>
+        <div class="settings-section" style="margin-bottom:18px;">
+          <button type="button" class="btn-outline btn-block" id="about-sync-diag"><i class="ti ti-activity" style="font-size:14px;vertical-align:-2px;margin-right:8px;"></i>Sync Diagnostics</button>
+          <div id="sync-diag-panel" style="display:none;margin-top:12px;"></div>
+        </div>
         ${guideHTML}
       `;
     }
@@ -8290,7 +8301,7 @@
   }
 
   function wireAbout(c) {
-    // Static content; nothing to wire
+    wireSyncDiagnostics();
   }
 
   // ---------- Install banner ----------
