@@ -333,22 +333,45 @@
     const Slice = window.InfosSharedSlice;
     let pushedAny = false;
     let anyFailed = false;
-    try { if (window.__InfosSyncUploading) window.__InfosSyncUploading(); } catch {}
+    // CHANGE DETECTION: build each business's slice and compare a signature to the
+    // last successfully-pushed one. The owner poll calls this every ~10s as a
+    // self-heal; without this guard it re-uploaded every slice each time, which
+    // (a) flashed the "Syncing" pill for nothing and (b) bumped the cloud version,
+    // triggering needless re-renders on the members' side. We only upload — and
+    // only show the indicator — for businesses whose content actually changed.
+    window.__ownerPushSig = window.__ownerPushSig || {};
+    const pending = [];
     for (const localId of Object.keys(state.bizCloudMap)) {
       const cloudId = state.bizCloudMap[localId];
       if (!cloudId || !bizById(localId)) continue;
+      let slice, sig;
       try {
-        const slice = Slice.buildSharedSlice(state, localId, cloudId);
-        const expected = (state.bizCloudVersions && state.bizCloudVersions[cloudId]) || 0;
-        const v = await window.InfosSupabase.adapter.saveSharedState(cloudId, slice, expected);
+        slice = Slice.buildSharedSlice(state, localId, cloudId);
+        sig = JSON.stringify(slice.items || {}) + '|' + JSON.stringify(slice.business || {});
+      } catch (e) { continue; }
+      if (window.__ownerPushSig[cloudId] !== sig) pending.push({ localId, cloudId, slice, sig });
+    }
+    if (!pending.length) {
+      // Nothing changed — no upload, no indicator churn.
+      window.__ownerPushInflight = false;
+      if (window.__ownerPushQueued) { window.__ownerPushQueued = false; setTimeout(() => pushOwnerSharedBusinesses(), 50); }
+      return;
+    }
+    try { if (window.__InfosSyncUploading) window.__InfosSyncUploading(); } catch {}
+    for (const p of pending) {
+      try {
+        const expected = (state.bizCloudVersions && state.bizCloudVersions[p.cloudId]) || 0;
+        const v = await window.InfosSupabase.adapter.saveSharedState(p.cloudId, p.slice, expected);
         if (!state.bizCloudVersions) state.bizCloudVersions = {};
-        state.bizCloudVersions[cloudId] = v;
+        state.bizCloudVersions[p.cloudId] = v;
+        // Record the signature ONLY on success, so a failed push is retried next time.
+        window.__ownerPushSig[p.cloudId] = p.sig;
         pushedAny = true;
       } catch (e) {
         anyFailed = true;
         try {
           window.__infosSyncLog = window.__infosSyncLog || [];
-          window.__infosSyncLog.push({ t: Date.now(), pushFail: String(e && e.message || e), biz: cloudId });
+          window.__infosSyncLog.push({ t: Date.now(), pushFail: String(e && e.message || e), biz: p.cloudId });
           if (window.__infosSyncLog.length > 30) window.__infosSyncLog.shift();
         } catch (_) {}
       }
@@ -397,7 +420,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '146.0.0';
+  const APP_VERSION = '149.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2994,7 +3017,10 @@
       const k = e.email.toLowerCase() + '|' + (e.kind || 'owner');
       const existing = byKey.get(k);
       if (!existing || (e.lastSignIn || 0) > (existing.lastSignIn || 0)) {
-        byKey.set(k, { email: e.email, name: e.name || e.email, kind: e.kind || 'owner', bizId: e.bizId || null, lastSignIn: e.lastSignIn || 0 });
+        byKey.set(k, { email: e.email, name: e.name || e.email, kind: e.kind || 'owner', bizId: e.bizId || null, color: e.color || (existing && existing.color) || null, logo: e.logo || (existing && existing.logo) || null, lastSignIn: e.lastSignIn || 0 });
+      } else if (existing) {
+        if (!existing.color && e.color) existing.color = e.color;
+        if (!existing.logo && e.logo) existing.logo = e.logo;
       }
     }
     (state.recentSignins || []).forEach(consider);
@@ -3007,12 +3033,12 @@
     }
     wrap.hidden = false;
     list.innerHTML = items.map(it => {
-      const initial = (it.name || it.email).charAt(0).toUpperCase();
       const kindLabel = it.kind === 'business' ? 'Business' : 'Owner';
+      const dispName = capitalizeFirst(it.name || (it.email ? it.email.split('@')[0] : ''));
       return `<button type="button" class="recent-signin-chip" data-signin-email="${esc(it.email)}">
-        <span class="recent-avatar recent-avatar-${it.kind}">${esc(initial)}</span>
+        ${switchAccountAvatarHTML(it)}
         <span class="recent-meta">
-          <span class="recent-name">${esc(it.name || it.email)}</span>
+          <span class="recent-name">${esc(dispName)}</span>
           <span class="recent-sub">${kindLabel} · ${esc(it.email)}</span>
         </span>
         <span class="recent-forget" data-forget-email="${esc(it.email)}" role="button" aria-label="Forget"><i class="ti ti-x"></i></span>
@@ -3241,6 +3267,33 @@
         window.__sharedRefreshRetry = setTimeout(() => { try { applySharedSnapshotDirect(cloudBusinessId, snap); } catch {} }, 1000);
         return;
       }
+      // CHANGE GUARD: saveSharedState bumps the version on EVERY push, so the
+      // owner's periodic self-heal re-push (and the business's own echoes) arrive
+      // as "new versions" carrying identical data. Without this guard we'd flash
+      // the sync pill and re-render (resetting scroll) every ~10s for nothing.
+      // Compare actual content; if unchanged, silently record the version and bail.
+      try {
+        let changed = true;
+        if (state.__sharedMode) {
+          // Compare what the apply would ACTUALLY produce (merged with prevItems,
+          // exactly as the apply below does) against the current items. Comparing
+          // the raw slice instead would falsely flag "changed" whenever incoming
+          // data is older than a local item (the merge keeps local), causing a
+          // needless re-render. This errs safe: identical merge result → skip.
+          const mergedItems = (Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail, prevItems: state.items }).items) || {};
+          changed = JSON.stringify(mergedItems) !== JSON.stringify(state.items || {});
+        } else {
+          const newSig = JSON.stringify(snap.data.items || {}) + '|' + JSON.stringify(snap.data.business || {});
+          window.__ownerSliceSig = window.__ownerSliceSig || {};
+          changed = window.__ownerSliceSig[cloudBusinessId] !== newSig;
+          window.__ownerSliceSig[cloudBusinessId] = newSig;
+        }
+        if (!changed) {
+          if (state.__sharedMode) state.__sharedVersion = snap.version || state.__sharedVersion;
+          else { state.bizCloudVersions = state.bizCloudVersions || {}; state.bizCloudVersions[cloudBusinessId] = snap.version || 0; }
+          return; // nothing actually changed — no pill, no re-render, no scroll reset
+        }
+      } catch (e) { /* if comparison fails, fall through and apply */ }
       try {
         window.__infosSyncLog = window.__infosSyncLog || [];
         window.__infosSyncLog.push({ t: Date.now(), biz: cloudBusinessId, cloudV: snap.version || 0, via: 'realtime-direct', mode: state.__sharedMode ? 'biz' : 'owner' });
