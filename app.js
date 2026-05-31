@@ -350,7 +350,7 @@
       let slice, sig;
       try {
         slice = Slice.buildSharedSlice(state, localId, cloudId);
-        sig = JSON.stringify(slice.items || {}) + '|' + JSON.stringify(slice.business || {});
+        sig = stableStringify(slice.items || {}) + '|' + stableStringify(slice.business || {});
       } catch (e) { continue; }
       if (window.__ownerPushSig[cloudId] !== sig) pending.push({ localId, cloudId, slice, sig });
     }
@@ -376,7 +376,7 @@
         // formula MUST match the guard's owner-branch sig exactly.
         try {
           window.__ownerSliceSig = window.__ownerSliceSig || {};
-          window.__ownerSliceSig[p.cloudId] = JSON.stringify((p.slice && p.slice.items) || {}) + '|' + JSON.stringify((p.slice && p.slice.business) || {});
+          window.__ownerSliceSig[p.cloudId] = stableStringify((p.slice && p.slice.items) || {}) + '|' + stableStringify((p.slice && p.slice.business) || {});
         } catch (e) {}
         pushedAny = true;
       } catch (e) {
@@ -432,7 +432,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '161.0.0';
+  const APP_VERSION = '162.0.0';
 
   // ---------- State ----------
   const state = {
@@ -677,6 +677,20 @@
   }
   function tagById(biz, tagId) { return biz?.tags.find(t => t.id === tagId); }
   function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]); }
+
+  // Canonical, key-order-independent JSON. Postgres jsonb does NOT preserve object
+  // key order, so a slice serialized on the client and the SAME slice read back
+  // from the database (via a realtime echo or a fetch) produce different
+  // JSON.stringify output even though the data is identical. Every sync signature
+  // that compares client-built data against database-returned data MUST use this,
+  // or the comparison never matches — which made the owner re-push the same data
+  // every self-heal cycle and churn the version endlessly.
+  function stableStringify(v) {
+    if (v === null || typeof v !== 'object') return JSON.stringify(v);
+    if (Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']';
+    const keys = Object.keys(v).sort();
+    return '{' + keys.map(k => JSON.stringify(k) + ':' + stableStringify(v[k])).join(',') + '}';
+  }
 
   // Robust clipboard copy. navigator.clipboard is unavailable in non-secure
   // contexts and some mobile webviews, so fall back to a hidden textarea +
@@ -3324,9 +3338,9 @@
           // data is older than a local item (the merge keeps local), causing a
           // needless re-render. This errs safe: identical merge result → skip.
           const mergedItems = (Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail, prevItems: state.items }).items) || {};
-          changed = JSON.stringify(mergedItems) !== JSON.stringify(state.items || {});
+          changed = stableStringify(mergedItems) !== stableStringify(state.items || {});
         } else {
-          const newSig = JSON.stringify(snap.data.items || {}) + '|' + JSON.stringify(snap.data.business || {});
+          const newSig = stableStringify(snap.data.items || {}) + '|' + stableStringify(snap.data.business || {});
           window.__ownerSliceSig = window.__ownerSliceSig || {};
           changed = window.__ownerSliceSig[cloudBusinessId] !== newSig;
           window.__ownerSliceSig[cloudBusinessId] = newSig;
@@ -3356,7 +3370,7 @@
         healSharedBizName();
         // Record the content we just applied as the dedup baseline, so the push
         // that this apply may schedule sees identical content and skips (no echo).
-        try { const sl = Slice.memberStateToSlice(state); window.__lastSharedContentSig = JSON.stringify(sl.items || {}) + '|' + JSON.stringify(sl.business || {}) + '|' + JSON.stringify(sl.activity || []); } catch (e) {}
+        try { const sl = Slice.memberStateToSlice(state); window.__lastSharedContentSig = stableStringify(sl.items || {}) + '|' + stableStringify(sl.business || {}) + '|' + stableStringify(sl.activity || []); } catch (e) {}
         try { chimeForArrivals(__before); } catch (e) {}
         // ALWAYS re-render after a realtime apply. The previous "only render when
         // the current tab's signature changed" optimization could miss updates
@@ -3383,7 +3397,7 @@
           // Record the applied content as the owner's push baseline so the ~10s
           // self-heal doesn't re-push (and re-bump the version on) what we just
           // received — the other half of breaking the echo write-loop.
-          try { const sl = Slice.buildSharedSlice(state, localBizId, cloudBusinessId); window.__ownerPushSig = window.__ownerPushSig || {}; window.__ownerPushSig[cloudBusinessId] = JSON.stringify(sl.items || {}) + '|' + JSON.stringify(sl.business || {}); } catch (e) {}
+          try { const sl = Slice.buildSharedSlice(state, localBizId, cloudBusinessId); window.__ownerPushSig = window.__ownerPushSig || {}; window.__ownerPushSig[cloudBusinessId] = stableStringify(sl.items || {}) + '|' + stableStringify(sl.business || {}); } catch (e) {}
           state.__suppressOwnerPush = true;
           try { persistAll(); } finally { state.__suppressOwnerPush = false; }
           rerenderPreservingScroll(() => rerenderCurrentTab());
@@ -3447,7 +3461,7 @@
           const incomingItems = (state.__sharedMode)
             ? (Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail }).items || {})
             : (snap.data.items || {});
-          sameContent = JSON.stringify(incomingItems) === JSON.stringify(state.items || {});
+          sameContent = stableStringify(incomingItems) === stableStringify(state.items || {});
         } catch (e) { sameContent = false; }
         proceed = !sameContent; // content differs despite version → apply anyway
       }
@@ -3480,7 +3494,7 @@
         state.user = state.user || { name: (snap.data.business && snap.data.business.name) || 'Business', email: state.__sharedEmail };
         healSharedBizName();
         // Record applied content as the dedup baseline (see pushSharedState).
-        try { const sl = Slice.memberStateToSlice(state); window.__lastSharedContentSig = JSON.stringify(sl.items || {}) + '|' + JSON.stringify(sl.business || {}) + '|' + JSON.stringify(sl.activity || []); } catch (e) {}
+        try { const sl = Slice.memberStateToSlice(state); window.__lastSharedContentSig = stableStringify(sl.items || {}) + '|' + stableStringify(sl.business || {}) + '|' + stableStringify(sl.activity || []); } catch (e) {}
         // Chime for any entries that just arrived from the owner via sync.
         try { chimeForArrivals(__before); } catch (e) {}
         // We got here only because the version OR content actually changed (or
@@ -3512,7 +3526,7 @@
         state.bizCloudVersions[cloudBusinessId] = snap.version || 0;
         // Record applied content as the owner's push baseline so the self-heal
         // doesn't re-push what we just received (breaks the echo write-loop).
-        try { if (localBizId) { const sl = Slice.buildSharedSlice(state, localBizId, cloudBusinessId); window.__ownerPushSig = window.__ownerPushSig || {}; window.__ownerPushSig[cloudBusinessId] = JSON.stringify(sl.items || {}) + '|' + JSON.stringify(sl.business || {}); } } catch (e) {}
+        try { if (localBizId) { const sl = Slice.buildSharedSlice(state, localBizId, cloudBusinessId); window.__ownerPushSig = window.__ownerPushSig || {}; window.__ownerPushSig[cloudBusinessId] = stableStringify(sl.items || {}) + '|' + stableStringify(sl.business || {}); } } catch (e) {}
         // Persist locally without echoing a push back (breaks the poll→push loop).
         state.__suppressOwnerPush = true;
         try { persistAll(); } finally { state.__suppressOwnerPush = false; }
@@ -3563,7 +3577,7 @@
           // inflated rows to thousands of versions and stalled reads. The version
           // only advances on a genuine local change now.
           let sig;
-          try { sig = JSON.stringify(slice.items || {}) + '|' + JSON.stringify(slice.business || {}) + '|' + JSON.stringify(slice.activity || []); } catch (e) { sig = null; }
+          try { sig = stableStringify(slice.items || {}) + '|' + stableStringify(slice.business || {}) + '|' + stableStringify(slice.activity || []); } catch (e) { sig = null; }
           if (sig != null && sig === window.__lastSharedContentSig) return; // nothing actually changed
           try { if (window.__InfosSyncUploading) window.__InfosSyncUploading(); } catch {}
           const v = await window.InfosSupabase.adapter.saveSharedState(
