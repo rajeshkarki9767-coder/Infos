@@ -1,20 +1,44 @@
 // IndexedDB storage for Infos.
 // Async, structured, no 5MB ceiling. Falls back to localStorage if IDB fails.
+//
+// PER-ACCOUNT KEYING (v176→v177):
+//   Historically all state lived under one key ('state'). That meant two
+//   different accounts on the SAME device shared one slot — the root of the old
+//   cross-account contamination class of bug (mitigated at the app layer, now
+//   fixed at the storage layer too).
+//
+//   Now each account's blob is stored under a per-account key: 'state::<id>',
+//   where <id> is derived from the account email. A tiny account-INDEPENDENT
+//   index lives at 'state' and remembers which account key is active (so boot,
+//   which runs BEFORE we know the identity, can load the right blob).
+//
+//   BOOTSTRAP NOTE: at boot we don't yet know the account (its identity lives
+//   inside the blob / the Supabase session). So load() returns the LAST ACTIVE
+//   account's blob by default; once the app confirms the real identity it calls
+//   Storage.useAccount(email) — which, if different, re-points subsequent
+//   load/save to that account's key.
+//
 // Public API:
 //   await Storage.ready()
-//   await Storage.load()   -> returns the full state object (or {})
-//   await Storage.save(patch) -> merges and persists
-//   await Storage.replace(fullState) -> replaces whole state
-//   await Storage.clear()
-//   Storage.usingFallback() -> true if running on localStorage
-//   Storage.stats() -> { driver, sizeApprox, lastSavedAt }
+//   await Storage.load()              -> full state object for the active key (or {})
+//   await Storage.save(patch)         -> merge + persist to the active key
+//   await Storage.replace(fullState)  -> replace whole state at the active key
+//   await Storage.clear()             -> clear ONLY the active account's blob
+//   await Storage.useAccount(email)   -> set the active account key (migrates legacy on first bind)
+//   Storage.activeKey()               -> current storage key (debug)
+//   Storage.usingFallback()           -> true if on localStorage
+//   Storage.stats()                   -> { driver, sizeApprox, lastSavedAt, key }
 (function() {
   const DB_NAME = 'infos-v3';
   const DB_VERSION = 1;
   const STORE = 'kv';
-  const STATE_KEY = 'state';
+  // Account-independent index key. Also the LEGACY single-state key — existing
+  // installs have their whole state here, which we migrate on first useAccount().
+  const INDEX_KEY = 'state';
   const LS_KEY_V2 = 'infos-state-v2';
   const LS_KEY_FALLBACK = 'infos-state-v3-fallback';
+  // Per-account blob keys look like: state::<accountId>
+  const ACCT_PREFIX = 'state::';
 
   let db = null;
   let driver = 'idb';
@@ -22,12 +46,25 @@
   let cachedState = null;
   let saveQueue = Promise.resolve();
 
+  // The key currently being read/written. Until an account is bound, this is the
+  // legacy INDEX_KEY so existing single-account installs keep working untouched.
+  let activeKey = INDEX_KEY;
+  let activeAccountId = null; // null = not yet bound to a specific account
+
+  // Derive a safe, stable storage id from an email. Lowercased, non-alnum → '_'.
+  // (Not for security — just a filesystem/keyspace-safe token.)
+  function accountIdFromEmail(email) {
+    const e = String(email || '').trim().toLowerCase();
+    if (!e) return null;
+    return e.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || null;
+  }
+  function keyForAccount(id) { return id ? (ACCT_PREFIX + id) : INDEX_KEY; }
+
   function openDB() {
     return new Promise((resolve, reject) => {
       if (!('indexedDB' in window)) return reject(new Error('no-idb'));
-      // HARD TIMEOUT: if IDB doesn't open within 1.5s (another tab is blocking
-      // it, or it's stuck), give up and fall back to localStorage. Without this
-      // the boot would hang indefinitely on a skeleton screen.
+      // HARD TIMEOUT: if IDB doesn't open within 1.5s (another tab blocking it,
+      // or it's stuck), give up and fall back to localStorage so boot can't hang.
       let settled = false;
       const tid = setTimeout(() => {
         if (settled) return;
@@ -70,6 +107,32 @@
     });
   }
 
+  // Low-level raw read/write that respect the current driver, used by both the
+  // index and the per-account blobs.
+  async function rawGet(key) {
+    if (driver === 'idb') {
+      try { return await idbGet(key); } catch { return null; }
+    }
+    return readLS(lsKeyFor(key));
+  }
+  async function rawSet(key, value) {
+    if (driver === 'idb') {
+      try { await idbSet(key, value); return true; }
+      catch (e) { console.warn('IDB set failed, falling back:', e); driver = 'localStorage'; }
+    }
+    return writeLS(lsKeyFor(key), value);
+  }
+  async function rawDel(key) {
+    if (driver === 'idb') { try { await idbDel(key); } catch {} }
+    try { localStorage.removeItem(lsKeyFor(key)); } catch {}
+  }
+  // localStorage fallback key namespacing: the legacy fallback stays at its
+  // historical name; per-account blobs get a suffix so they don't collide.
+  function lsKeyFor(key) {
+    if (key === INDEX_KEY) return LS_KEY_FALLBACK;
+    return LS_KEY_FALLBACK + '::' + key;
+  }
+
   async function init() {
     try {
       db = await openDB();
@@ -78,15 +141,15 @@
       console.warn('IndexedDB unavailable, falling back to localStorage:', err);
       driver = 'localStorage';
     }
-    // Migration: if IDB has nothing but old v2 localStorage exists, migrate.
+    // Legacy v2 → IDB migration (unchanged): if nothing at the index key but old
+    // v2 localStorage exists, seed it so existing users keep their data.
     if (driver === 'idb') {
-      const existing = await idbGet(STATE_KEY);
+      const existing = await idbGet(INDEX_KEY);
       if (!existing) {
         const v2 = readLS(LS_KEY_V2);
         if (v2) {
-          await idbSet(STATE_KEY, v2);
-          // Don't remove v2 — keep it as a safety backup. User can clear from Settings.
-          console.log('Migrated v2 localStorage → IndexedDB');
+          await idbSet(INDEX_KEY, v2);
+          // Keep v2 as a backup; user can clear from Settings.
         }
       }
     }
@@ -95,14 +158,88 @@
   function readLS(key) { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } }
   function writeLS(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } }
 
+  // Bind subsequent load/save to a specific account's key. Called by the app
+  // AFTER it has confirmed the active identity (owner email or shared email).
+  //   - First bind MIGRATES the legacy single-key blob to this account's key if
+  //     the account key is empty and the legacy key holds this account's data.
+  //   - Switching to a DIFFERENT account drops the in-memory cache so the next
+  //     load() reads that account's own blob (no cross-account bleed).
+  async function useAccount(email) {
+    const id = accountIdFromEmail(email);
+    if (!id) return; // nothing to bind to (e.g. local-only with no email yet)
+    if (id === activeAccountId) return; // already bound to this account
+    const newKey = keyForAccount(id);
+
+    // Ensure we know the current cache (so a migration can use it if appropriate).
+    if (cachedState === null) { try { await load(); } catch {} }
+
+    // MIGRATION: if this account has no blob yet, but the legacy index key holds
+    // data that belongs to THIS account, copy it across. We only migrate when the
+    // legacy blob's recorded active-owner matches this email (or there's no
+    // recorded owner — single-account install), to avoid copying account A's data
+    // under account B's key.
+    let acctBlob = await rawGet(newKey);
+    if (!acctBlob) {
+      const legacy = await rawGet(INDEX_KEY);
+      if (legacy && typeof legacy === 'object') {
+        const legacyOwner = String(legacy.__activeOwnerEmail || (legacy.user && legacy.user.email) || '').toLowerCase();
+        const sharedEmail = String(legacy.__sharedEmail || '').toLowerCase();
+        const target = String(email).toLowerCase();
+        // Migrate only if the legacy blob clearly belongs to this account, or it's
+        // ambiguous (no identity stamp) — the classic single-account upgrade case.
+        if (!legacyOwner && !sharedEmail) {
+          acctBlob = legacy; // single-account install → take it over
+        } else if (legacyOwner === target || sharedEmail === target) {
+          acctBlob = legacy;
+        }
+        if (acctBlob) {
+          await rawSet(newKey, acctBlob);
+        }
+      }
+    }
+
+    activeAccountId = id;
+    activeKey = newKey;
+    // Drop the cache; the next load() reads this account's own blob.
+    cachedState = (acctBlob && typeof acctBlob === 'object') ? acctBlob : null;
+    // Record the active account in the index so boot can preload it next time.
+    try {
+      const idx = (await rawGet(INDEX_KEY)) || {};
+      idx.__lastActiveAccount = id;
+      idx.__lastActiveEmail = String(email).toLowerCase();
+      await rawSet(INDEX_KEY, idx);
+    } catch {}
+  }
+
   async function load() {
     if (cachedState) return cachedState;
     let s = null;
-    if (driver === 'idb') {
-      try { s = await idbGet(STATE_KEY); } catch { s = null; }
+    // If we haven't bound to a specific account yet, prefer the LAST ACTIVE
+    // account's blob (recorded in the index), so a refresh restores the right
+    // account before the app re-confirms identity. Falls back to the legacy key.
+    if (activeKey === INDEX_KEY && activeAccountId === null) {
+      try {
+        const idx = await rawGet(INDEX_KEY);
+        const lastId = idx && idx.__lastActiveAccount;
+        if (lastId) {
+          const blob = await rawGet(keyForAccount(lastId));
+          if (blob && typeof blob === 'object') {
+            activeAccountId = lastId;
+            activeKey = keyForAccount(lastId);
+            s = blob;
+          }
+        }
+      } catch {}
     }
     if (!s) {
-      // Try fallback location, then v2 backup
+      s = await rawGet(activeKey);
+    }
+    if (!s && activeKey === INDEX_KEY && activeAccountId === null) {
+      // Last-resort legacy fallbacks — ONLY when no account is bound yet. Once an
+      // account is explicitly bound, an empty per-account blob must STAY empty;
+      // falling back to the shared legacy blob here would leak another account's
+      // data (a freshly-bound account would inherit whoever was last in the
+      // shared slot). Bound + empty = genuinely new account on this device.
       s = readLS(LS_KEY_FALLBACK) || readLS(LS_KEY_V2) || {};
     }
     cachedState = s || {};
@@ -110,15 +247,10 @@
   }
 
   async function save(patch) {
-    // Queue saves so they don't race
     saveQueue = saveQueue.then(async () => {
       if (!cachedState) await load();
       cachedState = { ...cachedState, ...patch };
-      if (driver === 'idb') {
-        try { await idbSet(STATE_KEY, cachedState); lastSavedAt = Date.now(); return true; }
-        catch (e) { console.warn('IDB save failed, falling back:', e); driver = 'localStorage'; }
-      }
-      const ok = writeLS(LS_KEY_FALLBACK, cachedState);
+      const ok = await rawSet(activeKey, cachedState);
       lastSavedAt = Date.now();
       return ok;
     });
@@ -128,22 +260,22 @@
   async function replace(fullState) {
     saveQueue = saveQueue.then(async () => {
       cachedState = fullState || {};
-      if (driver === 'idb') {
-        try { await idbSet(STATE_KEY, cachedState); lastSavedAt = Date.now(); return; }
-        catch (e) { driver = 'localStorage'; }
-      }
-      writeLS(LS_KEY_FALLBACK, cachedState);
+      await rawSet(activeKey, cachedState);
       lastSavedAt = Date.now();
     });
     return saveQueue;
   }
 
+  // Clear ONLY the active account's blob (not other accounts on this device).
   async function clear() {
     saveQueue = saveQueue.then(async () => {
       cachedState = {};
-      if (driver === 'idb') { try { await idbDel(STATE_KEY); } catch {} }
-      try { localStorage.removeItem(LS_KEY_FALLBACK); } catch {}
-      try { localStorage.removeItem(LS_KEY_V2); } catch {}
+      await rawDel(activeKey);
+      // If we cleared the legacy/index slot directly, also clear legacy LS keys.
+      if (activeKey === INDEX_KEY) {
+        try { localStorage.removeItem(LS_KEY_FALLBACK); } catch {}
+        try { localStorage.removeItem(LS_KEY_V2); } catch {}
+      }
     });
     return saveQueue;
   }
@@ -151,12 +283,13 @@
   function stats() {
     let size = 0;
     try { size = JSON.stringify(cachedState || {}).length; } catch {}
-    return { driver, sizeApprox: size, lastSavedAt };
+    return { driver, sizeApprox: size, lastSavedAt, key: activeKey };
   }
   function usingFallback() { return driver !== 'idb'; }
+  function activeKeyName() { return activeKey; }
   function ready() { return readyPromise; }
 
   const readyPromise = init();
 
-  window.Storage = { ready, load, save, replace, clear, stats, usingFallback };
+  window.Storage = { ready, load, save, replace, clear, useAccount, activeKey: activeKeyName, stats, usingFallback };
 })();

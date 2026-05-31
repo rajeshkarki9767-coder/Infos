@@ -14,6 +14,7 @@ const suites = [
   ['Scroll preservation (Load more)', 'scroll-preserve.test.js'],
   ['Business login mode (view-only + glitch fix)', 'business-login-mode.test.js'],
   ['Account isolation (cross-account contamination P1)', 'account-isolation.test.js'],
+  ['Storage per-account keying (db.js v177)', 'storage-account-keying.test.js'],
   ['Sync echo write-loop prevention', 'sync-echo-loop.test.js'],
   ['Shared refresh deferral (stale timer)', 'shared-refresh-deferral.test.js'],
   ['Entry link required by tab', 'entry-link-required.test.js'],

@@ -432,7 +432,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '175.0.0';
+  const APP_VERSION = '177.0.0';
 
   // ---------- State ----------
   const state = {
@@ -3098,6 +3098,11 @@
     state.__sharedBusinessId = biz.id;
     state.__sharedVersion = (snap && snap.version) || 0;
     state.__sharedEmail = email;
+    // Per-account storage: route this device's local blob to THIS business
+    // login's key. A business session caches its data locally for instant first
+    // paint (see persistAll's shared branch); keying it per-account stops an
+    // owner's blob and a business login's blob from sharing one slot on disk.
+    try { if (window.Storage && window.Storage.useAccount) await window.Storage.useAccount(email); } catch (e) {}
     // Resolve the REAL business name. The sign-in `biz` param is often a
     // placeholder ('', 'Shared business') because getMemberBusiness is RLS-blocked
     // or loadSharedState timed out. Prefer the slice's published name, then the
@@ -3801,6 +3806,10 @@
             mergeCloudState(remote);
           }
           state.__activeOwnerEmail = email;
+          // Per-account storage: route this device's local blob to THIS owner's
+          // key (migrates a legacy single-key blob on first bind). Keeps a second
+          // owner on the same device fully isolated on disk.
+          try { if (window.Storage && window.Storage.useAccount) await window.Storage.useAccount(email); } catch (e) {}
         } catch (syncErr) {
           // Auth succeeded but sync failed — continue locally, surface a soft note.
           console.warn('Sync after auth failed:', syncErr);
@@ -8518,6 +8527,10 @@
             }
           } catch (memErr) { console.warn('Business-login bootstrap check failed:', memErr); }
           try { const sub = document.getElementById('boot-splash-sub'); if (sub) sub.textContent = 'Syncing your data…'; } catch {}
+          // Per-account storage: bind to this owner BEFORE pulling/merging cloud
+          // state, so the merged blob and every later save land under this
+          // owner's key — not a shared slot. Uses the confirmed session email.
+          try { if (window.Storage && window.Storage.useAccount && sbUser.email) await window.Storage.useAccount(sbUser.email); } catch (e) {}
           await raceT(window.Sync.enable('supabase'), 5000);
           state.syncAdapter = 'supabase';
           const remote = await raceT(window.Sync.pullNow(), 8000);

@@ -16,13 +16,24 @@
 <meta name="msapplication-tap-highlight" content="no">
 <meta name="format-detection" content="telephone=no">
 <title>Infos</title>
+<!-- Static manifest link: store-packaging tools (PWABuilder, Bubblewrap) and
+     crawlers read the raw HTML without running JS, so the manifest MUST be a
+     plain tag here to be detected. On https/http this is the canonical link.
+     (On file:// it produces a harmless CORS console warning; the guarded JS
+     block below is kept only so a file:// open stays quiet — it no-ops on the
+     web because the static tag already linked the manifest.) -->
+<link rel="manifest" href="manifest.json">
 <script>
-  // Link the manifest only over http(s). Linking it statically makes the browser
-  // try to fetch it even on file://, producing a noisy (harmless) CORS error.
-  if (location.protocol === 'http:' || location.protocol === 'https:') {
-    var _m = document.createElement('link');
-    _m.rel = 'manifest'; _m.href = 'manifest.json';
-    document.head.appendChild(_m);
+  // file:// fallback only — the static <link> above already covers http(s).
+  // Kept to avoid a console error when the app is opened directly off disk.
+  if (location.protocol === 'file:') {
+    try {
+      if (!document.querySelector('link[rel="manifest"]')) {
+        var _m = document.createElement('link');
+        _m.rel = 'manifest'; _m.href = 'manifest.json';
+        document.head.appendChild(_m);
+      }
+    } catch (e) {}
   }
 </script>
 <link rel="icon" type="image/x-icon" href="icons/favicon.ico">
