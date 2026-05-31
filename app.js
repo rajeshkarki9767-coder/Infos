@@ -397,7 +397,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '143.0.0';
+  const APP_VERSION = '146.0.0';
 
   // ---------- State ----------
   const state = {
@@ -838,6 +838,38 @@
     app.style.removeProperty('--accent-bg');
     app.style.removeProperty('--accent-text');
     app.classList.remove('biz-themed');
+  }
+
+  // Downscale an image data URL to at most `maxSize` px on its longest edge,
+  // preserving aspect ratio and transparency (PNG). Logos are uploaded at full
+  // camera/file resolution, which bloats the synced state blob and can render
+  // slowly or break as a splash/avatar image; a 256px logo is plenty for every
+  // place we show one. Falls back to the original on any failure. Async.
+  function downscaleImage(dataUrl, maxSize, quality) {
+    return new Promise(resolve => {
+      try {
+        if (!dataUrl || typeof dataUrl !== 'string') { resolve(dataUrl); return; }
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const w0 = img.naturalWidth || img.width, h0 = img.naturalHeight || img.height;
+            if (!w0 || !h0) { resolve(dataUrl); return; }
+            if (w0 <= maxSize && h0 <= maxSize) { resolve(dataUrl); return; }
+            const scale = Math.min(maxSize / w0, maxSize / h0);
+            const w = Math.max(1, Math.round(w0 * scale)), h = Math.max(1, Math.round(h0 * scale));
+            const canvas = document.createElement('canvas');
+            canvas.width = w; canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, w, h);
+            // PNG preserves transparency (logos often have it). For avatar-size
+            // thumbnails this is small regardless.
+            resolve(canvas.toDataURL('image/png', quality || 0.9));
+          } catch { resolve(dataUrl); }
+        };
+        img.onerror = () => resolve(dataUrl);
+        img.src = dataUrl;
+      } catch { resolve(dataUrl); }
+    });
   }
 
   function bizAvatarHTML(b, size) {
@@ -1887,7 +1919,13 @@
     $('#logo-input').onchange = e => {
       const file = e.target.files[0]; if (!file) return;
       if (file.size > 1024 * 1024) { toast('Image too large (max 1MB)'); return; }
-      const reader = new FileReader(); reader.onload = ev => { logoData = ev.target.result; refreshPreview(); }; reader.readAsDataURL(file);
+      const reader = new FileReader(); reader.onload = ev => {
+        // Downscale before storing: full-res uploads bloat the synced state blob
+        // and can render slowly/break as splash & avatar images.
+        downscaleImage(ev.target.result, 256, 0.9).then(small => {
+          logoData = small || ev.target.result; refreshPreview();
+        }).catch(() => { logoData = ev.target.result; refreshPreview(); });
+      }; reader.readAsDataURL(file);
     };
     if ($('#logo-clear')) $('#logo-clear').onclick = () => { logoData = null; refreshPreview(); };
     $('#m-name').oninput = () => { if (!logoData) refreshPreview(); };
@@ -3228,7 +3266,7 @@
         // your own edits' echo — is worth always reflecting reality.
         const modalNow = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
         if (!modalNow && !document.getElementById('fullscreen-message')) {
-          rerenderCurrentTab();
+          rerenderPreservingScroll(() => rerenderCurrentTab());
           try { updateBadges(); buildNav(); } catch (e) {}
         }
       } else {
@@ -3244,7 +3282,7 @@
           if (!state.bizCloudVersions) state.bizCloudVersions = {};
           state.bizCloudVersions[cloudBusinessId] = snap.version || 0;
           persistAll();
-          rerenderCurrentTab();
+          rerenderPreservingScroll(() => rerenderCurrentTab());
           try { updateBadges(); buildNav(); } catch (e) {}
         }
       }
@@ -3335,7 +3373,7 @@
         // could miss subtle changes that the user does need to see.
         const modalNow = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
         if (!modalNow && !document.getElementById('fullscreen-message')) {
-          rerenderCurrentTab();
+          rerenderPreservingScroll(() => rerenderCurrentTab());
           try { updateBadges(); buildNav(); } catch (e) {}
         }
       } else {
@@ -3367,7 +3405,7 @@
         // modal/edit is open so we don't yank the UI mid-interaction.
         const modalNow = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
         if (!modalNow && !document.getElementById('fullscreen-message')) {
-          rerenderCurrentTab();
+          rerenderPreservingScroll(() => rerenderCurrentTab());
           try { updateBadges(); buildNav(); } catch (e) {}
         }
         sharedApplyingRemote = false;
@@ -3472,7 +3510,7 @@
     }, 2500);
     ownerSharedUnsubs.push(() => { try { clearInterval(window.__ownerSharedPoll); } catch {} });
     // Re-render in case the initial pull changed anything (silent — no flash).
-    try { if (state.user) rerenderCurrentTab(); } catch {}
+    try { if (state.user) rerenderPreservingScroll(() => rerenderCurrentTab()); } catch {}
   }
 
   // Clear one owner's workspace data so a DIFFERENT owner signing in on the same
@@ -4449,6 +4487,22 @@
         }
       });
       recordDeviceAccount({ email, name: realName, kind: 'business', bizId: state.__sharedBusinessId, color: (b && b.color) || null, logo: (b && b.logo) || null });
+      // Cache a small (avatar-sized) logo thumbnail to the device list so the
+      // account switcher can show this business's logo later, even when it's not
+      // the currently-signed-in business. Async + fire-and-forget. Guarded so we
+      // only do the canvas downscale + localStorage write when the logo actually
+      // changes — healSharedBizName runs on every sync apply (~2.5s), and
+      // re-thumbnailing an unchanged logo each time is wasted work.
+      if (b && b.logo) {
+        window.__logoThumbDone = window.__logoThumbDone || {};
+        const sig = email + '|' + b.logo.length + '|' + b.logo.slice(-32);
+        if (window.__logoThumbDone[email] !== sig) {
+          window.__logoThumbDone[email] = sig;
+          downscaleImage(b.logo, 96, 0.9).then(thumb => {
+            if (thumb) recordDeviceAccount({ email, name: realName, kind: 'business', bizId: state.__sharedBusinessId, color: (b && b.color) || null, logo: thumb });
+          }).catch(() => { try { delete window.__logoThumbDone[email]; } catch {} });
+        }
+      }
       if (typeof refreshHeaderSwitchVisibility === 'function') refreshHeaderSwitchVisibility();
     } catch {}
   }
