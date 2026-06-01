@@ -438,7 +438,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '187.0.0';
+  const APP_VERSION = '188.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2993,33 +2993,37 @@
           applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
         });
       }
-      const saved = await savePushSubscription(sub);
-      toast(saved ? 'Notifications enabled' : 'Enabled on this device');
+      // Diagnostic: report exactly which step fails, so issues are visible without
+      // a console. savePushSubscription returns a reason string on failure.
+      const result = await savePushSubscription(sub);
+      if (result === true) toast('Notifications enabled');
+      else toast('Push setup: ' + (result || 'unknown issue'));
     } catch (e) {
-      toast('Could not enable push notifications');
+      toast('Push subscribe failed: ' + String(e && e.message || e).slice(0, 60));
       try { syncLog({ pushSubscribeFail: String(e && e.message || e) }); } catch {}
     }
   }
 
-  // Save (upsert) this device's push subscription into Supabase for every business
-  // it should receive pushes for. RLS guarantees we can only write rows for
-  // businesses we can access, stamped with our own uid.
+  // Returns true on success, or a short reason string on failure (shown in a toast
+  // for diagnosis). RLS guarantees we can only write rows for businesses we can
+  // access, stamped with our own uid.
   async function savePushSubscription(sub) {
     try {
-      if (!window.InfosSupabase || !window.InfosSupabase.configured()) return false;
+      if (!window.InfosSupabase || !window.InfosSupabase.configured()) return 'supabase not configured';
       const adapter = window.InfosSupabase.adapter;
       const client = adapter.rawClient && adapter.rawClient();
       const uid = adapter.currentUid ? await adapter.currentUid() : null;
-      if (!client || !uid) return false;
+      if (!client) return 'no client';
+      if (!uid) return 'no signed-in user id';
 
       const json = sub.toJSON ? sub.toJSON() : sub;
       const endpoint = json.endpoint;
       const p256dh = json.keys && json.keys.p256dh;
       const auth = json.keys && json.keys.auth;
-      if (!endpoint || !p256dh || !auth) return false;
+      if (!endpoint || !p256dh || !auth) return 'incomplete subscription';
 
       const bizIds = pushTargetBusinessIds();
-      if (!bizIds.length) return false;
+      if (!bizIds.length) return 'no business to attach to';
 
       const rows = bizIds.map(bid => ({
         user_id: uid,
@@ -3030,11 +3034,11 @@
       const { error } = await client
         .from('push_subscriptions')
         .upsert(rows, { onConflict: 'business_cloud_id,endpoint' });
-      if (error) { try { syncLog({ pushSaveFail: error.message }); } catch {} return false; }
+      if (error) { try { syncLog({ pushSaveFail: error.message }); } catch {} return 'db: ' + (error.message || 'rejected').slice(0, 50); }
       return true;
     } catch (e) {
       try { syncLog({ pushSaveErr: String(e && e.message || e) }); } catch {}
-      return false;
+      return 'error: ' + String(e && e.message || e).slice(0, 50);
     }
   }
 
