@@ -438,7 +438,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '190.0.0';
+  const APP_VERSION = '192.0.0';
 
   // ---------- State ----------
   const state = {
@@ -1168,7 +1168,7 @@
         // Sub-tabs (System / Accounts) live as horizontal segmented controls inside the page body.
         html += `<div class="nav-item" data-tab="${key}"><i class="ti ti-${disp.icon} nav-icon"></i><span class="label">${esc(disp.name)}</span></div>`;
       } else if (key === 'notices') {
-        html += `<div class="nav-item" data-tab="${key}"><i class="ti ti-${disp.icon} nav-icon"></i><span class="label">${esc(disp.name)}</span></div>`;
+        html += `<div class="nav-item" data-tab="${key}"><i class="ti ti-${disp.icon} nav-icon"></i><span class="label">${esc(disp.name)}</span><span class="label badge" id="notices-badge" style="display:none;"></span></div>`;
       } else if (key === 'businesses') {
         html += `<div class="nav-item" data-tab="${key}"><i class="ti ti-${disp.icon} nav-icon"></i><span class="label">${esc(disp.name)}</span></div>`;
       } else if (key === 'trash') {
@@ -2396,11 +2396,10 @@
       // v15: cross-tab activity feed (for Notices → Activity Log)
       recordGlobalActivity(tabKey, wasNew ? 'created' : 'edited', obj);
       // Play a distinct chime when YOU add a new entry: balance has its own
-      // sound; all other tabs share the self-entry sound.
-      if (wasNew) {
-        if (tabKey === 'balance') playBalanceSound();
-        else playSelfEntrySound();
-      }
+      // sound; all other tabs share the self-entry sound. Plays on BOTH new
+      // entries and edits to an existing one (saving always gives audible feedback).
+      if (tabKey === 'balance') playBalanceSound();
+      else playSelfEntrySound();
       // Activity log on each assigned business
       chosenBizIds.forEach(bid => {
         recordActivity(bizById(bid), wasNew ? 'added' : 'edited', `${wasNew ? 'Added' : 'Edited'} ${tabDisp(tabKey).name.toLowerCase()}: ${obj.title || obj.name}`);
@@ -2413,6 +2412,14 @@
       // Fire-and-forget; the debounced push still runs as a backstop, and pushNow
       // no-ops safely if sync is disabled.
       try { if (window.Sync && Sync.status().enabled) Sync.pushNow(state).catch(() => {}); } catch (e) {}
+      // Stage 5: notify subscribed member devices via the send-push Edge Function
+      // (background notification + OS sound, even when their app is closed). Owner
+      // edits only; fire-and-forget so it never blocks the save.
+      try {
+        const notifTitle = bizById(chosenBizIds[0])?.name || 'Infos';
+        const notifBody = `${wasNew ? 'New' : 'Updated'} ${tabDisp(tabKey).name.toLowerCase()}: ${obj.title || obj.name || ''}`.trim();
+        notifyBusinessesOfEntry([...chosenBizIds], notifTitle, notifBody);
+      } catch (e) {}
       const cur = state.history[state.history.length-1]?.split(':')[0];
       // v14: if the user is in the idpass seg-tab UI and we just saved to idpass-system/accounts,
       // re-render the idpass overview so the new card appears.
@@ -3039,6 +3046,41 @@
     } catch (e) {
       try { syncLog({ pushSaveErr: String(e && e.message || e) }); } catch {}
       return 'error: ' + String(e && e.message || e).slice(0, 50);
+    }
+  }
+
+  // Stage 5: after an OWNER saves/edits an entry, ask the send-push Edge Function
+  // to notify every device subscribed to each affected business. This is what
+  // delivers a notification (with the OS sound) to member devices even when their
+  // app is closed/backgrounded. Owner-only, fire-and-forget — a push failure must
+  // never block or surface in the save flow.
+  async function notifyBusinessesOfEntry(localBizIds, title, body) {
+    try {
+      // Members don't trigger pushes (only the owner's edits notify others); a
+      // shared/business login skips this entirely.
+      if (state.__sharedMode) return;
+      if (!window.InfosSupabase || !window.InfosSupabase.configured()) return;
+      const sb = window.InfosSupabase;
+      const client = sb.Auth && sb.Auth.rawClient && sb.Auth.rawClient();
+      if (!client) return;
+      const map = state.bizCloudMap || {};
+      const cloudIds = (localBizIds || [])
+        .map(id => map[id])
+        .filter(Boolean);
+      if (!cloudIds.length) return;
+      // One invoke per business (each business has its own subscriber set).
+      await Promise.all(cloudIds.map(cloudId =>
+        client.functions.invoke('send-push', {
+          body: {
+            business_cloud_id: cloudId,
+            title: (title || 'Infos').slice(0, 80),
+            body: (body || 'New update').slice(0, 180),
+            url: '/'
+          }
+        }).catch(err => { try { syncLog({ pushNotifyFail: String(err && err.message || err) }); } catch {} })
+      ));
+    } catch (e) {
+      try { syncLog({ pushNotifyErr: String(e && e.message || e) }); } catch {}
     }
   }
 
@@ -5924,6 +5966,7 @@
           it.deleted = true; it.deletedAt = Date.now(); it.deletedFromTab = dtab;
           recordHistory(it, 'trashed');
           recordGlobalActivity(dtab, 'trashed', it);
+          if (dtab === 'balance') playBalanceDeleteSound(); else playDeleteSound();
           persistAll(); updateBadges(); buildNav(); rerenderCurrentTab();
           toast('Moved to trash');
         }
