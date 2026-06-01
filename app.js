@@ -442,7 +442,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '196.0.0';
+  const APP_VERSION = '197.0.0';
 
   // ---------- State ----------
   const state = {
@@ -1269,11 +1269,12 @@
   // unread. Scoped to the current biz filter, same as the visible list.
   function unreadNoticeCount() {
     try {
-      const seen = new Set(state.seenNoticeIds || []);
-      const floor = state.lastSeenNoticesAt || 0;
-      const cutoff = Date.now() - 24 * 60 * 60 * 1000; // 24-hour highlight window
+      // Highlight/count window: an item counts as "new" purely if it was created or
+      // updated within the last 72 hours. NO scroll-observer "seen" clearing — that
+      // made the count vanish within seconds for an entry already on screen.
+      const cutoff = Date.now() - 72 * 60 * 60 * 1000;
       const list = filterByBiz(state.items.notices || []);
-      return list.filter(it => it && !seen.has(it.id) && (itemUpdatedAt(it) || 0) > floor && (itemUpdatedAt(it) || 0) > cutoff).length;
+      return list.filter(it => it && (itemUpdatedAt(it) || 0) > cutoff).length;
     } catch { return 0; }
   }
 
@@ -1291,10 +1292,8 @@
   // Unread activity = an activity entry not yet seen AND newer than the floor.
   function unreadActivityCount() {
     try {
-      const seen = new Set(state.seenActivityIds || []);
-      const floor = state.lastSeenActivityAt || 0;
-      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-      return activityListForView().filter(e => e && !seen.has(e.id) && (e.ts || 0) > floor && (e.ts || 0) > cutoff).length;
+      const cutoff = Date.now() - 72 * 60 * 60 * 1000;
+      return activityListForView().filter(e => e && (e.ts || 0) > cutoff).length;
     } catch { return 0; }
   }
 
@@ -5721,10 +5720,8 @@
     // edits re-highlight (editing also clears the item's seen-state).
     let unreadCls = '';
     if (tabKey === 'notices') {
-      const nSeen = new Set(state.seenNoticeIds || []);
-      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-      const upd = itemUpdatedAt(it) || 0;
-      if (it && !nSeen.has(it.id) && upd > (state.lastSeenNoticesAt || 0) && upd > cutoff) unreadCls = ' card-unread';
+      const cutoff = Date.now() - 72 * 60 * 60 * 1000;
+      if (it && (itemUpdatedAt(it) || 0) > cutoff) unreadCls = ' card-unread';
     }
 
     return `<div class="card-row clickable${unreadCls} ${it.pinned ? 'pinned' : ''} ${checked ? 'selected' : ''} ${opts.number != null ? 'has-number' : ''} ${opts.reorder ? 'has-reorder' : ''}" data-item="${it.id}">
@@ -6159,11 +6156,12 @@
     if (sub) {
       if (active === 'activity') {
         renderActivityLog(sub);
-        setTimeout(() => observeNoticeVisibility(sub, 'activity'), 50);
       } else {
         renderListTab(sub, 'notices', 'bell-off', 'No notices', isViewOnly() ? 'Nothing assigned to you yet.' : 'Tap the button below to add one.');
-        setTimeout(() => observeNoticeVisibility(sub, 'notices'), 50);
       }
+      // Highlight + counts are purely time-based (72h window) now — no scroll
+      // observer. Refresh the sub-tab badges so they reflect the current counts.
+      try { refreshNoticeSubtabBadges(); } catch (e) {}
     }
   }
 
@@ -6239,10 +6237,8 @@
           const b = bizById(bid);
           return b ? `<span class="biz-chip" style="background:${b.color}1F;color:${readableColor(b.color)};">${esc(b.name)}</span>` : '';
         }).join('');
-        const aSeen = new Set(state.seenActivityIds || []);
-        const aFloor = state.lastSeenActivityAt || 0;
-        const aCutoff = Date.now() - 24 * 60 * 60 * 1000;
-        const isUnreadAct = e && !aSeen.has(e.id) && (e.ts || 0) > aFloor && (e.ts || 0) > aCutoff;
+        const aCutoff = Date.now() - 72 * 60 * 60 * 1000;
+        const isUnreadAct = e && (e.ts || 0) > aCutoff;
         html += `<div class="activity-row${isUnreadAct ? ' activity-unread' : ''}" data-activity-id="${esc(e.id)}" data-go-tab="${esc(e.tabKey)}" data-go-item="${esc(e.itemId || '')}">
           <div class="activity-icon" style="background:var(--${verbColor}-bg);color:var(--${verbColor}-fg);"><i class="ti ti-${verbIcon}"></i></div>
           <div class="activity-body">
