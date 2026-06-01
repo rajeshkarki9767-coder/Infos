@@ -438,7 +438,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '188.0.0';
+  const APP_VERSION = '190.0.0';
 
   // ---------- State ----------
   const state = {
@@ -3010,9 +3010,9 @@
   async function savePushSubscription(sub) {
     try {
       if (!window.InfosSupabase || !window.InfosSupabase.configured()) return 'supabase not configured';
-      const adapter = window.InfosSupabase.adapter;
-      const client = adapter.rawClient && adapter.rawClient();
-      const uid = adapter.currentUid ? await adapter.currentUid() : null;
+      const sb = window.InfosSupabase;
+      const client = sb.Auth && sb.Auth.rawClient && sb.Auth.rawClient();
+      const uid = (sb.Auth && sb.Auth.currentUid) ? await sb.Auth.currentUid() : null;
       if (!client) return 'no client';
       if (!uid) return 'no signed-in user id';
 

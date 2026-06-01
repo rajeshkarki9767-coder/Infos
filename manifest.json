@@ -7,7 +7,7 @@
   "id": "/index.html",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "tabbed", "standalone", "minimal-ui", "browser"],
-  "orientation": "portrait",
+  "orientation": "any",
   "theme_color": "#378ADD",
   "background_color": "#FAFAF7",
   "lang": "en",
