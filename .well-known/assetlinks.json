@@ -3,9 +3,11 @@
     "relation": ["delegate_permission/common.handle_all_urls"],
     "target": {
       "namespace": "android_app",
-      "package_name": "REPLACE_WITH_YOUR_PACKAGE_NAME",
+      "package_name": "app.vercel.infos_infos.twa",
       "sha256_cert_fingerprints": [
-        "REPLACE_WITH_YOUR_SHA256_FINGERPRINT"
+        "4E:05:70:A5:7F:FA:7A:22:FD:E9:3A:D0:F5:CF:A3:30:55:66:1D:37:C9:F4:ED:56:0B:AE:3F:93:F6:DF:03:4D",
+        "B4:12:0D:D1:70:EA:8B:1E:7F:83:A2:13:66:E1:D1:4F:F8:94:30:40:74:16:D9:4D:F1:BC:DA:C6:6D:3E:B9:20",
+        "74:25:CD:FC:E3:56:38:45:C8:AE:E0:06:F2:2A:80:B4:C1:04:9B:55:B1:6F:CA:99:93:B2:68:8D:B9:91:41:70"
       ]
     }
   }

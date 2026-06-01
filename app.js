@@ -87,9 +87,13 @@
           if (l) { l.textContent = 'Live sync'; l.style.color = '#137a55'; }
           pill.title = 'Realtime connected — changes sync instantly';
         } else if (base === 'error') {
-          if (d) d.style.background = '#D85A30';
-          if (l) { l.textContent = 'Sync: offline'; l.style.color = '#b1471f'; }
-          pill.title = 'Realtime not connected — updates sync on a short delay';
+          // Realtime websocket isn't connected, but data STILL syncs via polling
+          // on a short delay — so "offline" (which implies nothing is saving) was
+          // misleading and alarming. "Sync: delayed" + amber reflects reality:
+          // you're online and saving, just not instantly.
+          if (d) d.style.background = '#E0A52E';
+          if (l) { l.textContent = 'Sync: delayed'; l.style.color = '#9A6B12'; }
+          pill.title = 'Realtime reconnecting — your changes still save and sync on a short delay';
         } else {
           if (d) d.style.background = '#9aa0a6';
           if (l) { l.textContent = 'Connecting…'; l.style.color = '#444'; }
@@ -432,7 +436,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '178.0.0';
+  const APP_VERSION = '181.0.0';
 
   // ---------- State ----------
   const state = {
@@ -857,7 +861,9 @@
       const ai = ranked.has(a.id) ? ranked.get(a.id) : 1e9;
       const bi = ranked.has(b.id) ? ranked.get(b.id) : 1e9;
       if (ai !== bi) return ai - bi;
-      return (a.createdAt || 0) - (b.createdAt || 0);
+      const ca = a.createdAt || 0, cb = b.createdAt || 0;
+      if (ca !== cb) return ca - cb;
+      return itemIdSeq(a.id) - itemIdSeq(b.id);
     });
     const idx = items.findIndex(i => i.id === itemId);
     if (idx < 0) return;
@@ -5464,6 +5470,14 @@
   }
 
   // ---------- Item timestamps ----------
+  // Extract the numeric creation sequence from an item id ('x123' -> 123). Ids are
+  // assigned from a monotonic counter at creation, so a lower value means created
+  // earlier — a reliable last-resort tiebreaker when createdAt timestamps are equal
+  // (e.g. two entries added in the same millisecond) or missing.
+  function itemIdSeq(id) {
+    const m = /(\d+)/.exec(String(id || ''));
+    return m ? parseInt(m[1], 10) : 1e15;
+  }
   function itemCreatedAt(it) {
     if (it.createdAt) return it.createdAt;
     const h = it.history && it.history.find(e => e.action === 'created');
@@ -5540,7 +5554,12 @@
         const ai = indexed.has(a.id) ? indexed.get(a.id) : 1e9;
         const bi = indexed.has(b.id) ? indexed.get(b.id) : 1e9;
         if (ai !== bi) return ai - bi;
-        return (a.createdAt || 0) - (b.createdAt || 0);
+        const ca = a.createdAt || 0, cb = b.createdAt || 0;
+        if (ca !== cb) return ca - cb;
+        // Tiebreak by numeric item id (ids are 'x'+n, assigned in creation order),
+        // so two items created in the same millisecond still show oldest-first
+        // (A before B) instead of relying on unstable array/merge order.
+        return itemIdSeq(a.id) - itemIdSeq(b.id);
       });
     }
 
@@ -8527,6 +8546,19 @@
             }
           } catch (memErr) { console.warn('Business-login bootstrap check failed:', memErr); }
           try { const sub = document.getElementById('boot-splash-sub'); if (sub) sub.textContent = 'Syncing your data…'; } catch {}
+          // SHARED-DEVICE SAFETY (boot): if the PERSISTED owner differs from the
+          // live session owner (e.g. switched Steve→Zeus, then reloaded), clear the
+          // previous owner's workspace BEFORE binding storage and pulling, so their
+          // items/businesses can't bleed into this account — mirrors the sign-in
+          // path's guard. Identity reconcile (below) fixes the displayed user; this
+          // fixes the underlying data.
+          try {
+            const persistedOwner = (state.__activeOwnerEmail || (state.user && state.user.email) || '').toLowerCase();
+            const sessionOwner = (sbUser.email || '').toLowerCase();
+            if (persistedOwner && sessionOwner && persistedOwner !== sessionOwner) {
+              resetOwnerDataBaseline();
+            }
+          } catch (e) {}
           // Per-account storage: bind to this owner BEFORE pulling/merging cloud
           // state, so the merged blob and every later save land under this
           // owner's key — not a shared slot. Uses the confirmed session email.
@@ -8542,7 +8574,22 @@
             state.accounts = state.accounts || [];
             state.accounts.push({ email, name: nm, cloud: true, createdAt: Date.now() });
           }
-          if (!state.user && email) state.user = { name: nm, email };
+          // IDENTITY RECONCILE: the live Supabase session is the source of truth for
+          // who is signed in. After an account switch (reload), the PERSISTED
+          // state.user may still be the PREVIOUS owner (e.g. switched Steve→Zeus but
+          // the local blob still held Steve). A bare `if (!state.user)` would leave
+          // the stale owner showing while cloud data is the new owner's — a crossed
+          // identity. So if the persisted user doesn't match the session email,
+          // replace it with the session owner. Prefer an existing account's display
+          // name for a nicer label.
+          if (email) {
+            const sameAsSession = state.user && (state.user.email || '').toLowerCase() === email;
+            if (!sameAsSession) {
+              const acct = (state.accounts || []).find(a => a && (a.email || '').toLowerCase() === email);
+              state.user = { name: (acct && acct.name) || nm, email };
+              state.__activeOwnerEmail = email;
+            }
+          }
           // Stash this owner's session for passwordless account switching.
           try { stashAccountSession(email, 'owner', null); } catch {}
           // OWNER: go live on any shared businesses so members' edits appear.
