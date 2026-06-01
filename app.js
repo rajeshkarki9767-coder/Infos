@@ -301,6 +301,7 @@
       lastSeenActivityAt: state.lastSeenActivityAt,
       activityClearedAt: state.activityClearedAt,
       activityClearedByBiz: state.activityClearedByBiz,
+      clearedActivityIds: state.clearedActivityIds,
       __lastBalNames: state.__lastBalNames,
       __lastBalRecorder: state.__lastBalRecorder
     });
@@ -442,7 +443,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '197.0.0';
+  const APP_VERSION = '199.0.0';
 
   // ---------- State ----------
   const state = {
@@ -528,7 +529,7 @@
   app.classList.remove('collapsed');
   ['user','bizContext','activeBizId','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
    'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked','soundEnabled',
-   'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__activeOwnerEmail','activityClearedAt','activityClearedByBiz','seenNoticeIds','lastSeenNoticesAt','seenActivityIds','lastSeenActivityAt'].forEach(k => {
+   'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__activeOwnerEmail','activityClearedAt','activityClearedByBiz','clearedActivityIds','seenNoticeIds','lastSeenNoticesAt','seenActivityIds','lastSeenActivityAt'].forEach(k => {
     if (prefs[k] !== undefined) state[k] = prefs[k];
   });
 
@@ -563,6 +564,17 @@
   if (!state.lastSeenActivityAt && (state.globalActivity || []).length) {
     state.lastSeenActivityAt = Date.now();
   }
+
+  // BUGFIX migration: the old timestamp-based activity clear floor
+  // (activityClearedAt / activityClearedByBiz) acted as a permanent kill-switch
+  // that suppressed NEW activity entries after a clear. Clearing is now tracked by
+  // explicit entry IDs (clearedActivityIds). Reset the stale floors so any user who
+  // hit the bug gets their activity log working again. The ID tombstone takes over.
+  if (state.activityClearedAt || (state.activityClearedByBiz && Object.keys(state.activityClearedByBiz).length)) {
+    state.activityClearedAt = 0;
+    state.activityClearedByBiz = {};
+  }
+  if (!Array.isArray(state.clearedActivityIds)) state.clearedActivityIds = [];
 
   // Migrate items if needed (older data may lack new fields)
   Object.keys(state.items).forEach(k => {
@@ -5034,17 +5046,22 @@
   // The currently-signed-in account is filtered out.
   function listSwitchableAccounts() {
     const isShared = !!state.__sharedMode;
+    const ownerViewingBiz = !isShared && !!state.bizContext;
     const currentEmail = (isShared ? (state.__sharedEmail || '') : (state.user?.email || '')).toLowerCase();
+    // Currently-active business id (real business login OR owner viewing own biz).
+    const currentBizId = isShared ? (state.__sharedBusinessId || null) : (state.bizContext || null);
     const byEmail = new Map(); // email-lower → entry, last write wins for the freshest metadata
 
     function isCurrent(entry) {
       if (!entry || !entry.email) return false;
+      // When currently in a business (login or owner-viewing), the active account is
+      // that specific business — match by bizId so OTHER businesses still list.
+      if ((isShared || ownerViewingBiz) && entry.kind === 'business' && currentBizId && entry.bizId) {
+        return entry.bizId === currentBizId;
+      }
       const k = entry.email.toLowerCase();
       if (k !== currentEmail) return false;
-      // Same email → current iff the KIND matches the current session kind.
-      // (A business account uses its own auth identity; the email is the business
-      // member's email, not the owner's, so kind disambiguates.)
-      if (isShared) return entry.kind === 'business';
+      if (isShared || ownerViewingBiz) return entry.kind === 'business' && (!currentBizId || !entry.bizId);
       return entry.kind === 'owner';
     }
 
@@ -5123,15 +5140,20 @@
     const accounts = listSwitchableAccounts();
     // Build a "current account" entry so the user sees which one is active.
     const isShared = !!state.__sharedMode;
+    // An OWNER viewing one of their own businesses has state.bizContext set (a real
+    // business login uses __sharedMode instead). Either way the current identity is
+    // a BUSINESS — label it correctly and exclude it from the switch list below.
+    const ownerViewingBiz = !isShared && !!state.bizContext;
     let currentEntry = null;
-    if (isShared) {
-      const b = state.businesses && state.businesses[0];
+    if (isShared || ownerViewingBiz) {
+      const b = ownerViewingBiz ? bizById(state.bizContext) : (state.businesses && state.businesses[0]);
       currentEntry = {
         kind: 'business',
-        email: state.__sharedEmail || (state.user && state.user.email) || '',
+        email: (b && b.email) || state.__sharedEmail || (state.user && state.user.email) || '',
         name: (b && b.name) || (state.user && state.user.name) || 'Business',
         color: (b && b.color) || null,
-        logo: (b && b.logo) || null
+        logo: (b && b.logo) || null,
+        bizId: (b && b.id) || state.__sharedBusinessId || null
       };
     } else if (state.user) {
       currentEntry = {
@@ -5383,8 +5405,11 @@
     state.__switchInProgress = true;
     // Sign out current session silently, then sign in as the chosen account.
     setTimeout(() => {
-      // Quiet sign-out: don't show toast or reset auth screen
+      // Quiet sign-out: don't show toast or reset auth screen. Clear EVERY
+      // business-identity flag so switching to the owner fully exits business
+      // view-only mode (a lingering __sharedMode left the owner stuck in view-only).
       state.user = null; state.bizContext = null; state.activeBizId = 'all'; state.activeTagId = null;
+      state.__sharedMode = false; state.__sharedBusinessId = null; state.__sharedEmail = null; state.__sharedVersion = 0;
       state.history = [];
       if (window.Crypto) window.Crypto.lock();
       // Sign in as the chosen account
@@ -6263,23 +6288,34 @@
         confirmLabel: 'Clear',
         danger: true,
         onConfirm: () => {
-          const clearTs = Date.now();
+          // Tombstone by ID, NOT by timestamp. A timestamp floor permanently
+          // suppressed everything at-or-before a moment, which acted as a kill
+          // switch that also dropped NEW entries on the next sync. Recording the
+          // specific cleared IDs suppresses only what existed at clear time, and
+          // never touches future entries.
+          state.clearedActivityIds = state.clearedActivityIds || [];
+          const toClear = (state.globalActivity || []).filter(e => {
+            if (!isFiltered) return true;
+            if (af === 'none') return !(e.bizIds || []).length;
+            return (e.bizIds || []).includes(af);
+          });
+          toClear.forEach(e => { if (e && e.id) state.clearedActivityIds.push(e.id); });
+          // Cap the tombstone list so it can't grow without bound.
+          if (state.clearedActivityIds.length > 1000) {
+            state.clearedActivityIds = state.clearedActivityIds.slice(-1000);
+          }
+          // Remove the cleared entries locally.
           if (!isFiltered) {
             state.globalActivity = [];
-            // Tombstone: activity older than this is cleared and must not merge back
-            // from the cloud/business slice on the next sync.
-            state.activityClearedAt = clearTs;
           } else if (af === 'none') {
             state.globalActivity = (state.globalActivity || []).filter(e => (e.bizIds || []).length > 0);
           } else {
             state.globalActivity = (state.globalActivity || []).filter(e => !(e.bizIds || []).includes(af));
-            // Per-business tombstone so the cleared business's activity stays cleared
-            // and propagates to that business login.
-            state.activityClearedByBiz = state.activityClearedByBiz || {};
-            state.activityClearedByBiz[af] = clearTs;
           }
+          // Clear the legacy timestamp floors so they can never suppress new entries.
+          state.activityClearedAt = 0;
+          state.activityClearedByBiz = {};
           persistAll();
-          // Push immediately so the cleared state reaches businesses/other devices.
           try { if (window.Sync && Sync.status().enabled) Sync.pushNow(state).catch(() => {}); } catch (e) {}
           state.history.pop(); setActive('notices', 'fade');
           toast('Activity cleared');
@@ -8694,7 +8730,7 @@
     app.classList.remove('collapsed');
     ['user','bizContext','activeBizId','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
      'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked','soundEnabled',
-     'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__sharedMode','__sharedBusinessId','__sharedEmail','__sharedVersion','bizPasswords','__activeOwnerEmail','activityClearedAt','activityClearedByBiz','seenNoticeIds','lastSeenNoticesAt','seenActivityIds','lastSeenActivityAt'].forEach(k => {
+     'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__sharedMode','__sharedBusinessId','__sharedEmail','__sharedVersion','bizPasswords','__activeOwnerEmail','activityClearedAt','activityClearedByBiz','clearedActivityIds','seenNoticeIds','lastSeenNoticesAt','seenActivityIds','lastSeenActivityAt'].forEach(k => {
       if (p[k] !== undefined) state[k] = p[k];
     });
     // bulkSelected is transient UI state and must always be a Set (it's never
