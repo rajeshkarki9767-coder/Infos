@@ -442,7 +442,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '195.0.0';
+  const APP_VERSION = '196.0.0';
 
   // ---------- State ----------
   const state = {
@@ -528,7 +528,7 @@
   app.classList.remove('collapsed');
   ['user','bizContext','activeBizId','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
    'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked','soundEnabled',
-   'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__activeOwnerEmail'].forEach(k => {
+   'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__activeOwnerEmail','activityClearedAt','activityClearedByBiz','seenNoticeIds','lastSeenNoticesAt','seenActivityIds','lastSeenActivityAt'].forEach(k => {
     if (prefs[k] !== undefined) state[k] = prefs[k];
   });
 
@@ -1271,8 +1271,9 @@
     try {
       const seen = new Set(state.seenNoticeIds || []);
       const floor = state.lastSeenNoticesAt || 0;
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000; // 24-hour highlight window
       const list = filterByBiz(state.items.notices || []);
-      return list.filter(it => it && !seen.has(it.id) && (itemUpdatedAt(it) || 0) > floor).length;
+      return list.filter(it => it && !seen.has(it.id) && (itemUpdatedAt(it) || 0) > floor && (itemUpdatedAt(it) || 0) > cutoff).length;
     } catch { return 0; }
   }
 
@@ -1292,7 +1293,8 @@
     try {
       const seen = new Set(state.seenActivityIds || []);
       const floor = state.lastSeenActivityAt || 0;
-      return activityListForView().filter(e => e && !seen.has(e.id) && (e.ts || 0) > floor).length;
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      return activityListForView().filter(e => e && !seen.has(e.id) && (e.ts || 0) > floor && (e.ts || 0) > cutoff).length;
     } catch { return 0; }
   }
 
@@ -5720,7 +5722,9 @@
     let unreadCls = '';
     if (tabKey === 'notices') {
       const nSeen = new Set(state.seenNoticeIds || []);
-      if (it && !nSeen.has(it.id) && (itemUpdatedAt(it) || 0) > (state.lastSeenNoticesAt || 0)) unreadCls = ' card-unread';
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      const upd = itemUpdatedAt(it) || 0;
+      if (it && !nSeen.has(it.id) && upd > (state.lastSeenNoticesAt || 0) && upd > cutoff) unreadCls = ' card-unread';
     }
 
     return `<div class="card-row clickable${unreadCls} ${it.pinned ? 'pinned' : ''} ${checked ? 'selected' : ''} ${opts.number != null ? 'has-number' : ''} ${opts.reorder ? 'has-reorder' : ''}" data-item="${it.id}">
@@ -6237,7 +6241,8 @@
         }).join('');
         const aSeen = new Set(state.seenActivityIds || []);
         const aFloor = state.lastSeenActivityAt || 0;
-        const isUnreadAct = e && !aSeen.has(e.id) && (e.ts || 0) > aFloor;
+        const aCutoff = Date.now() - 24 * 60 * 60 * 1000;
+        const isUnreadAct = e && !aSeen.has(e.id) && (e.ts || 0) > aFloor && (e.ts || 0) > aCutoff;
         html += `<div class="activity-row${isUnreadAct ? ' activity-unread' : ''}" data-activity-id="${esc(e.id)}" data-go-tab="${esc(e.tabKey)}" data-go-item="${esc(e.itemId || '')}">
           <div class="activity-icon" style="background:var(--${verbColor}-bg);color:var(--${verbColor}-fg);"><i class="ti ti-${verbIcon}"></i></div>
           <div class="activity-body">
@@ -8693,7 +8698,7 @@
     app.classList.remove('collapsed');
     ['user','bizContext','activeBizId','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
      'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked','soundEnabled',
-     'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__sharedMode','__sharedBusinessId','__sharedEmail','__sharedVersion','bizPasswords','__activeOwnerEmail'].forEach(k => {
+     'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__sharedMode','__sharedBusinessId','__sharedEmail','__sharedVersion','bizPasswords','__activeOwnerEmail','activityClearedAt','activityClearedByBiz','seenNoticeIds','lastSeenNoticesAt','seenActivityIds','lastSeenActivityAt'].forEach(k => {
       if (p[k] !== undefined) state[k] = p[k];
     });
     // bulkSelected is transient UI state and must always be a Set (it's never
