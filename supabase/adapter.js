@@ -98,6 +98,13 @@
   // ----- Auth helpers (used by the app's sign-in screen when Supabase is on) -----
   const Auth = {
     available() { return !!getClient(); },
+    // Raw client + current uid — used by the Web Push registration in app.js to
+    // upsert into push_subscriptions (RLS still enforces user_id = auth.uid()).
+    rawClient() { return getClient(); },
+    async currentUid() {
+      const c = getClient(); if (!c) return null;
+      try { const { data } = await c.auth.getUser(); return (data && data.user && data.user.id) || null; } catch { return null; }
+    },
 
     async signUp(email, password, name) {
       const c = getClient(); if (!c) throw new Error('Supabase not configured');

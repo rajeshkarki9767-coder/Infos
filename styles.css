@@ -2844,6 +2844,13 @@ select:focus,
   min-height: 18px;
   font-variant-numeric: tabular-nums;
 }
+/* Unread-notices variant: stands out from the neutral total count so new,
+   unseen reminders draw the eye. Uses the solid accent for contrast. */
+.badge.badge-unread {
+  background: var(--accent-solid);
+  color: #fff;
+  box-shadow: 0 0 0 2px var(--accent-bg);
+}
 .status-pill {
   border-radius: 999px;
   padding: 3px 10px;

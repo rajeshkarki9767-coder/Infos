@@ -295,6 +295,8 @@
       currentTab: state.currentTab,
       globalActivity: state.globalActivity,
       itemOrder: state.itemOrder,
+      seenNoticeIds: state.seenNoticeIds,
+      lastSeenNoticesAt: state.lastSeenNoticesAt,
       __lastBalNames: state.__lastBalNames,
       __lastBalRecorder: state.__lastBalRecorder
     });
@@ -436,7 +438,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '183.0.0';
+  const APP_VERSION = '187.0.0';
 
   // ---------- State ----------
   const state = {
@@ -455,6 +457,12 @@
     itemOrder: {},
     // v15: Notices sub-tab state: 'reminders' (default) | 'activity'.
     noticesSubtab: 'reminders',
+    // Unread tracking for Notices (reminders). seenNoticeIds = ids the user has
+    // actually scrolled into view; lastSeenNoticesAt = timestamp floor so notices
+    // that predate this feature (or were created before first view) count as seen
+    // and don't all show as unread on upgrade.
+    seenNoticeIds: [],
+    lastSeenNoticesAt: 0,
     onboarded: false,
     pushPermissionAsked: false,
     bulkMode: false,
@@ -537,6 +545,14 @@
     else state.tabOrder.push('balance');
   }
   if (!state.items.balance) state.items.balance = [];
+
+  // Unread-notices feature migration: on first run after upgrade, existing users
+  // have lastSeenNoticesAt = 0, which would flash EVERY existing notice as unread.
+  // Set the floor to "now" once so only notices created AFTER upgrade count as
+  // unread. Detected by the floor being 0 while notices already exist.
+  if (!state.lastSeenNoticesAt && (state.items.notices || []).length) {
+    state.lastSeenNoticesAt = Date.now();
+  }
 
   // Migrate items if needed (older data may lack new fields)
   Object.keys(state.items).forEach(k => {
@@ -1236,13 +1252,81 @@
     bottomTabs.hidden = false;
   }
 
+  // An "unread" notice = a notices item the user hasn't scrolled into view yet
+  // (id not in seenNoticeIds) AND created after the lastSeenNoticesAt floor (so
+  // pre-existing notices don't all count as unread on first upgrade). Scoped to
+  // the current biz filter, same as the visible list.
+  function unreadNoticeCount() {
+    try {
+      const seen = new Set(state.seenNoticeIds || []);
+      const floor = state.lastSeenNoticesAt || 0;
+      const list = filterByBiz(state.items.notices || []);
+      return list.filter(it => it && !seen.has(it.id) && (itemCreatedAt(it) || 0) > floor).length;
+    } catch { return 0; }
+  }
+
   function updateBadges() {
     const b = $('#notices-badge');
     if (b) {
-      const n = filterByBiz(state.items.notices).length;
-      b.textContent = n;
-      b.style.display = n > 0 ? '' : 'none';
+      const total = filterByBiz(state.items.notices).length;
+      const unread = unreadNoticeCount();
+      // Show total normally; when there are unread items, show the unread count in
+      // an accent (attention) style instead of the neutral total.
+      if (unread > 0) {
+        b.textContent = unread;
+        b.classList.add('badge-unread');
+        b.style.display = '';
+      } else {
+        b.textContent = total;
+        b.classList.remove('badge-unread');
+        b.style.display = total > 0 ? '' : 'none';
+      }
     }
+  }
+
+  // Mark a notice as seen (scrolled into view) and refresh the badge. Caps the
+  // stored id list so it can't grow unbounded; the timestamp floor covers anything
+  // trimmed off the end.
+  function markNoticeSeen(id) {
+    if (!id) return;
+    state.seenNoticeIds = state.seenNoticeIds || [];
+    if (state.seenNoticeIds.includes(id)) return;
+    state.seenNoticeIds.push(id);
+    // Keep the most recent 500 ids; older seen-state is covered by the floor.
+    if (state.seenNoticeIds.length > 500) {
+      state.seenNoticeIds = state.seenNoticeIds.slice(-500);
+      state.lastSeenNoticesAt = Math.max(state.lastSeenNoticesAt || 0, Date.now() - 1);
+    }
+    updateBadges();
+    // Debounced persist so rapid scroll-through doesn't write on every card.
+    clearTimeout(window.__seenNoticePersistTimer);
+    window.__seenNoticePersistTimer = setTimeout(() => { try { persistAll(); } catch {} }, 800);
+  }
+
+  // Attach an IntersectionObserver to the rendered notice cards so each one is
+  // marked seen as it scrolls into view. Safe fallback: if IntersectionObserver
+  // is unavailable, mark all currently-rendered notices seen on render.
+  function observeNoticeVisibility(container) {
+    try {
+      if (!container) return;
+      const cards = container.querySelectorAll('.card-row[data-item]');
+      if (!cards.length) return;
+      if (!('IntersectionObserver' in window)) {
+        cards.forEach(el => markNoticeSeen(el.dataset.item));
+        return;
+      }
+      if (window.__noticeObserver) { try { window.__noticeObserver.disconnect(); } catch {} }
+      const obs = new IntersectionObserver((entries) => {
+        entries.forEach(en => {
+          if (en.isIntersecting && en.target && en.target.dataset.item) {
+            markNoticeSeen(en.target.dataset.item);
+            obs.unobserve(en.target);
+          }
+        });
+      }, { threshold: 0.6 });
+      cards.forEach(el => obs.observe(el));
+      window.__noticeObserver = obs;
+    } catch {}
   }
 
   function setActive(tab, direction, ctx) {
@@ -2322,6 +2406,13 @@
         recordActivity(bizById(bid), wasNew ? 'added' : 'edited', `${wasNew ? 'Added' : 'Edited'} ${tabDisp(tabKey).name.toLowerCase()}: ${obj.title || obj.name}`);
       });
       closeModal(); persistAll();
+      // Saving an entry (esp. assigning it to a business) is a deliberate, discrete
+      // action — not rapid typing — so push to the cloud IMMEDIATELY instead of
+      // waiting out persistAll's 1.5s coalescing debounce. Shrinks the delay before
+      // a member/other device sees it; realtime or their next poll delivers it.
+      // Fire-and-forget; the debounced push still runs as a backstop, and pushNow
+      // no-ops safely if sync is disabled.
+      try { if (window.Sync && Sync.status().enabled) Sync.pushNow(state).catch(() => {}); } catch (e) {}
       const cur = state.history[state.history.length-1]?.split(':')[0];
       // v14: if the user is in the idpass seg-tab UI and we just saved to idpass-system/accounts,
       // re-render the idpass overview so the new card appears.
@@ -2856,17 +2947,95 @@
     reader.readAsText(file);
   }
 
-  // ---------- Push notifications UI (permission only — no real push server) ----------
+  // ---------- Web Push notifications (real: subscribe + save to Supabase) ----------
+  // Public VAPID key (safe to ship — the PRIVATE key lives only in the Edge
+  // Function's secrets). Must match the keypair used server-side or pushes fail.
+  const VAPID_PUBLIC_KEY = 'BHUIjobe1nQyjsn6nF_FUE1JROaWRaM40kbKx9XAHbk5sMto4TLKVQ09YnT1TGRKIwwxLXPKCyajknEfvAqUBPs';
+
+  function urlBase64ToUint8Array(base64String) {
+    const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(base64);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  // The set of business cloud ids this device should receive pushes for.
+  // - Member (business login): just the one shared business.
+  // - Owner: every business that has a cloud id (their shared businesses).
+  function pushTargetBusinessIds() {
+    if (state.__sharedMode && state.__sharedBusinessId) return [state.__sharedBusinessId];
+    const ids = [];
+    const map = state.bizCloudMap || {};
+    Object.keys(map).forEach(localId => { if (map[localId]) ids.push(map[localId]); });
+    return ids;
+  }
+
   async function requestPushPermission() {
     if (!('Notification' in window)) { toast('Notifications not supported'); return; }
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      toast('Push not supported on this device'); return;
+    }
     state.pushPermissionAsked = true; persistAll();
-    if (Notification.permission === 'granted') { toast('Already enabled'); return; }
     if (Notification.permission === 'denied') { toast('Permission previously denied. Enable in browser settings.'); return; }
-    const perm = await Notification.requestPermission();
-    if (perm === 'granted') {
-      toast('Notifications enabled');
-      new Notification('Infos', { body: "You'll get reminders here. (Demo — no real server connected yet.)", icon: 'icons/icon-192.png' });
-    } else toast('Permission denied');
+
+    let perm = Notification.permission;
+    if (perm !== 'granted') perm = await Notification.requestPermission();
+    if (perm !== 'granted') { toast('Permission denied'); return; }
+
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+        });
+      }
+      const saved = await savePushSubscription(sub);
+      toast(saved ? 'Notifications enabled' : 'Enabled on this device');
+    } catch (e) {
+      toast('Could not enable push notifications');
+      try { syncLog({ pushSubscribeFail: String(e && e.message || e) }); } catch {}
+    }
+  }
+
+  // Save (upsert) this device's push subscription into Supabase for every business
+  // it should receive pushes for. RLS guarantees we can only write rows for
+  // businesses we can access, stamped with our own uid.
+  async function savePushSubscription(sub) {
+    try {
+      if (!window.InfosSupabase || !window.InfosSupabase.configured()) return false;
+      const adapter = window.InfosSupabase.adapter;
+      const client = adapter.rawClient && adapter.rawClient();
+      const uid = adapter.currentUid ? await adapter.currentUid() : null;
+      if (!client || !uid) return false;
+
+      const json = sub.toJSON ? sub.toJSON() : sub;
+      const endpoint = json.endpoint;
+      const p256dh = json.keys && json.keys.p256dh;
+      const auth = json.keys && json.keys.auth;
+      if (!endpoint || !p256dh || !auth) return false;
+
+      const bizIds = pushTargetBusinessIds();
+      if (!bizIds.length) return false;
+
+      const rows = bizIds.map(bid => ({
+        user_id: uid,
+        business_cloud_id: bid,
+        endpoint, p256dh, auth,
+        user_agent: (navigator.userAgent || '').slice(0, 250)
+      }));
+      const { error } = await client
+        .from('push_subscriptions')
+        .upsert(rows, { onConflict: 'business_cloud_id,endpoint' });
+      if (error) { try { syncLog({ pushSaveFail: error.message }); } catch {} return false; }
+      return true;
+    } catch (e) {
+      try { syncLog({ pushSaveErr: String(e && e.message || e) }); } catch {}
+      return false;
+    }
   }
 
   // ---------- Launch params: deep-link tab, note-taking, file open, widget ----------
@@ -4629,20 +4798,31 @@
     try {
       const list = JSON.parse(localStorage.getItem('infos-device-accounts') || '[]');
       const k = entry.email.toLowerCase();
+      // Find the existing entry for this (email+kind) FIRST, so we can preserve data
+      // it already cached — notably the avatar logo thumbnail. Without this, a later
+      // logo-less call (healSharedBizName fires ~every 2.5s) overwrites the entry and
+      // wipes the cached logo, so the switcher falls back to a plain initial for every
+      // account except the active one. That was the reported bug.
+      const prev = list.find(e =>
+        e && e.email && e.email.toLowerCase() === k && (e.kind || 'owner') === (entry.kind || 'owner')
+      );
       // Dedupe by (email+kind) so the same email can exist once as owner and once as business.
       const filtered = list.filter(e =>
         !(e && e.email && e.email.toLowerCase() === k && (e.kind || 'owner') === (entry.kind || 'owner'))
       );
+      const newLogoOk = entry.logo && typeof entry.logo === 'string' && entry.logo.length < 40000;
+      const preservedLogo = newLogoOk ? entry.logo : (prev && prev.logo ? prev.logo : null);
       filtered.unshift({
         email: entry.email,
-        name: entry.name || entry.email,
+        name: entry.name || (prev && prev.name) || entry.email,
         kind: entry.kind || 'owner',
-        bizId: entry.bizId || null,
-        color: entry.color || null,
+        bizId: entry.bizId || (prev && prev.bizId) || null,
+        color: entry.color || (prev && prev.color) || null,
         // Only persist a logo if it's reasonably small (<40KB as base64) to avoid
         // blowing the localStorage quota across many accounts. Larger logos are
-        // resolved live from state.businesses at render time instead.
-        logo: (entry.logo && typeof entry.logo === 'string' && entry.logo.length < 40000) ? entry.logo : null,
+        // resolved live from state.businesses at render time instead. A logo-less
+        // call keeps whatever thumbnail was previously cached (see prev above).
+        logo: preservedLogo,
         lastSignIn: Date.now()
       });
       if (filtered.length > 20) filtered.length = 20;
@@ -5849,7 +6029,12 @@
     const sub = $('#notices-sub-container');
     if (sub) {
       if (active === 'activity') renderActivityLog(sub);
-      else renderListTab(sub, 'notices', 'bell-off', 'No notices', isViewOnly() ? 'Nothing assigned to you yet.' : 'Tap the button below to add one.');
+      else {
+        renderListTab(sub, 'notices', 'bell-off', 'No notices', isViewOnly() ? 'Nothing assigned to you yet.' : 'Tap the button below to add one.');
+        // Track which notices the user actually scrolls into view, to clear the
+        // unread badge per-item. Deferred so the cards exist in the DOM first.
+        setTimeout(() => observeNoticeVisibility(sub), 50);
+      }
     }
   }
 
