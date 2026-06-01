@@ -436,7 +436,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '181.0.0';
+  const APP_VERSION = '183.0.0';
 
   // ---------- State ----------
   const state = {
@@ -5401,7 +5401,8 @@
       const parts = [];
       if (it.username) parts.push(`<div class="cred-row"><span class="cred-label">user</span><span class="cred-value">${esc(it.username)}</span><button class="btn-icon copy-link-btn" data-copy="${esc(it.username)}" data-copy-label="Username" aria-label="Copy username" title="Copy username"><i class="ti ti-copy"></i></button></div>`);
       if (it.password) {
-        parts.push(`<div class="cred-row"><span class="cred-label">pass</span><span class="cred-value cred-password" data-show="1" data-real="${esc(it.password)}">${esc(it.password)}</span><button class="btn-icon copy-link-btn" data-copy="${esc(it.password)}" data-copy-label="Password" aria-label="Copy password" title="Copy password"><i class="ti ti-copy"></i></button></div>`);
+        const masked = '.'.repeat(Math.min(String(it.password).length, 10));
+        parts.push(`<div class="cred-row"><span class="cred-label">pass</span><span class="cred-value cred-password" data-show="0" data-real="${esc(it.password)}">${esc(masked)}</span><button class="btn-icon" data-pw-show aria-label="Show password" title="Show password"><i class="ti ti-eye"></i></button><button class="btn-icon copy-link-btn" data-copy="${esc(it.password)}" data-copy-label="Password" aria-label="Copy password" title="Copy password"><i class="ti ti-copy"></i></button></div>`);
       }
       credsHTML = `<div class="cred-stack">${parts.join('')}</div>`;
     }
@@ -7035,7 +7036,7 @@
         <div class="section-label">Credentials</div>
         <div class="info-pill">
           ${it.username ? `<div class="detail-meta-row"><i class="ti ti-user" style="font-size:13px;"></i><span style="width:78px;">Username</span><strong class="cred-mono">${esc(it.username)}</strong><button class="btn-icon copy-link-btn" data-copy="${esc(it.username)}" data-copy-label="Username" style="margin-left:auto;"><i class="ti ti-copy"></i></button></div>` : ''}
-          ${it.password ? `<div class="detail-meta-row"><i class="ti ti-lock" style="font-size:13px;"></i><span style="width:78px;">Password</span><strong class="cred-mono cred-password" data-show="1" data-real="${esc(it.password)}">${esc(it.password)}</strong><button class="btn-icon copy-link-btn" data-copy="${esc(it.password)}" data-copy-label="Password" style="margin-left:auto;"><i class="ti ti-copy"></i></button></div>` : ''}
+          ${it.password ? `<div class="detail-meta-row"><i class="ti ti-lock" style="font-size:13px;"></i><span style="width:78px;">Password</span><strong class="cred-mono cred-password" data-show="0" data-real="${esc(it.password)}">${esc('.'.repeat(Math.min(String(it.password).length, 10)))}</strong><button class="btn-icon" data-pw-show aria-label="Show password" title="Show password" style="margin-left:auto;"><i class="ti ti-eye"></i></button><button class="btn-icon copy-link-btn" data-copy="${esc(it.password)}" data-copy-label="Password"><i class="ti ti-copy"></i></button></div>` : ''}
         </div>
       </div>`);
     }
@@ -7147,7 +7148,7 @@
         <div class="section-label" style="margin-bottom:8px;">Credentials</div>
         <div class="info-pill">
           ${it.username ? `<div class="detail-meta-row"><i class="ti ti-user" style="font-size:13px;"></i><span style="width:80px;">Username</span><strong class="cred-mono">${esc(it.username)}</strong><button class="btn-icon copy-link-btn" data-copy="${esc(it.username)}" data-copy-label="Username" style="margin-left:auto;"><i class="ti ti-copy"></i></button></div>` : ''}
-          ${it.password ? `<div class="detail-meta-row"><i class="ti ti-lock" style="font-size:13px;"></i><span style="width:80px;">Password</span><strong class="cred-mono cred-password" data-show="1" data-real="${esc(it.password)}">${esc(it.password)}</strong><button class="btn-icon copy-link-btn" data-copy="${esc(it.password)}" data-copy-label="Password" style="margin-left:auto;"><i class="ti ti-copy"></i></button></div>` : ''}
+          ${it.password ? `<div class="detail-meta-row"><i class="ti ti-lock" style="font-size:13px;"></i><span style="width:80px;">Password</span><strong class="cred-mono cred-password" data-show="0" data-real="${esc(it.password)}">${esc('.'.repeat(Math.min(String(it.password).length, 10)))}</strong><button class="btn-icon" data-pw-show aria-label="Show password" title="Show password" style="margin-left:auto;"><i class="ti ti-eye"></i></button><button class="btn-icon copy-link-btn" data-copy="${esc(it.password)}" data-copy-label="Password"><i class="ti ti-copy"></i></button></div>` : ''}
         </div>
       </div>` : '';
 
