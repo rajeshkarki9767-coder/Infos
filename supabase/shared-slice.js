@@ -117,7 +117,12 @@
       allowedTabs: (state.bizAllowedTabs && state.bizAllowedTabs[bizId]) || null,
       tabOrder: (state.bizTabOrder && state.bizTabOrder[bizId]) || null,
       customTabs: (state.customTabs || []).slice(),
-      activity: activity
+      activity: activity,
+      // Clear-floor for this business so the member side drops cleared activity too.
+      activityClearedAt: Math.max(
+        state.activityClearedAt || 0,
+        (state.activityClearedByBiz && state.activityClearedByBiz[bizId]) || 0
+      )
     };
   }
 
@@ -192,6 +197,7 @@
       bizTabOrder: bizTabOrder,
       customTabs: (slice.customTabs || []).slice(),
       globalActivity: (slice.activity || []).slice(),
+      activityClearedAt: slice.activityClearedAt || 0,
       nextItemId: maxId + 1,
       // The member is "signed into" this one business — full edit, scoped to it.
       activeBizId: biz.id,
@@ -306,6 +312,21 @@
         var c = Object.assign({}, ev);
         if (Array.isArray(ev.bizIds)) c.bizIds = ev.bizIds.map(function (id) { return id === cloudId ? localId : id; });
         return c;
+      });
+      // Respect clear tombstones: drop any incoming entry older than a global clear,
+      // or older than a per-business clear for the business it belongs to. Without
+      // this, clearing the activity log would "undo" itself on the next sync as the
+      // cloud slice merged the old entries back.
+      var gFloor = state.activityClearedAt || 0;
+      var byBiz = state.activityClearedByBiz || {};
+      remappedActivity = remappedActivity.filter(function (ev) {
+        if (!ev) return false;
+        if ((ev.ts || 0) <= gFloor) return false;
+        var bids = ev.bizIds || [];
+        for (var i = 0; i < bids.length; i++) {
+          if (byBiz[bids[i]] && (ev.ts || 0) <= byBiz[bids[i]]) return false;
+        }
+        return true;
       });
       state.globalActivity = mergeActivity(state.globalActivity || [], remappedActivity);
     }

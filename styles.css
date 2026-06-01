@@ -2857,6 +2857,16 @@ select:focus,
   border-left: 3px solid var(--accent-solid);
   background: var(--accent-bg);
 }
+/* Small unread dot on the Notices nav word (no number — the numeric counts live
+   on the Reminder / Activity Log sub-tab badges). */
+.badge.badge-dot {
+  min-width: 8px;
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border-radius: 50%;
+  box-shadow: none;
+}
 .status-pill {
   border-radius: 999px;
   padding: 3px 10px;

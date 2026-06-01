@@ -299,6 +299,8 @@
       lastSeenNoticesAt: state.lastSeenNoticesAt,
       seenActivityIds: state.seenActivityIds,
       lastSeenActivityAt: state.lastSeenActivityAt,
+      activityClearedAt: state.activityClearedAt,
+      activityClearedByBiz: state.activityClearedByBiz,
       __lastBalNames: state.__lastBalNames,
       __lastBalRecorder: state.__lastBalRecorder
     });
@@ -440,7 +442,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '194.0.0';
+  const APP_VERSION = '195.0.0';
 
   // ---------- State ----------
   const state = {
@@ -1295,24 +1297,23 @@
   }
 
   function updateBadges() {
+    // The COUNT badges live on the Reminder / Activity Log sub-tab words (see
+    // renderNotices + refreshNoticeSubtabBadges), NOT on the main "Notices" nav
+    // word. The main nav badge is hidden; we only keep a small dot when there is
+    // unread, with no number, so the nav word isn't cluttered with a count.
     const b = $('#notices-badge');
     if (b) {
-      // The main Notices nav badge reflects ALL unread across both sub-tabs
-      // (reminders + activity). When nothing is unread, it shows the reminders
-      // total (neutral) as a count, or hides if there are none.
-      const total = filterByBiz(state.items.notices).length;
       const unread = unreadNoticeCount() + unreadActivityCount();
       if (unread > 0) {
-        b.textContent = unread;
-        b.classList.add('badge-unread');
+        b.textContent = '';
+        b.classList.add('badge-unread', 'badge-dot');
         b.style.display = '';
       } else {
-        b.textContent = total;
-        b.classList.remove('badge-unread');
-        b.style.display = total > 0 ? '' : 'none';
+        b.classList.remove('badge-unread', 'badge-dot');
+        b.style.display = 'none';
       }
     }
-    // If the Notices screen is open, refresh its sub-tab badges live.
+    // Refresh the per-sub-tab count badges if the Notices screen is open.
     try { if (typeof refreshNoticeSubtabBadges === 'function') refreshNoticeSubtabBadges(); } catch {}
   }
 
@@ -6261,14 +6262,24 @@
         confirmLabel: 'Clear',
         danger: true,
         onConfirm: () => {
+          const clearTs = Date.now();
           if (!isFiltered) {
             state.globalActivity = [];
+            // Tombstone: activity older than this is cleared and must not merge back
+            // from the cloud/business slice on the next sync.
+            state.activityClearedAt = clearTs;
           } else if (af === 'none') {
             state.globalActivity = (state.globalActivity || []).filter(e => (e.bizIds || []).length > 0);
           } else {
             state.globalActivity = (state.globalActivity || []).filter(e => !(e.bizIds || []).includes(af));
+            // Per-business tombstone so the cleared business's activity stays cleared
+            // and propagates to that business login.
+            state.activityClearedByBiz = state.activityClearedByBiz || {};
+            state.activityClearedByBiz[af] = clearTs;
           }
           persistAll();
+          // Push immediately so the cleared state reaches businesses/other devices.
+          try { if (window.Sync && Sync.status().enabled) Sync.pushNow(state).catch(() => {}); } catch (e) {}
           state.history.pop(); setActive('notices', 'fade');
           toast('Activity cleared');
         }
