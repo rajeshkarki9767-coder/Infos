@@ -2851,6 +2851,12 @@ select:focus,
   color: #fff;
   box-shadow: 0 0 0 2px var(--accent-bg);
 }
+/* Unread highlight: a subtle accent left-border + tint on not-yet-seen items. */
+.card-row.card-unread,
+.activity-row.activity-unread {
+  border-left: 3px solid var(--accent-solid);
+  background: var(--accent-bg);
+}
 .status-pill {
   border-radius: 999px;
   padding: 3px 10px;

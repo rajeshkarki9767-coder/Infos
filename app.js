@@ -297,6 +297,8 @@
       itemOrder: state.itemOrder,
       seenNoticeIds: state.seenNoticeIds,
       lastSeenNoticesAt: state.lastSeenNoticesAt,
+      seenActivityIds: state.seenActivityIds,
+      lastSeenActivityAt: state.lastSeenActivityAt,
       __lastBalNames: state.__lastBalNames,
       __lastBalRecorder: state.__lastBalRecorder
     });
@@ -438,7 +440,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '192.0.0';
+  const APP_VERSION = '194.0.0';
 
   // ---------- State ----------
   const state = {
@@ -463,6 +465,9 @@
     // and don't all show as unread on upgrade.
     seenNoticeIds: [],
     lastSeenNoticesAt: 0,
+    // Same unread tracking for the Activity Log sub-tab (separate from reminders).
+    seenActivityIds: [],
+    lastSeenActivityAt: 0,
     onboarded: false,
     pushPermissionAsked: false,
     bulkMode: false,
@@ -552,6 +557,9 @@
   // unread. Detected by the floor being 0 while notices already exist.
   if (!state.lastSeenNoticesAt && (state.items.notices || []).length) {
     state.lastSeenNoticesAt = Date.now();
+  }
+  if (!state.lastSeenActivityAt && (state.globalActivity || []).length) {
+    state.lastSeenActivityAt = Date.now();
   }
 
   // Migrate items if needed (older data may lack new fields)
@@ -1252,26 +1260,48 @@
     bottomTabs.hidden = false;
   }
 
-  // An "unread" notice = a notices item the user hasn't scrolled into view yet
-  // (id not in seenNoticeIds) AND created after the lastSeenNoticesAt floor (so
-  // pre-existing notices don't all count as unread on first upgrade). Scoped to
-  // the current biz filter, same as the visible list.
+  // An "unread" notice = a notices item the user hasn't scrolled into view since it
+  // was last created OR edited. Keyed on updatedAt (which advances on every edit)
+  // vs the lastSeenNoticesAt floor, AND id not in seenNoticeIds. Because editing an
+  // item clears its seen-state (see saveItem), an edited reminder re-surfaces as
+  // unread. Scoped to the current biz filter, same as the visible list.
   function unreadNoticeCount() {
     try {
       const seen = new Set(state.seenNoticeIds || []);
       const floor = state.lastSeenNoticesAt || 0;
       const list = filterByBiz(state.items.notices || []);
-      return list.filter(it => it && !seen.has(it.id) && (itemCreatedAt(it) || 0) > floor).length;
+      return list.filter(it => it && !seen.has(it.id) && (itemUpdatedAt(it) || 0) > floor).length;
+    } catch { return 0; }
+  }
+
+  // The activity-log list scoped to the current biz filter (mirrors renderNotices).
+  function activityListForView() {
+    const all = state.globalActivity || [];
+    if (state.bizContext) return all.filter(e => (e.bizIds || []).includes(state.bizContext));
+    if (state.activeBizId && state.activeBizId !== 'all' && state.activeBizId !== 'none') {
+      return all.filter(e => (e.bizIds || []).includes(state.activeBizId));
+    }
+    if (state.activeBizId === 'none') return all.filter(e => !(e.bizIds || []).length);
+    return all;
+  }
+
+  // Unread activity = an activity entry not yet seen AND newer than the floor.
+  function unreadActivityCount() {
+    try {
+      const seen = new Set(state.seenActivityIds || []);
+      const floor = state.lastSeenActivityAt || 0;
+      return activityListForView().filter(e => e && !seen.has(e.id) && (e.ts || 0) > floor).length;
     } catch { return 0; }
   }
 
   function updateBadges() {
     const b = $('#notices-badge');
     if (b) {
+      // The main Notices nav badge reflects ALL unread across both sub-tabs
+      // (reminders + activity). When nothing is unread, it shows the reminders
+      // total (neutral) as a count, or hides if there are none.
       const total = filterByBiz(state.items.notices).length;
-      const unread = unreadNoticeCount();
-      // Show total normally; when there are unread items, show the unread count in
-      // an accent (attention) style instead of the neutral total.
+      const unread = unreadNoticeCount() + unreadActivityCount();
       if (unread > 0) {
         b.textContent = unread;
         b.classList.add('badge-unread');
@@ -1282,6 +1312,8 @@
         b.style.display = total > 0 ? '' : 'none';
       }
     }
+    // If the Notices screen is open, refresh its sub-tab badges live.
+    try { if (typeof refreshNoticeSubtabBadges === 'function') refreshNoticeSubtabBadges(); } catch {}
   }
 
   // Mark a notice as seen (scrolled into view) and refresh the badge. Caps the
@@ -1292,41 +1324,69 @@
     state.seenNoticeIds = state.seenNoticeIds || [];
     if (state.seenNoticeIds.includes(id)) return;
     state.seenNoticeIds.push(id);
-    // Keep the most recent 500 ids; older seen-state is covered by the floor.
     if (state.seenNoticeIds.length > 500) {
       state.seenNoticeIds = state.seenNoticeIds.slice(-500);
       state.lastSeenNoticesAt = Math.max(state.lastSeenNoticesAt || 0, Date.now() - 1);
     }
     updateBadges();
-    // Debounced persist so rapid scroll-through doesn't write on every card.
     clearTimeout(window.__seenNoticePersistTimer);
     window.__seenNoticePersistTimer = setTimeout(() => { try { persistAll(); } catch {} }, 800);
   }
 
-  // Attach an IntersectionObserver to the rendered notice cards so each one is
-  // marked seen as it scrolls into view. Safe fallback: if IntersectionObserver
-  // is unavailable, mark all currently-rendered notices seen on render.
-  function observeNoticeVisibility(container) {
+  // Same, for an activity-log entry.
+  function markActivitySeen(id) {
+    if (!id) return;
+    state.seenActivityIds = state.seenActivityIds || [];
+    if (state.seenActivityIds.includes(id)) return;
+    state.seenActivityIds.push(id);
+    if (state.seenActivityIds.length > 500) {
+      state.seenActivityIds = state.seenActivityIds.slice(-500);
+      state.lastSeenActivityAt = Math.max(state.lastSeenActivityAt || 0, Date.now() - 1);
+    }
+    updateBadges();
+    clearTimeout(window.__seenActivityPersistTimer);
+    window.__seenActivityPersistTimer = setTimeout(() => { try { persistAll(); } catch {} }, 800);
+  }
+
+  // Attach an IntersectionObserver to rendered cards so each is marked seen as it
+  // scrolls into view. `kind` selects which seen-tracker to use. Fallback: if no
+  // IntersectionObserver, mark all currently-rendered items seen.
+  function observeNoticeVisibility(container, kind) {
     try {
       if (!container) return;
-      const cards = container.querySelectorAll('.card-row[data-item]');
+      const marker = kind === 'activity' ? markActivitySeen : markNoticeSeen;
+      const sel = kind === 'activity' ? '[data-activity-id]' : '.card-row[data-item]';
+      const attr = kind === 'activity' ? 'activityId' : 'item';
+      const cards = container.querySelectorAll(sel);
       if (!cards.length) return;
       if (!('IntersectionObserver' in window)) {
-        cards.forEach(el => markNoticeSeen(el.dataset.item));
+        cards.forEach(el => marker(el.dataset[attr]));
         return;
       }
-      if (window.__noticeObserver) { try { window.__noticeObserver.disconnect(); } catch {} }
+      const key = kind === 'activity' ? '__activityObserver' : '__noticeObserver';
+      if (window[key]) { try { window[key].disconnect(); } catch {} }
       const obs = new IntersectionObserver((entries) => {
         entries.forEach(en => {
-          if (en.isIntersecting && en.target && en.target.dataset.item) {
-            markNoticeSeen(en.target.dataset.item);
+          if (en.isIntersecting && en.target && en.target.dataset[attr]) {
+            marker(en.target.dataset[attr]);
             obs.unobserve(en.target);
           }
         });
       }, { threshold: 0.6 });
       cards.forEach(el => obs.observe(el));
-      window.__noticeObserver = obs;
+      window[key] = obs;
     } catch {}
+  }
+
+  // Update the little unread badges on the Notices sub-tab buttons (Reminder /
+  // Activity Log), if that screen is currently showing.
+  function refreshNoticeSubtabBadges() {
+    const remBtn = document.querySelector('[data-notices-sub="reminders"] .subtab-unread');
+    const actBtn = document.querySelector('[data-notices-sub="activity"] .subtab-unread');
+    const ru = unreadNoticeCount();
+    const au = unreadActivityCount();
+    if (remBtn) { remBtn.textContent = ru; remBtn.style.display = ru > 0 ? '' : 'none'; }
+    if (actBtn) { actBtn.textContent = au; actBtn.style.display = au > 0 ? '' : 'none'; }
   }
 
   function setActive(tab, direction, ctx) {
@@ -2393,6 +2453,12 @@
       if (tabKey === 'notices' && !obj.icon) { obj.icon = 'info-circle'; obj.tone = 'info'; }
       if (wasNew) { if (!state.items[tabKey]) state.items[tabKey] = []; state.items[tabKey].push(obj); recordHistory(obj, 'created'); }
       else recordHistory(obj, 'edited');
+      // Editing a notice should make it count as unread again (it changed, so other
+      // people/devices haven't "seen" the new version). Drop it from the seen set;
+      // its advanced updatedAt then makes it unread until scrolled into view again.
+      if (!wasNew && tabKey === 'notices' && Array.isArray(state.seenNoticeIds)) {
+        state.seenNoticeIds = state.seenNoticeIds.filter(id => id !== obj.id);
+      }
       // v15: cross-tab activity feed (for Notices → Activity Log)
       recordGlobalActivity(tabKey, wasNew ? 'created' : 'edited', obj);
       // Play a distinct chime when YOU add a new entry: balance has its own
@@ -5647,7 +5713,16 @@
     const wasEdited = !!(it.history || []).find(e => e.action === 'edited');
     const tsLine = `<div class="item-meta-line">Created ${formatDateTime(created)}${wasEdited ? ` · Edited ${formatDateTime(updated)}` : ''}</div>`;
 
-    return `<div class="card-row clickable ${it.pinned ? 'pinned' : ''} ${checked ? 'selected' : ''} ${opts.number != null ? 'has-number' : ''} ${opts.reorder ? 'has-reorder' : ''}" data-item="${it.id}">
+    // Notice (reminder) unread highlight: a new OR recently-edited, not-yet-seen
+    // notice gets an accent marker until scrolled into view. Uses updatedAt so
+    // edits re-highlight (editing also clears the item's seen-state).
+    let unreadCls = '';
+    if (tabKey === 'notices') {
+      const nSeen = new Set(state.seenNoticeIds || []);
+      if (it && !nSeen.has(it.id) && (itemUpdatedAt(it) || 0) > (state.lastSeenNoticesAt || 0)) unreadCls = ' card-unread';
+    }
+
+    return `<div class="card-row clickable${unreadCls} ${it.pinned ? 'pinned' : ''} ${checked ? 'selected' : ''} ${opts.number != null ? 'has-number' : ''} ${opts.reorder ? 'has-reorder' : ''}" data-item="${it.id}">
       <div style="display:flex;align-items:flex-start;gap:12px;">
         ${checkable ? `<div class="card-checkbox ${checked ? 'checked' : ''}" data-check="${it.id}">${checked ? '<i class="ti ti-check"></i>' : ''}</div>` : ''}
         ${numberBadge}
@@ -6062,10 +6137,12 @@
       if (state.activeBizId === 'none') return all.filter(e => !(e.bizIds || []).length).length;
       return all.length;
     })();
+    const remUnread = unreadNoticeCount();
+    const actUnread = unreadActivityCount();
     c.innerHTML = `
       <div class="idpass-segtabs" role="tablist" aria-label="Notices view">
-        <button class="${active === 'reminders' ? 'active' : ''}" data-notices-sub="reminders" role="tab"><i class="ti ti-bell"></i> Reminder</button>
-        <button class="${active === 'activity' ? 'active' : ''}" data-notices-sub="activity" role="tab"><i class="ti ti-history"></i> Activity Log</button>
+        <button class="${active === 'reminders' ? 'active' : ''}" data-notices-sub="reminders" role="tab"><i class="ti ti-bell"></i> Reminder<span class="badge badge-unread subtab-unread" style="${remUnread > 0 ? '' : 'display:none;'}margin-left:6px;">${remUnread}</span></button>
+        <button class="${active === 'activity' ? 'active' : ''}" data-notices-sub="activity" role="tab"><i class="ti ti-history"></i> Activity Log<span class="badge badge-unread subtab-unread" style="${actUnread > 0 ? '' : 'display:none;'}margin-left:6px;">${actUnread}</span></button>
       </div>
       <div id="notices-sub-container"></div>
     `;
@@ -6075,12 +6152,12 @@
     });
     const sub = $('#notices-sub-container');
     if (sub) {
-      if (active === 'activity') renderActivityLog(sub);
-      else {
+      if (active === 'activity') {
+        renderActivityLog(sub);
+        setTimeout(() => observeNoticeVisibility(sub, 'activity'), 50);
+      } else {
         renderListTab(sub, 'notices', 'bell-off', 'No notices', isViewOnly() ? 'Nothing assigned to you yet.' : 'Tap the button below to add one.');
-        // Track which notices the user actually scrolls into view, to clear the
-        // unread badge per-item. Deferred so the cards exist in the DOM first.
-        setTimeout(() => observeNoticeVisibility(sub), 50);
+        setTimeout(() => observeNoticeVisibility(sub, 'notices'), 50);
       }
     }
   }
@@ -6157,7 +6234,10 @@
           const b = bizById(bid);
           return b ? `<span class="biz-chip" style="background:${b.color}1F;color:${readableColor(b.color)};">${esc(b.name)}</span>` : '';
         }).join('');
-        html += `<div class="activity-row" data-go-tab="${esc(e.tabKey)}" data-go-item="${esc(e.itemId || '')}">
+        const aSeen = new Set(state.seenActivityIds || []);
+        const aFloor = state.lastSeenActivityAt || 0;
+        const isUnreadAct = e && !aSeen.has(e.id) && (e.ts || 0) > aFloor;
+        html += `<div class="activity-row${isUnreadAct ? ' activity-unread' : ''}" data-activity-id="${esc(e.id)}" data-go-tab="${esc(e.tabKey)}" data-go-item="${esc(e.itemId || '')}">
           <div class="activity-icon" style="background:var(--${verbColor}-bg);color:var(--${verbColor}-fg);"><i class="ti ti-${verbIcon}"></i></div>
           <div class="activity-body">
             <div class="activity-title"><strong>${esc(verbLabel)}</strong> in ${esc(e.tabName)} · <span class="activity-item-name">${esc(e.title)}</span></div>
