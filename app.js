@@ -394,7 +394,8 @@
         // formula MUST match the guard's owner-branch sig exactly.
         try {
           window.__ownerSliceSig = window.__ownerSliceSig || {};
-          window.__ownerSliceSig[p.cloudId] = stableStringify((p.slice && p.slice.items) || {}) + '|' + stableStringify((p.slice && p.slice.business) || {});
+          window.__ownerSliceSig[p.cloudId] = stableStringify((p.slice && p.slice.items) || {}) + '|' + stableStringify((p.slice && p.slice.business) || {})
+            + '|' + stableStringify((p.slice && p.slice.activity) || []) + '|' + stableStringify((p.slice && p.slice.clearedActivityIds) || []);
         } catch (e) {}
         pushedAny = true;
       } catch (e) {
@@ -448,7 +449,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '203.0.0';
+  const APP_VERSION = '204.0.0';
 
   // ---------- State ----------
   const state = {
@@ -3572,10 +3573,18 @@
           // the raw slice instead would falsely flag "changed" whenever incoming
           // data is older than a local item (the merge keeps local), causing a
           // needless re-render. This errs safe: identical merge result → skip.
-          const mergedItems = (Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail, prevItems: state.items }).items) || {};
-          changed = stableStringify(mergedItems) !== stableStringify(state.items || {});
+          const mergedMs = Slice.sliceToMemberState(snap.data, { email: state.__sharedEmail, prevItems: state.items });
+          const mergedItems = (mergedMs.items) || {};
+          const itemsChanged = stableStringify(mergedItems) !== stableStringify(state.items || {});
+          // ALSO compare activity + cleared-IDs. An activity-log clear by the owner
+          // changes ONLY activity (not items), so comparing items alone skipped the
+          // live update and the business only saw the clear after a manual refresh.
+          const actChanged = stableStringify(mergedMs.globalActivity || []) !== stableStringify(state.globalActivity || [])
+            || stableStringify(mergedMs.clearedActivityIds || []) !== stableStringify(state.clearedActivityIds || []);
+          changed = itemsChanged || actChanged;
         } else {
-          const newSig = stableStringify(snap.data.items || {}) + '|' + stableStringify(snap.data.business || {});
+          const newSig = stableStringify(snap.data.items || {}) + '|' + stableStringify(snap.data.business || {})
+            + '|' + stableStringify(snap.data.activity || []) + '|' + stableStringify(snap.data.clearedActivityIds || []);
           window.__ownerSliceSig = window.__ownerSliceSig || {};
           changed = window.__ownerSliceSig[cloudBusinessId] !== newSig;
           window.__ownerSliceSig[cloudBusinessId] = newSig;
@@ -5918,6 +5927,31 @@
         // Tiebreak by numeric item id (ids are 'x'+n, assigned in creation order),
         // so two items created in the same millisecond still show oldest-first
         // (A before B) instead of relying on unstable array/merge order.
+        return itemIdSeq(a.id) - itemIdSeq(b.id);
+      });
+    } else if (isNumbered && (state.activeBizId === 'all' || !orderingBizId) && state.itemOrder) {
+      // ALL-BUSINESSES view: there's no single business order, but the user still
+      // expects the per-business ordering they set to be reflected. Rank each item
+      // by its position in ITS OWN business's saved order (best/lowest rank across
+      // the businesses it belongs to), so within each business items keep the order
+      // the owner arranged, instead of falling back to plain creation order.
+      const rankFor = (it) => {
+        let best = 1e9;
+        const bids = itemBizIds(it);
+        for (const bid of bids) {
+          const saved = state.itemOrder?.[bid]?.[tabKey];
+          if (saved) {
+            const r = saved.indexOf(it.id);
+            if (r !== -1 && r < best) best = r;
+          }
+        }
+        return best;
+      };
+      all = [...all].sort((a, b) => {
+        const ai = rankFor(a), bi = rankFor(b);
+        if (ai !== bi) return ai - bi;
+        const ca = a.createdAt || 0, cb = b.createdAt || 0;
+        if (ca !== cb) return ca - cb;
         return itemIdSeq(a.id) - itemIdSeq(b.id);
       });
     }
