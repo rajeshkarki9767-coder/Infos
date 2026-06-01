@@ -443,7 +443,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '199.0.0';
+  const APP_VERSION = '201.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2795,10 +2795,14 @@
       const nameEl = document.getElementById('header-switch-name');
       if (nameEl) {
         let label = '';
-        if (isViewOnly()) {
-          // Business member sees the business name they're signed into.
-          const b = (state.businesses && state.businesses[0]) || null;
-          label = (b && b.name) || 'Business';
+        // Determine the CURRENT business by its id — owner viewing a business uses
+        // bizContext, a real business login uses __sharedBusinessId. Falling back to
+        // businesses[0] (the old behavior) always showed the first business (e.g.
+        // "Steve") no matter which one was actually active.
+        const curBizId = state.bizContext || state.__sharedBusinessId || null;
+        if (state.bizContext || state.__sharedMode) {
+          const b = (curBizId && bizById(curBizId)) || (state.businesses && state.businesses[0]) || null;
+          label = (b && b.name) || (state.user && state.user.name) || 'Business';
         } else if (state.user && state.user.name) {
           label = state.user.name;
         } else if (state.user && state.user.email) {
@@ -5236,6 +5240,27 @@
 
   // Show a 2-second splash, then complete the switch.
   function performAccountSwitch({ email, kind, bizId }) {
+    // FAST PATH: an OWNER who is merely VIEWING one of their own businesses
+    // (state.bizContext set, but NOT a real shared/business login) is still signed
+    // in as themselves — switching back to the owner is just clearing the business
+    // view, no sign-out/session-restore/reload needed. Doing the reload path here is
+    // what made "switch to owner" fail (it tried to restore a session that was
+    // already active). Detect: currently owner-viewing-biz AND target is the owner.
+    if (kind === 'owner' && !state.__sharedMode && state.bizContext && state.user &&
+        (!email || (state.user.email || '').toLowerCase() === email.toLowerCase())) {
+      try { closeModal(); } catch (e) {}
+      state.bizContext = null;
+      state.activeBizId = 'all';
+      state.activeTagId = null;
+      applyPerBizTheme && applyPerBizTheme();
+      buildNav(); updateActiveBizDisplay(); updateBadges();
+      try { refreshHeaderSwitchVisibility(); } catch {}
+      state.history = [];
+      setActive('notices');
+      persistAll();
+      toast('Switched to ' + (state.user.name || 'owner'));
+      return;
+    }
     // PASSWORDLESS SWITCH: if we have a stashed Supabase session for the target
     // account, restore it and reload — boot then enters that account with no
     // password. This is the multi-account switch the picker promises. An owner
