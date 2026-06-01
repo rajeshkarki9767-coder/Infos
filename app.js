@@ -361,7 +361,12 @@
       let slice, sig;
       try {
         slice = Slice.buildSharedSlice(state, localId, cloudId);
-        sig = stableStringify(slice.items || {}) + '|' + stableStringify(slice.business || {});
+        // Include activity + cleared-IDs in the change signature. Previously only
+        // items+business were compared, so clearing the activity log (which changes
+        // ONLY activity) looked like "no change" and wasn't pushed until some other
+        // edit happened — that was the long delay before businesses saw the clear.
+        sig = stableStringify(slice.items || {}) + '|' + stableStringify(slice.business || {})
+            + '|' + stableStringify(slice.activity || []) + '|' + stableStringify(slice.clearedActivityIds || []);
       } catch (e) { continue; }
       if (window.__ownerPushSig[cloudId] !== sig) {
         pending.push({ localId, cloudId, slice, sig });
@@ -443,7 +448,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '201.0.0';
+  const APP_VERSION = '203.0.0';
 
   // ---------- State ----------
   const state = {
@@ -3626,7 +3631,7 @@
           // Record the applied content as the owner's push baseline so the ~10s
           // self-heal doesn't re-push (and re-bump the version on) what we just
           // received — the other half of breaking the echo write-loop.
-          try { const sl = Slice.buildSharedSlice(state, localBizId, cloudBusinessId); window.__ownerPushSig = window.__ownerPushSig || {}; window.__ownerPushSig[cloudBusinessId] = stableStringify(sl.items || {}) + '|' + stableStringify(sl.business || {}); } catch (e) {}
+          try { const sl = Slice.buildSharedSlice(state, localBizId, cloudBusinessId); window.__ownerPushSig = window.__ownerPushSig || {}; window.__ownerPushSig[cloudBusinessId] = stableStringify(sl.items || {}) + '|' + stableStringify(sl.business || {}) + '|' + stableStringify(sl.activity || []) + '|' + stableStringify(sl.clearedActivityIds || []); } catch (e) {}
           state.__suppressOwnerPush = true;
           try { persistAll(); } finally { state.__suppressOwnerPush = false; }
           rerenderPreservingScroll(() => rerenderCurrentTab());
@@ -3755,7 +3760,7 @@
         state.bizCloudVersions[cloudBusinessId] = snap.version || 0;
         // Record applied content as the owner's push baseline so the self-heal
         // doesn't re-push what we just received (breaks the echo write-loop).
-        try { if (localBizId) { const sl = Slice.buildSharedSlice(state, localBizId, cloudBusinessId); window.__ownerPushSig = window.__ownerPushSig || {}; window.__ownerPushSig[cloudBusinessId] = stableStringify(sl.items || {}) + '|' + stableStringify(sl.business || {}); } } catch (e) {}
+        try { if (localBizId) { const sl = Slice.buildSharedSlice(state, localBizId, cloudBusinessId); window.__ownerPushSig = window.__ownerPushSig || {}; window.__ownerPushSig[cloudBusinessId] = stableStringify(sl.items || {}) + '|' + stableStringify(sl.business || {}) + '|' + stableStringify(sl.activity || []) + '|' + stableStringify(sl.clearedActivityIds || []); } } catch (e) {}
         // Persist locally without echoing a push back (breaks the poll→push loop).
         state.__suppressOwnerPush = true;
         try { persistAll(); } finally { state.__suppressOwnerPush = false; }
@@ -6342,6 +6347,13 @@
           state.activityClearedByBiz = {};
           persistAll();
           try { if (window.Sync && Sync.status().enabled) Sync.pushNow(state).catch(() => {}); } catch (e) {}
+          // Also push the per-business SHARED slices right away so business logins
+          // get the cleared state fast. The OWNER pushes via pushOwnerSharedBusinesses;
+          // pushSharedState only does anything when logged in AS a business, so it
+          // was a no-op here — the cleared state reached businesses only on a slow
+          // fallback (the long delay you saw). Now activity is in the change
+          // signature too, so this push actually fires for an activity-only clear.
+          try { pushOwnerSharedBusinesses(); } catch (e) {}
           state.history.pop(); setActive('notices', 'fade');
           toast('Activity cleared');
         }

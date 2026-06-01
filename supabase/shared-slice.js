@@ -193,7 +193,12 @@
       bizAllowedTabs: bizAllowedTabs,
       bizTabOrder: bizTabOrder,
       customTabs: (slice.customTabs || []).slice(),
-      globalActivity: (slice.activity || []).slice(),
+      // Filter out entries the owner cleared — without this, clearing the activity
+      // log on the owner side never removed them from the business login's view.
+      globalActivity: (function () {
+        var cleared = new Set(slice.clearedActivityIds || []);
+        return (slice.activity || []).filter(function (ev) { return ev && !cleared.has(ev.id); });
+      })(),
       clearedActivityIds: (slice.clearedActivityIds || []).slice(),
       nextItemId: maxId + 1,
       // The member is "signed into" this one business — full edit, scoped to it.
