@@ -449,7 +449,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '204.0.0';
+  const APP_VERSION = '205.0.0';
 
   // ---------- State ----------
   const state = {
@@ -818,6 +818,18 @@
     if (h.length !== 6 || /[^0-9a-f]/i.test(h)) return null;
     return { r: parseInt(h.slice(0,2),16), g: parseInt(h.slice(2,4),16), b: parseInt(h.slice(4,6),16) };
   }
+  // Defense-in-depth: any color value that reaches markup MUST pass through
+  // here. Input-field colors are already validated by setColor(), but colors
+  // arriving via sync/import/restore bypass that path, so we re-validate at the
+  // render boundary. Returns a canonical #RRGGBB string, or `fallback` if the
+  // input is not a clean hex color (prevents arbitrary strings landing in a
+  // style="..." attribute).
+  function safeColor(hex, fallback) {
+    const rgb = parseHex(hex);
+    if (!rgb) return fallback || '#888888';
+    const h = n => n.toString(16).padStart(2, '0');
+    return ('#' + h(rgb.r) + h(rgb.g) + h(rgb.b)).toUpperCase();
+  }
   // Relative luminance (0=black, 1=white).
   function luminance(rgb) {
     const f = v => { v /= 255; return v <= 0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055, 2.4); };
@@ -1013,14 +1025,16 @@
 
   function bizAvatarHTML(b, size) {
     const s = size || 40, isLg = s >= 36;
-    if (b.logo) return `<div class="biz-avatar" style="width:${s}px;height:${s}px;border-radius:${isLg ? 'var(--radius-md)' : '50%'};background:${b.color}33;"><img src="${b.logo}" alt=""/></div>`;
-    return `<div class="biz-avatar" style="width:${s}px;height:${s}px;border-radius:${isLg ? 'var(--radius-md)' : '50%'};background:${b.color}33;color:${readableColor(b.color)};font-size:${Math.round(s*0.42)}px;font-weight:500;">${esc(b.name.charAt(0).toUpperCase())}</div>`;
+    const c = safeColor(b.color);
+    if (b.logo) return `<div class="biz-avatar" style="width:${s}px;height:${s}px;border-radius:${isLg ? 'var(--radius-md)' : '50%'};background:${c}33;"><img src="${b.logo}" alt=""/></div>`;
+    return `<div class="biz-avatar" style="width:${s}px;height:${s}px;border-radius:${isLg ? 'var(--radius-md)' : '50%'};background:${c}33;color:${readableColor(c)};font-size:${Math.round(s*0.42)}px;font-weight:500;">${esc(b.name.charAt(0).toUpperCase())}</div>`;
   }
   function bizChipHTML(bizId, small) {
     if (!bizId) return '';
     const b = bizById(bizId); if (!b) return '';
     const isDark = isAppDark();
-    return `<span class="biz-chip ${small ? 'biz-chip-sm' : ''}" data-biz-chip="${b.id}" style="background:${b.color}${isDark ? '33' : '22'}; color:${readableColor(b.color)}; border:1px solid ${b.color}${isDark ? '66' : '55'};"><span class="biz-color-dot" style="background:${b.color}; width:6px; height:6px;"></span>${esc(b.name)}</span>`;
+    const c = safeColor(b.color);
+    return `<span class="biz-chip ${small ? 'biz-chip-sm' : ''}" data-biz-chip="${b.id}" style="background:${c}${isDark ? '33' : '22'}; color:${readableColor(c)}; border:1px solid ${c}${isDark ? '66' : '55'};"><span class="biz-color-dot" style="background:${c}; width:6px; height:6px;"></span>${esc(b.name)}</span>`;
   }
   // Render multiple business chips from an array of IDs. If empty, returns ''.
   function bizChipsHTML(bizIds, small) {
@@ -1045,7 +1059,7 @@
     if (!bizId || !tagIds || !tagIds.length) return '';
     const b = bizById(bizId); if (!b) return '';
     const isDark = isAppDark();
-    return b.tags.filter(t => tagIds.includes(t.id)).map(t => `<span class="tag-chip" data-tag-chip="${t.id}" data-biz="${bizId}" style="background:${t.color}${isDark ? '2A' : '18'}; color:${readableColor(t.color)}; border:1px solid ${t.color}${isDark ? '55' : '40'};"><i class="ti ti-tag" style="font-size:9px;"></i>${esc(t.name)}</span>`).join('');
+    return b.tags.filter(t => tagIds.includes(t.id)).map(t => { const c = safeColor(t.color); return `<span class="tag-chip" data-tag-chip="${t.id}" data-biz="${bizId}" style="background:${c}${isDark ? '2A' : '18'}; color:${readableColor(c)}; border:1px solid ${c}${isDark ? '55' : '40'};"><i class="ti ti-tag" style="font-size:9px;"></i>${esc(t.name)}</span>`; }).join('');
   }
 
   // Normalize an item's assignments to a bizIds array, regardless of whether
@@ -2303,7 +2317,7 @@
         <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
           ${state.businesses.map(b => {
             const sel = chosenBizIds.includes(b.id);
-            return `<span class="assign-pill ${sel ? 'selected' : ''}" data-bid="${b.id}"><span class="biz-color-dot" style="background:${b.color}"></span>${esc(b.name)}${sel ? ' <i class="ti ti-check" style="font-size:11px;"></i>' : ''}</span>`;
+            return `<span class="assign-pill ${sel ? 'selected' : ''}" data-bid="${b.id}"><span class="biz-color-dot" style="background:${safeColor(b.color)}"></span>${esc(b.name)}${sel ? ' <i class="ti ti-check" style="font-size:11px;"></i>' : ''}</span>`;
           }).join('')}
         </div>
         ${state.businesses.length ? `<button type="button" class="btn-outline btn-sm" id="if-assign-all">${allSelected ? 'Unassign all businesses' : 'Assign to all businesses'}</button>` : ''}
@@ -2337,7 +2351,7 @@
         const sel = chosenTagIds.includes(t.id);
         const bg = sel ? t.color + (isDark ? '44' : '22') : 'var(--surface-1)';
         const fg = sel ? t.color : 'var(--text-primary)';
-        return `<span class="assign-pill" data-tag="${t.id}" style="background:${bg};color:${fg};border-color:${sel ? t.color : 'transparent'};"><span class="biz-color-dot" style="background:${t.color}"></span>${esc(t.name)}</span>`;
+        return `<span class="assign-pill" data-tag="${t.id}" style="background:${bg};color:${fg};border-color:${sel ? safeColor(t.color) : 'transparent'};"><span class="biz-color-dot" style="background:${safeColor(t.color)}"></span>${esc(t.name)}</span>`;
       }).join('');
       $('#if-tags').querySelectorAll('.assign-pill').forEach(el => el.onclick = () => {
         const tid = el.dataset.tag;
@@ -2920,7 +2934,7 @@
         <div class="field"><label>Business</label>
           <div id="if-biz" style="display:flex;flex-wrap:wrap;gap:6px;">
             <span class="assign-pill selected" data-id="">Unassigned</span>
-            ${state.businesses.map(b => `<span class="assign-pill" data-id="${b.id}"><span class="biz-color-dot" style="background:${b.color}"></span>${esc(b.name)}</span>`).join('')}
+            ${state.businesses.map(b => `<span class="assign-pill" data-id="${b.id}"><span class="biz-color-dot" style="background:${safeColor(b.color)}"></span>${esc(b.name)}</span>`).join('')}
           </div>
         </div>
       </div>
@@ -5678,7 +5692,7 @@
     let tag = null;
     state.businesses.forEach(b => { if (!tag) tag = b.tags.find(t => t.id === state.activeTagId); });
     if (!tag) return '';
-    return `<div class="info-banner" style="margin-bottom:14px;background:${tag.color}22;color:${readableColor(tag.color)};border:1px solid ${tag.color}55;"><i class="ti ti-tag"></i><span>Filtered by tag: <strong>${esc(tag.name)}</strong></span><button class="btn-icon" id="clear-tag-filter" style="margin-left:auto;color:inherit;" aria-label="Clear tag filter"><i class="ti ti-x"></i></button></div>`;
+    return `<div class="info-banner" style="margin-bottom:14px;background:${safeColor(tag.color)}22;color:${readableColor(tag.color)};border:1px solid ${safeColor(tag.color)}55;"><i class="ti ti-tag"></i><span>Filtered by tag: <strong>${esc(tag.name)}</strong></span><button class="btn-icon" id="clear-tag-filter" style="margin-left:auto;color:inherit;" aria-label="Clear tag filter"><i class="ti ti-x"></i></button></div>`;
   }
   function bindClearTagFilter() {
     const btn = $('#clear-tag-filter');
@@ -6324,7 +6338,7 @@
             return an < bn ? -1 : an > bn ? 1 : 0;
           }).map(bid => {
           const b = bizById(bid);
-          return b ? `<span class="biz-chip" style="background:${b.color}1F;color:${readableColor(b.color)};">${esc(b.name)}</span>` : '';
+          return b ? `<span class="biz-chip" style="background:${safeColor(b.color)}1F;color:${readableColor(b.color)};">${esc(b.name)}</span>` : '';
         }).join('');
         const aCutoff = Date.now() - 72 * 60 * 60 * 1000;
         const isUnreadAct = e && (e.ts || 0) > aCutoff;
