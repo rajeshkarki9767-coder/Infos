@@ -449,7 +449,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '208.0.0';
+  const APP_VERSION = '209.0.0';
 
   // ---------- State ----------
   const state = {
@@ -6697,6 +6697,43 @@
 
   // Open the Add/Edit Balance modal. Allows biz users (view-only) to create entries,
   // and lets them add multiple rows in one shot via "Add more".
+  // Returns the names from the most recent balance batch belonging to the current
+  // business (state.bizContext for a biz login, or the active business filter for an
+  // owner), in that batch's saved row order. Used to pre-fill a new balance entry so
+  // the same roster of names can be re-entered quickly. Returns [] if none / no biz.
+  function lastBalanceNamesForBiz(tabKey) {
+    const bizId = isViewOnly() ? state.bizContext
+      : (state.activeBizId && state.activeBizId !== 'all' && state.activeBizId !== 'none' ? state.activeBizId : null);
+    if (!bizId) return [];
+    const items = (state.items[tabKey] || []).filter(it => !it.deleted && itemBizIds(it).includes(bizId));
+    if (!items.length) return [];
+    // Preserve creation/array order for stable within-batch ordering.
+    const origIndex = new Map(items.map((it, i) => [it.id, i]));
+    const batchMap = new Map();
+    items.forEach(it => {
+      const bid = it.batchId || ('solo_' + it.id);
+      if (!batchMap.has(bid)) batchMap.set(bid, []);
+      batchMap.get(bid).push(it);
+    });
+    let best = null;
+    for (const [, group] of batchMap) {
+      const created = Math.max(...group.map(i => itemCreatedAt(i) || 0));
+      const sumIndex = Math.max(...group.map(i => origIndex.get(i.id) || 0));
+      if (!best || created > best.created || (created === best.created && sumIndex > best.sumIndex)) {
+        best = { group, created, sumIndex };
+      }
+    }
+    if (!best) return [];
+    best.group.sort((a, b) => (origIndex.get(a.id) || 0) - (origIndex.get(b.id) || 0));
+    // Distinct, non-empty names, order preserved.
+    const seen = new Set(); const names = [];
+    best.group.forEach(it => {
+      const n = (it.name || '').trim();
+      if (n && !seen.has(n)) { seen.add(n); names.push(n); }
+    });
+    return names;
+  }
+
   function openBalanceModal(editId) {
     const tabKey = 'balance';
     // Balance entries are added/edited ONLY by the business login (a view-only
@@ -6717,13 +6754,17 @@
       }
     }
     // For edit: one row per existing entry in the batch.
-    // For new entries: start with a single empty row — the user types names
-    // manually each time, no suggestions from prior balance entries.
+    // For new entries: pre-fill the rows with the NAMES from the most recent
+    // balance batch for this business (in that batch's saved order), leaving the
+    // balance blank. This lets the business login re-enter the same roster of
+    // names quickly and just fill in the new amounts. Names remain fully editable,
+    // and "Recorded by" is intentionally left blank so it's re-entered each time.
     let rows;
     if (editingBatch) {
       rows = editingBatch.map(it => ({ name: it.name || '', balance: it.balance || '', _id: it.id }));
     } else {
-      rows = [{ name: '', balance: '' }];
+      const prevNames = lastBalanceNamesForBiz(tabKey);
+      rows = prevNames.length ? prevNames.map(n => ({ name: n, balance: '' })) : [{ name: '', balance: '' }];
     }
 
     function renderRows() {
