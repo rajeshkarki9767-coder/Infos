@@ -449,7 +449,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '205.0.0';
+  const APP_VERSION = '207.0.0';
 
   // ---------- State ----------
   const state = {
@@ -4372,7 +4372,9 @@
     if (asBizId) state.activeBizId = asBizId; else state.activeBizId = 'all';
     state.activeTagId = null;
     { const am = $('#avatar-mini'); if (am) am.textContent = name.charAt(0).toUpperCase(); }
-    headerBadge.hidden = true;
+    // Badge reflects view-only state: shown when entering a business view
+    // (asBizId/bizContext set), hidden for a plain owner login. Mirrors boot.
+    headerBadge.hidden = !state.bizContext;
     // GLITCH FIX: put up the welcome splash BEFORE switching to / rendering the
     // main screen, so the dashboard never flashes before the welcome screen.
     if (!state.__switchInProgress) {
@@ -5280,6 +5282,12 @@
       state.bizContext = null;
       state.activeBizId = 'all';
       state.activeTagId = null;
+      // v206 fix: this fast path clears bizContext without a reload, so the
+      // "View only" header badge — which is only otherwise reset on sign-in,
+      // sign-out, or boot — was left visible after switching back to owner.
+      // isViewOnly() is already false here (bizContext is null), so the owner
+      // had full access but a stale badge. Hide it explicitly.
+      headerBadge.hidden = true;
       applyPerBizTheme && applyPerBizTheme();
       buildNav(); updateActiveBizDisplay(); updateBadges();
       try { refreshHeaderSwitchVisibility(); } catch {}
@@ -5945,25 +5953,42 @@
       });
     } else if (isNumbered && (state.activeBizId === 'all' || !orderingBizId) && state.itemOrder) {
       // ALL-BUSINESSES view: there's no single business order, but the user still
-      // expects the per-business ordering they set to be reflected. Rank each item
-      // by its position in ITS OWN business's saved order (best/lowest rank across
-      // the businesses it belongs to), so within each business items keep the order
-      // the owner arranged, instead of falling back to plain creation order.
+      // expects the per-business ordering they arranged to be reflected.
+      //
+      // v205 fix: the previous version ranked an item by its BEST (lowest) position
+      // across ALL businesses it belongs to. That let a multi-business item "borrow"
+      // a top rank from an unrelated business and leapfrog items the owner had
+      // placed at the top of the business they were actually looking at — e.g. an
+      // item ranked #1 in Stark would jump above the item ranked #1 in Marvel, even
+      // though Marvel was the business whose order the owner just set.
+      //
+      // We now rank each item against a single, deterministic REFERENCE business:
+      // the first business (in state.businesses order) that the item belongs to AND
+      // that has a saved order for this tab. Items are then grouped by that reference
+      // business's index, and within a group by the position the owner arranged.
+      // This is stable (one source of truth per item) and matches what the owner
+      // sees: the order they set in a business is preserved in the All view, and
+      // shared items no longer leapfrog based on a different business's ordering.
+      const bizIndex = new Map(state.businesses.map((b, i) => [b.id, i]));
       const rankFor = (it) => {
-        let best = 1e9;
-        const bids = itemBizIds(it);
+        const bids = itemBizIds(it)
+          .filter(bid => bizIndex.has(bid))
+          .sort((x, y) => bizIndex.get(x) - bizIndex.get(y));
         for (const bid of bids) {
           const saved = state.itemOrder?.[bid]?.[tabKey];
           if (saved) {
             const r = saved.indexOf(it.id);
-            if (r !== -1 && r < best) best = r;
+            if (r !== -1) return { biz: bizIndex.get(bid), pos: r };
           }
         }
-        return best;
+        // No saved order anywhere → sort after all arranged items, grouped by its
+        // first business so unarranged items still cluster predictably.
+        return { biz: bids.length ? bizIndex.get(bids[0]) : 1e9, pos: 1e9 };
       };
       all = [...all].sort((a, b) => {
-        const ai = rankFor(a), bi = rankFor(b);
-        if (ai !== bi) return ai - bi;
+        const ra = rankFor(a), rb = rankFor(b);
+        if (ra.biz !== rb.biz) return ra.biz - rb.biz;
+        if (ra.pos !== rb.pos) return ra.pos - rb.pos;
         const ca = a.createdAt || 0, cb = b.createdAt || 0;
         if (ca !== cb) return ca - cb;
         return itemIdSeq(a.id) - itemIdSeq(b.id);
