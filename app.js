@@ -449,13 +449,19 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '207.0.0';
+  const APP_VERSION = '208.0.0';
 
   // ---------- State ----------
   const state = {
     user: null,
     history: [],
     activeBizId: 'all',
+    // v208: the most recent SINGLE-business filter the owner selected (or reordered
+    // within). The "All businesses" view uses this business's saved item order so
+    // the arrangement the owner last worked on is the one reflected across the
+    // combined view. Per-business orders can't produce one global order, so we
+    // anchor on the business the owner most recently arranged.
+    lastBizFilter: null,
     bizContext: null,
     activeTagId: null,
     sidebarCollapsed: false,
@@ -533,7 +539,7 @@
   // who had it toggled on previously don't stay stuck in icon-only mode.
   state.sidebarCollapsed = false;
   app.classList.remove('collapsed');
-  ['user','bizContext','activeBizId','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
+  ['user','bizContext','activeBizId','lastBizFilter','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
    'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked','soundEnabled',
    'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__activeOwnerEmail','activityClearedAt','activityClearedByBiz','clearedActivityIds','seenNoticeIds','lastSeenNoticesAt','seenActivityIds','lastSeenActivityAt'].forEach(k => {
     if (prefs[k] !== undefined) state[k] = prefs[k];
@@ -927,6 +933,9 @@
     if (newIdx < 0 || newIdx >= items.length) return;
     [items[idx], items[newIdx]] = [items[newIdx], items[idx]];
     state.itemOrder[bizId][tabKey] = items.map(i => i.id);
+    // v208: the business you most recently reordered becomes the anchor the
+    // "All businesses" view mirrors.
+    state.lastBizFilter = bizId;
     persistAll();
     // Re-render whatever tab the user is on
     state.history.pop(); setActive(state.currentTab || tabKey, 'fade');
@@ -1672,6 +1681,9 @@
     `).join('');
     $$('.biz-pick-item', bizPicker).forEach(el => el.onclick = () => {
       state.activeBizId = el.dataset.id;
+      // v208: remember the last real single-business filter so the All view can
+      // mirror that business's arranged order.
+      if (state.activeBizId !== 'all' && state.activeBizId !== 'none') state.lastBizFilter = state.activeBizId;
       state.activeTagId = null;
       updateActiveBizDisplay();
       bizPicker.hidden = true;
@@ -4374,7 +4386,7 @@
     { const am = $('#avatar-mini'); if (am) am.textContent = name.charAt(0).toUpperCase(); }
     // Badge reflects view-only state: shown when entering a business view
     // (asBizId/bizContext set), hidden for a plain owner login. Mirrors boot.
-    headerBadge.hidden = !state.bizContext;
+    if (headerBadge) headerBadge.hidden = !state.bizContext;
     // GLITCH FIX: put up the welcome splash BEFORE switching to / rendering the
     // main screen, so the dashboard never flashes before the welcome screen.
     if (!state.__switchInProgress) {
@@ -5287,7 +5299,7 @@
       // sign-out, or boot — was left visible after switching back to owner.
       // isViewOnly() is already false here (bizContext is null), so the owner
       // had full access but a stale badge. Hide it explicitly.
-      headerBadge.hidden = true;
+      if (headerBadge) headerBadge.hidden = true;
       applyPerBizTheme && applyPerBizTheme();
       buildNav(); updateActiveBizDisplay(); updateBadges();
       try { refreshHeaderSwitchVisibility(); } catch {}
@@ -5663,7 +5675,7 @@
     }
     state.user = null; state.bizContext = null; state.activeBizId = 'all'; state.activeTagId = null;
     state.history = [];
-    headerBadge.hidden = true;
+    if (headerBadge) headerBadge.hidden = true;
     screenAuth.classList.add('screen-active'); screenMain.classList.remove('screen-active');
     $('#auth-mode-forgot').hidden = true; $('#auth-mode-signin').hidden = false;
     // Reset auth screen to sign-in mode (in case user was in signup)
@@ -5952,43 +5964,26 @@
         return itemIdSeq(a.id) - itemIdSeq(b.id);
       });
     } else if (isNumbered && (state.activeBizId === 'all' || !orderingBizId) && state.itemOrder) {
-      // ALL-BUSINESSES view: there's no single business order, but the user still
-      // expects the per-business ordering they arranged to be reflected.
+      // ALL-BUSINESSES view. Per-business orders can't combine into one true global
+      // order (the same position number means different things in different
+      // businesses), so we anchor on a single business: the one the owner most
+      // recently filtered to or reordered (state.lastBizFilter). Items belonging to
+      // that business appear first, in exactly the order arranged there; everything
+      // else follows in creation order. This makes the arrangement the owner last
+      // worked on the one reflected in the combined view — e.g. reorder Marvel, and
+      // the All view mirrors Marvel's order.
       //
-      // v205 fix: the previous version ranked an item by its BEST (lowest) position
-      // across ALL businesses it belongs to. That let a multi-business item "borrow"
-      // a top rank from an unrelated business and leapfrog items the owner had
-      // placed at the top of the business they were actually looking at — e.g. an
-      // item ranked #1 in Stark would jump above the item ranked #1 in Marvel, even
-      // though Marvel was the business whose order the owner just set.
-      //
-      // We now rank each item against a single, deterministic REFERENCE business:
-      // the first business (in state.businesses order) that the item belongs to AND
-      // that has a saved order for this tab. Items are then grouped by that reference
-      // business's index, and within a group by the position the owner arranged.
-      // This is stable (one source of truth per item) and matches what the owner
-      // sees: the order they set in a business is preserved in the All view, and
-      // shared items no longer leapfrog based on a different business's ordering.
-      const bizIndex = new Map(state.businesses.map((b, i) => [b.id, i]));
-      const rankFor = (it) => {
-        const bids = itemBizIds(it)
-          .filter(bid => bizIndex.has(bid))
-          .sort((x, y) => bizIndex.get(x) - bizIndex.get(y));
-        for (const bid of bids) {
-          const saved = state.itemOrder?.[bid]?.[tabKey];
-          if (saved) {
-            const r = saved.indexOf(it.id);
-            if (r !== -1) return { biz: bizIndex.get(bid), pos: r };
-          }
-        }
-        // No saved order anywhere → sort after all arranged items, grouped by its
-        // first business so unarranged items still cluster predictably.
-        return { biz: bids.length ? bizIndex.get(bids[0]) : 1e9, pos: 1e9 };
-      };
+      // (Earlier attempts ranked by "best position across any business" — which let
+      // a multi-business item borrow a top rank elsewhere — or by "first business in
+      // state.businesses order" — which sank arranged items when the anchor business
+      // wasn't first globally. Both depended on things the owner doesn't control.)
+      const anchorId = (state.lastBizFilter && bizById(state.lastBizFilter)) ? state.lastBizFilter : null;
+      const anchorOrder = anchorId ? (state.itemOrder?.[anchorId]?.[tabKey] || []) : [];
+      const ranked = new Map(anchorOrder.map((id, i) => [id, i]));
       all = [...all].sort((a, b) => {
-        const ra = rankFor(a), rb = rankFor(b);
-        if (ra.biz !== rb.biz) return ra.biz - rb.biz;
-        if (ra.pos !== rb.pos) return ra.pos - rb.pos;
+        const ai = ranked.has(a.id) ? ranked.get(a.id) : 1e9;
+        const bi = ranked.has(b.id) ? ranked.get(b.id) : 1e9;
+        if (ai !== bi) return ai - bi;
         const ca = a.createdAt || 0, cb = b.createdAt || 0;
         if (ca !== cb) return ca - cb;
         return itemIdSeq(a.id) - itemIdSeq(b.id);
@@ -8838,7 +8833,7 @@
     // v13: ignore any old sidebarCollapsed value
     state.sidebarCollapsed = false;
     app.classList.remove('collapsed');
-    ['user','bizContext','activeBizId','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
+    ['user','bizContext','activeBizId','lastBizFilter','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
      'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked','soundEnabled',
      'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__sharedMode','__sharedBusinessId','__sharedEmail','__sharedVersion','bizPasswords','__activeOwnerEmail','activityClearedAt','activityClearedByBiz','clearedActivityIds','seenNoticeIds','lastSeenNoticesAt','seenActivityIds','lastSeenActivityAt'].forEach(k => {
       if (p[k] !== undefined) state[k] = p[k];
@@ -9097,7 +9092,7 @@
         }
       }
       { const am = $('#avatar-mini'); if (am) am.textContent = state.user.name.charAt(0).toUpperCase(); }
-      headerBadge.hidden = !state.bizContext;
+      if (headerBadge) headerBadge.hidden = !state.bizContext;
       screenAuth.classList.remove('screen-active');
       screenMain.classList.add('screen-active');
       window.__bootRendered = true;

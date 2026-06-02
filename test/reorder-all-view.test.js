@@ -1,62 +1,67 @@
-// Reproduces the user's scenario: items shared across businesses must not
-// leapfrog single-business items the owner arranged at the top of the business
-// they were viewing. Tests the rankFor logic in isolation.
+// v208: "All businesses" view mirrors the order of the business the owner most
+// recently filtered to / reordered (state.lastBizFilter). Reproduces the
+// reported scenario: reorder in Marvel, then view All — Marvel's order must hold,
+// regardless of where Marvel sits in state.businesses or what other businesses
+// have ordered the shared items.
 
-const businesses = [
-  { id: 'bMarvel' }, { id: 'bStark' }, { id: 'bSteve' }
-];
-// Items as in the screenshots
+function buildSorter(items, itemOrder, lastBizFilter, businesses, tabKey) {
+  const itemIdSeq = id => parseInt(String(id).replace(/\D/g,''),10) || 0;
+  const bizById = id => businesses.find(b => b.id === id);
+  const anchorId = (lastBizFilter && bizById(lastBizFilter)) ? lastBizFilter : null;
+  const anchorOrder = anchorId ? (itemOrder?.[anchorId]?.[tabKey] || []) : [];
+  const ranked = new Map(anchorOrder.map((id, i) => [id, i]));
+  return [...items].sort((a, b) => {
+    const ai = ranked.has(a.id) ? ranked.get(a.id) : 1e9;
+    const bi = ranked.has(b.id) ? ranked.get(b.id) : 1e9;
+    if (ai !== bi) return ai - bi;
+    const ca = a.createdAt || 0, cb = b.createdAt || 0;
+    if (ca !== cb) return ca - cb;
+    return itemIdSeq(a.id) - itemIdSeq(b.id);
+  });
+}
+
+let pass = 0, fail = 0;
+const ok = (c, m) => { if (c) { pass++; console.log('  \u2713 ' + m); } else { fail++; console.log('  \u2717 ' + m); } };
+
 const items = [
-  { id: 'x13', title: 'Vegas Roll', createdAt: 100, bizIds: ['bMarvel','bStark','bSteve'] },
-  { id: 'x14', title: 'Gameroom',   createdAt: 101, bizIds: ['bMarvel','bStark','bSteve'] },
-  { id: 'x15', title: 'Gamevault',  createdAt: 102, bizIds: ['bMarvel'] },
-  { id: 'x16', title: 'Juwa 2.0',   createdAt: 103, bizIds: ['bMarvel'] },
-  { id: 'x17', title: 'Juwa',       createdAt: 104, bizIds: ['bMarvel','bStark','bSteve'] },
+  { id:'x13', title:'Vegas Roll', createdAt:13, bizIds:['bMarvel','bStark','bSteve'] },
+  { id:'x14', title:'Gameroom',   createdAt:14, bizIds:['bMarvel','bStark','bSteve'] },
+  { id:'x15', title:'Gamevault',  createdAt:15, bizIds:['bMarvel'] },
+  { id:'x16', title:'Juwa',       createdAt:16, bizIds:['bMarvel','bStark','bSteve'] },
+  { id:'x17', title:'Juwa 2.0',   createdAt:17, bizIds:['bMarvel'] },
 ];
-// Owner reordered MARVEL so Gamevault, Juwa, Juwa 2.0 are on top.
-// Stark/Steve have their own orders where the shared items rank high.
+// Owner arranged Marvel: Gamevault, Juwa, Juwa 2.0 on top.
 const itemOrder = {
-  bMarvel: { games: ['x15','x17','x16','x13','x14'] },   // what the owner just set
-  bStark:  { games: ['x13','x14','x17'] },               // Vegas Roll #1 here
-  bSteve:  { games: ['x14','x13','x17'] },               // Gameroom #1 here
+  bMarvel: { games: ['x15','x16','x17','x13','x14'] },
+  bStark:  { games: ['x13','x14','x16'] },
+  bSteve:  { games: ['x14','x13','x16'] },
 };
-const tabKey = 'games';
-const itemBizIds = it => Array.isArray(it.bizIds) ? it.bizIds : (it.bizId ? [it.bizId] : []);
-const itemIdSeq = id => parseInt(String(id).replace(/\D/g,''),10) || 0;
 
-// ---- the v205 logic, mirrored ----
-const bizIndex = new Map(businesses.map((b, i) => [b.id, i]));
-const rankFor = (it) => {
-  const bids = itemBizIds(it).filter(bid => bizIndex.has(bid)).sort((x,y)=>bizIndex.get(x)-bizIndex.get(y));
-  for (const bid of bids) {
-    const saved = itemOrder?.[bid]?.[tabKey];
-    if (saved) { const r = saved.indexOf(it.id); if (r !== -1) return { biz: bizIndex.get(bid), pos: r }; }
-  }
-  return { biz: bids.length ? bizIndex.get(bids[0]) : 1e9, pos: 1e9 };
-};
-const sorted = [...items].sort((a,b)=>{
-  const ra=rankFor(a), rb=rankFor(b);
-  if (ra.biz!==rb.biz) return ra.biz-rb.biz;
-  if (ra.pos!==rb.pos) return ra.pos-rb.pos;
-  const ca=a.createdAt||0, cb=b.createdAt||0; if (ca!==cb) return ca-cb;
-  return itemIdSeq(a.id)-itemIdSeq(b.id);
-});
+// Case 1: Marvel is LAST in state.businesses (the order that broke v206/v207).
+let sorted = buildSorter(items, itemOrder, 'bMarvel',
+  [{id:'bStark'},{id:'bSteve'},{id:'bMarvel'}], 'games');
+let order = sorted.map(i => i.title);
+console.log('Marvel-last  All order:', order.join(' > '));
+ok(JSON.stringify(order) === JSON.stringify(['Gamevault','Juwa','Juwa 2.0','Vegas Roll','Gameroom']),
+   'mirrors Marvel order even when Marvel is last in state.businesses');
 
-const order = sorted.map(i => i.title);
-console.log('Resulting All-businesses order:', order.join(' > '));
+// Case 2: Marvel FIRST — same result (independent of businesses order).
+sorted = buildSorter(items, itemOrder, 'bMarvel',
+  [{id:'bMarvel'},{id:'bStark'},{id:'bSteve'}], 'games');
+ok(JSON.stringify(sorted.map(i=>i.title)) === JSON.stringify(['Gamevault','Juwa','Juwa 2.0','Vegas Roll','Gameroom']),
+   'same result when Marvel is first (order independent of state.businesses)');
 
-// All items' reference biz is Marvel (index 0, first in their bizIds), so they
-// should follow Marvel's arranged order exactly: Gamevault, Juwa, Juwa 2.0, Vegas Roll, Gameroom.
-const expected = ['Gamevault','Juwa','Juwa 2.0','Vegas Roll','Gameroom'];
-let pass = JSON.stringify(order) === JSON.stringify(expected);
-console.log(pass ? 'PASS: All-view honors the order set in the reference business (Marvel)'
-                 : 'FAIL: got ' + JSON.stringify(order) + ' expected ' + JSON.stringify(expected));
+// Case 3: anchor = Stark → All view mirrors Stark's order instead.
+sorted = buildSorter(items, itemOrder, 'bStark',
+  [{id:'bMarvel'},{id:'bStark'},{id:'bSteve'}], 'games');
+order = sorted.map(i => i.title);
+console.log('Stark-anchor All order:', order.join(' > '));
+ok(order[0] === 'Vegas Roll' && order[1] === 'Gameroom',
+   'switching anchor to Stark makes All mirror Stark order');
 
-// Critical regression assertion: Gamevault (Marvel #1) must come before Vegas Roll
-// (which is Stark #1 / Steve #2 — the old "best rank" bug floated it to top).
-const gv = order.indexOf('Gamevault'), vr = order.indexOf('Vegas Roll');
-const noLeapfrog = gv < vr;
-console.log(noLeapfrog ? 'PASS: shared item (Vegas Roll) no longer leapfrogs Marvel-top item'
-                       : 'FAIL: Vegas Roll still above Gamevault');
+// Case 4: no anchor set → falls back to creation order (no crash).
+sorted = buildSorter(items, itemOrder, null, [{id:'bMarvel'}], 'games');
+ok(sorted[0].title === 'Vegas Roll', 'no anchor → creation order fallback');
 
-process.exit(pass && noLeapfrog ? 0 : 1);
+console.log(`\n${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);
