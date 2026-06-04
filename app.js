@@ -449,7 +449,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '209.0.0';
+  const APP_VERSION = '210.0.0';
 
   // ---------- State ----------
   const state = {
@@ -6889,6 +6889,16 @@
         const batchId = editing.batchId || ('bb' + now + '_' + Math.random().toString(36).slice(2, 6));
         const existingById = new Map(editingBatch.map(it => [it.id, it]));
         const keptIds = new Set();
+        // v210 DATA-LOSS FIX: an existing row is "removed" ONLY if the user
+        // actually deleted it from the form (its _id no longer appears in `rows`).
+        // The previous logic removed any existing item whose row failed the
+        // name+balance validity check — so editing an entry and leaving a balance
+        // blank (now easy, since v209 pre-fills names with blank balances) silently
+        // and PERMANENTLY deleted that row. We now track which existing ids are
+        // still present in the form regardless of validity, and only remove the
+        // ones the user explicitly took out. Removal is also a soft-delete (to
+        // Trash), consistent with the rest of the app, instead of a hard splice.
+        const idsStillInForm = new Set(rows.filter(r => r._id).map(r => r._id));
         const validRows = rows.map(r => ({ name: (r.name || '').trim(), balance: (r.balance || '').trim(), _id: r._id }))
                               .filter(r => r.name && r.balance);
         validRows.forEach(r => {
@@ -6912,8 +6922,17 @@
             keptIds.add(newItem.id);
           }
         });
-        // Remove rows the user deleted from the batch
-        editingBatch.forEach(it => { if (!keptIds.has(it.id)) state.items[tabKey] = state.items[tabKey].filter(x => x.id !== it.id); });
+        // An existing row that is still in the form but currently invalid (e.g. a
+        // blank balance the user hasn't filled yet) must be PRESERVED, not deleted.
+        // Keep its previous saved values untouched.
+        editingBatch.forEach(it => { if (idsStillInForm.has(it.id) && !keptIds.has(it.id)) keptIds.add(it.id); });
+        // Soft-delete only the rows the user explicitly removed from the form.
+        editingBatch.forEach(it => {
+          if (!keptIds.has(it.id)) {
+            it.deleted = true; it.deletedAt = Date.now(); it.deletedFromTab = tabKey;
+            recordHistory(it, 'deleted');
+          }
+        });
         // If the recorder name changed, apply to all kept rows (already set above)
         const touched = new Set(); targetBizIds.forEach(b => touched.add(b)); editingBatch.forEach(it => itemBizIds(it).forEach(b => touched.add(b)));
         touched.forEach(bid => { const b = bizById(bid); if (b) recordActivity(b, 'edited', `Edited balance entry by ${recorder}`); });
