@@ -144,27 +144,56 @@
       'idpass-system': [], 'idpass-accounts': []
     };
     Object.keys(slice.items || {}).forEach(function (tab) {
-      var incoming = (slice.items[tab] || []).filter(function (it) { return !it || !it.deleted; });
-      if (!prev || !prev[tab] || !prev[tab].length) { items[tab] = incoming; return; }
-      // Build incoming-by-id map.
+      var raw = slice.items[tab] || [];
+      // v211 FIX (delete oscillation): build the explicit tombstone set from the
+      // RAW slice BEFORE filtering deleted items out. Previously the merge filtered
+      // tombstones away and then treated "absent from incoming" as the delete
+      // signal — but absence is ambiguous: it also describes a brand-new local item
+      // the cloud hasn't echoed yet. That ambiguity caused two symptoms:
+      //   * a just-added local entry could vanish (absent from incoming -> dropped);
+      //   * a locally-deleted entry could come back when a STALE payload still
+      //     carried the live copy (the merge pushed the incoming live item back),
+      //     then disappear again on the next tombstone-bearing payload -> the
+      //     reported "disappears, reappears, disappears" flicker.
+      // We now mirror the owner-side merge: honor tombstones explicitly, never
+      // resurrect an item the member deleted locally, and keep unacknowledged
+      // local additions.
+      var tombstoned = {};
+      raw.forEach(function (it) { if (it && it.id != null && it.deleted) tombstoned[String(it.id)] = true; });
+      var incoming = raw.filter(function (it) { return !it || !it.deleted; });
       var incById = {};
       incoming.forEach(function (it) { if (it && it.id != null) incById[String(it.id)] = it; });
-      // Walk previous items; if local copy is newer than incoming, keep local.
+
+      if (!prev || !prev[tab] || !prev[tab].length) {
+        // No local history: take incoming live items (tombstones already excluded).
+        items[tab] = incoming.slice();
+        return;
+      }
       var seen = {};
       var merged = [];
       prev[tab].forEach(function (lit) {
         if (!lit || lit.id == null) return;
         var k = String(lit.id);
+        seen[k] = true;
+        // Deleted remotely -> honor the deletion, drop it.
+        if (tombstoned[k]) return;
+        // Deleted locally -> stay deleted even if a stale payload still shows it
+        // live. Carry the tombstone locally so our own next slice re-emits it.
+        if (lit.deleted) { merged.push(lit); return; }
         var inc = incById[k];
-        if (!inc) return; // not in incoming (and not a tombstone since we filtered) — drop
+        if (!inc) {
+          // Not in incoming and not tombstoned: this is a local item the cloud
+          // hasn't echoed yet (e.g. just added). KEEP it — do not drop.
+          merged.push(lit);
+          return;
+        }
         var lu = (typeof lit.updatedAt === 'number') ? lit.updatedAt : 0;
         var iu = (typeof inc.updatedAt === 'number') ? inc.updatedAt : 0;
         merged.push(iu >= lu ? inc : lit);
-        seen[k] = true;
       });
-      // Add new incoming items not in prev.
+      // Add genuinely new incoming items not seen locally (and not tombstoned).
       incoming.forEach(function (it) {
-        if (it && it.id != null && !seen[String(it.id)]) merged.push(it);
+        if (it && it.id != null && !seen[String(it.id)] && !tombstoned[String(it.id)]) merged.push(it);
       });
       items[tab] = merged;
     });

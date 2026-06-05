@@ -25,6 +25,7 @@ const suites = [
   ['View-only badge removed + null-safe (v208)', 'view-only-badge.test.js'],
   ['Balance new-entry name pre-fill (v209)', 'balance-prefill.test.js'],
   ['Balance edit no data loss (v210 P0)', 'balance-edit-noloss.test.js'],
+  ['Balance delete sync no flicker (v211)', 'balance-delete-sync.test.js'],
   ['Detail-view ctx guard (v108 blank-page crash)', 'detail-ctx-guard.test.js'],
   ['End-to-end shared flow (pglite)', 'e2e.test.js'],
   ['DOM smoke (jsdom)', 'smoke.test.js'],
