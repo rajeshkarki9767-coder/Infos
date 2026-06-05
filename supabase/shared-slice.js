@@ -118,6 +118,9 @@
       tabOrder: (state.bizTabOrder && state.bizTabOrder[bizId]) || null,
       customTabs: (state.customTabs || []).slice(),
       activity: activity,
+      // v215: the owner's low-balance limit for THIS business, so the business
+      // login shows the same warnings/badges.
+      balanceLimit: (state.balanceLimits && typeof state.balanceLimits[bizId] === 'number') ? state.balanceLimits[bizId] : null,
       // Cleared-entry IDs so the member side suppresses the same entries.
       clearedActivityIds: (state.clearedActivityIds || []).slice(-1000)
     };
@@ -205,6 +208,9 @@
     var bizAllowedTabs = {};
     var bizTabOrder = {};    if (slice.tabOrder)    bizTabOrder[biz.id]    = slice.tabOrder;
     var itemOrder = {};      itemOrder[biz.id] = slice.itemOrder || {};
+    // v215: surface the owner's low-balance limit for this business to the member.
+    var balanceLimits = {};
+    if (typeof slice.balanceLimit === 'number') balanceLimits[biz.id] = slice.balanceLimit;
 
     // Highest item id present, so new local entries don't collide.
     var maxId = 0;
@@ -219,6 +225,7 @@
       businesses: [biz],
       items: items,
       itemOrder: itemOrder,
+      balanceLimits: balanceLimits,
       bizAllowedTabs: bizAllowedTabs,
       bizTabOrder: bizTabOrder,
       customTabs: (slice.customTabs || []).slice(),
