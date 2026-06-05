@@ -492,7 +492,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '217.0.0';
+  const APP_VERSION = '218.0.0';
 
   // ---------- State ----------
   const state = {
@@ -2182,6 +2182,11 @@
           </div>
           <div class="color-swatches" id="m-color-swatches">${BIZ_COLORS.map(c => `<button type="button" class="color-swatch ${chosenColor.toUpperCase() === c.toUpperCase() ? 'selected' : ''}" data-c="${c}" style="background:${c};" aria-label="${c}"></button>`).join('')}</div>
         </div>
+        <div class="field" style="margin-bottom:12px;">
+          <label>Low-balance warning limit (optional)</label>
+          <input id="m-bal-limit" type="number" inputmode="decimal" min="0" placeholder="e.g. 750" value="${editing && state.balanceLimits && typeof state.balanceLimits[editing.id] === 'number' ? esc(String(state.balanceLimits[editing.id])) : ''}"/>
+          <div style="font-size:11px;color:var(--text-tertiary);line-height:1.5;margin-top:4px;">Balance entries at or below this amount show a warning on the Balance tab. Leave blank for no warning.</div>
+        </div>
         <div id="m-error" class="error-msg" hidden></div>
       </div>
       <div class="modal-foot">
@@ -2256,6 +2261,17 @@
         recordActivity(newBiz, 'created', 'Business created');
       }
       const savedBiz = editing || state.businesses[state.businesses.length - 1];
+      // Per-business low-balance limit (moved here from the Balance tab).
+      {
+        const limRaw = ($('#m-bal-limit')?.value || '').trim();
+        state.balanceLimits = state.balanceLimits || {};
+        if (limRaw === '') {
+          delete state.balanceLimits[savedBiz.id];
+        } else {
+          const limN = parseFloat(limRaw);
+          if (!isNaN(limN) && limN >= 0) state.balanceLimits[savedBiz.id] = limN;
+        }
+      }
       closeModal(); buildNav(); updateActiveBizDisplay(); persistAll();
       const cur = state.history[state.history.length-1]?.split(':')[0];
       if (cur === 'businesses' || cur === 'biz-detail') {
@@ -6573,46 +6589,8 @@
       const bids = limitBizId ? [limitBizId] : itemBizIds(it);
       return bids.some(bid => { const lim = limitFor(bid); return lim != null && n <= lim; });
     };
-    const buildLimitBarHTML = () => {
-      if (isViewOnly() || !state.businesses.length) return '';
-      const targetBizes = limitBizId ? [bizById(limitBizId)].filter(Boolean) : state.businesses.slice();
-      const rowsHtml = targetBizes.map(b => {
-        const curLim = limitFor(b.id);
-        return `<div class="balance-limit-row" data-bal-limit-biz="${esc(b.id)}">
-          <span class="balance-limit-name"><span class="biz-color-dot" style="background:${safeColor(b.color)};width:7px;height:7px;"></span>${esc(b.name)}</span>
-          <span class="balance-limit-cur">${curLim != null ? `≤ ${esc(formatBalanceAmount(curLim))}` : '<span style="color:var(--text-secondary);">no limit</span>'}</span>
-          <input type="number" inputmode="decimal" class="balance-limit-input" data-bal-limit-input="${esc(b.id)}" placeholder="e.g. 750" value="${curLim != null ? esc(String(curLim)) : ''}" aria-label="Low-balance limit for ${esc(b.name)}" />
-          <button class="btn-outline btn-sm" data-bal-limit-set="${esc(b.id)}">Set</button>
-          ${curLim != null ? `<button class="btn-outline btn-sm" data-bal-limit-clear="${esc(b.id)}">Clear</button>` : ''}
-        </div>`;
-      }).join('');
-      return `<div class="balance-limit-bar">
-        <div class="balance-limit-title"><i class="ti ti-bell-dollar" style="font-size:14px;vertical-align:-2px;"></i> Low-balance warning ${limitBizId ? '' : '<span style="color:var(--text-secondary);font-weight:400;">(per business)</span>'}</div>
-        ${rowsHtml}
-      </div>`;
-    };
-    const wireLimitHandlers = () => {
-      document.querySelectorAll('[data-bal-limit-set]').forEach(btn => btn.onclick = () => {
-        const bid = btn.dataset.balLimitSet;
-        const input = document.querySelector(`[data-bal-limit-input="${bid}"]`);
-        const raw = (input?.value || '').trim();
-        const n = parseFloat(raw);
-        if (raw === '' || isNaN(n) || n < 0) { toast('Enter a valid limit amount'); return; }
-        state.balanceLimits = state.balanceLimits || {};
-        state.balanceLimits[bid] = n;
-        persistAll();
-        const bn = (bizById(bid) || {}).name || 'business';
-        toast(`Low-balance limit set to ${formatBalanceAmount(n)} for ${bn}`);
-        rerenderCurrentTab();
-      });
-      document.querySelectorAll('[data-bal-limit-clear]').forEach(btn => btn.onclick = () => {
-        const bid = btn.dataset.balLimitClear;
-        if (state.balanceLimits) delete state.balanceLimits[bid];
-        persistAll();
-        toast('Low-balance limit cleared');
-        rerenderCurrentTab();
-      });
-    };
+    const buildLimitBarHTML = () => '';
+    const wireLimitHandlers = () => {};
 
     if (!filtered.length) {
       const emptySub = canAddBalance
@@ -6663,11 +6641,24 @@
     // Owner limit control — always visible at the top (built up front).
     html += buildLimitBarHTML();
 
-    // Banner: list entries at/below the limit across whatever's currently shown.
+    // Which businesses is an item low for? (names, for labeling warnings)
+    const lowBizNames = (it) => {
+      const n = parseFloat(it.balance);
+      if (isNaN(n)) return [];
+      const bids = limitBizId ? [limitBizId] : itemBizIds(it);
+      return bids.filter(bid => { const lim = limitFor(bid); return lim != null && n <= lim; })
+                 .map(bid => (bizById(bid) || {}).name).filter(Boolean);
+    };
+
+    // Banner: list entries at/below the limit, each labeled with its business name.
     const lowEntries = [];
     filtered.forEach(it => { if (isLowItem(it)) lowEntries.push(it); });
     if (lowEntries.length) {
-      const names = lowEntries.slice(0, 12).map(it => `${esc(it.name || '(unnamed)')} (${esc(formatBalanceAmount(it.balance))})`).join(', ');
+      const names = lowEntries.slice(0, 12).map(it => {
+        const bns = lowBizNames(it);
+        const bizLabel = bns.length ? ` — ${esc(bns.join(', '))}` : '';
+        return `${esc(it.name || '(unnamed)')} (${esc(formatBalanceAmount(it.balance))})${bizLabel}`;
+      }).join('; ');
       const more = lowEntries.length > 12 ? ` +${lowEntries.length - 12} more` : '';
       html += `<div class="balance-low-alert" role="alert">
         <i class="ti ti-alert-triangle"></i>
@@ -6684,7 +6675,13 @@
       const showEdit = canEditBatch(b);
       const showDel = canDeleteBatch(b);
       const lowInBatch = b.items.some(isLowItem);
-      const lowBadge = lowInBatch ? `<span class="balance-low-badge" title="Has a balance at or below the limit"><i class="ti ti-alert-triangle" style="font-size:11px;vertical-align:-1px;"></i> Low</span>` : '';
+      let lowBadge = '';
+      if (lowInBatch) {
+        const bizNamesSet = [];
+        b.items.forEach(it => lowBizNames(it).forEach(nm => { if (!bizNamesSet.includes(nm)) bizNamesSet.push(nm); }));
+        const label = bizNamesSet.length ? `Low: ${esc(bizNamesSet.join(', '))}` : 'Low';
+        lowBadge = `<span class="balance-low-badge" title="Has a balance at or below the limit"><i class="ti ti-alert-triangle" style="font-size:11px;vertical-align:-1px;"></i> ${label}</span>`;
+      }
       html += `<div class="balance-row balance-row-clickable${lowInBatch ? ' balance-row-low' : ''}" data-balance-view="${esc(b.bid)}">
         <div class="balance-row-main">
           <div class="balance-row-body">
