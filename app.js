@@ -399,6 +399,18 @@
         } catch (e) {}
         pushedAny = true;
       } catch (e) {
+        // v213: a stale push was correctly REJECTED by saveSharedState because the
+        // cloud is ahead (a member added/edited since we built this slice). Do NOT
+        // count it as a plain failure or retry the same stale slice — instead pull
+        // the newer cloud state so we converge, then let the next change re-push.
+        if (e && e.code === 'STALE_VERSION') {
+          try { syncLog({ staleSkip: p.cloudId, cloudV: e.cloudVersion }); } catch (_) {}
+          try { await refreshSharedFromCloud(p.cloudId, true); } catch (_) {}
+          // Clear the stored sig so that once we hold the latest, a genuine local
+          // change will still be detected and pushed.
+          try { delete window.__ownerPushSig[p.cloudId]; } catch (_) {}
+          continue;
+        }
         anyFailed = true;
         try {
           syncLog({ pushFail: String(e && e.message || e), biz: p.cloudId });
@@ -449,7 +461,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '211.0.0';
+  const APP_VERSION = '213.0.0';
 
   // ---------- State ----------
   const state = {
@@ -3578,6 +3590,24 @@
   function applySharedSnapshotDirect(cloudBusinessId, snap) {
     try {
       if (!snap || !snap.data) return;
+      // v212 FLICKER FIX: never apply a realtime payload whose version is OLDER
+      // than (or equal to) what we've already applied. saveSharedState bumps the
+      // version on every push, and Supabase realtime echoes our OWN pushes back —
+      // sometimes slightly out of order, so a just-added entry would be present in
+      // our state but absent from an older echo that arrives a beat later. The
+      // poll path (refreshSharedFromCloud) already gates on version; the realtime
+      // path only compared CONTENT, so a stale echo (older version, missing the
+      // new item) passed the "content changed" check and got applied — dropping
+      // the entry, then the next (newer) echo restored it: the add/remove/add
+      // flicker, reproducible even on a single device with no other tab open.
+      // A strictly-newer requirement makes stale self-echoes no-ops.
+      const __incomingV = (snap.version || 0);
+      const __appliedV = state.__sharedMode
+        ? (state.__sharedVersion || 0)
+        : ((state.bizCloudVersions && state.bizCloudVersions[cloudBusinessId]) || 0);
+      if (__incomingV && __appliedV && __incomingV <= __appliedV) {
+        return; // stale or duplicate echo — ignore
+      }
       const modalOpen = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
       const fsmOpen = !!document.getElementById('fullscreen-message');
       if (modalOpen || fsmOpen || (typeof sharedSaveTimer !== 'undefined' && sharedSaveTimer)) {
@@ -3860,7 +3890,17 @@
           if (sig != null) window.__lastSharedContentSig = sig;
           try { if (window.__InfosSyncDone) window.__InfosSyncDone(); } catch {}
         }
-      } catch (e) { console.warn('pushSharedState failed:', e); }
+      } catch (e) {
+        // v213: cloud is ahead (owner edited since we built this slice). Pull and
+        // re-merge so the member converges; the local change is preserved by the
+        // merge (newer updatedAt wins) and re-pushed on the next tick.
+        if (e && e.code === 'STALE_VERSION') {
+          try { syncLog({ memberStaleSkip: state.__sharedBusinessId, cloudV: e.cloudVersion }); } catch (_) {}
+          try { await refreshSharedFromCloud(state.__sharedBusinessId, true); } catch (_) {}
+        } else {
+          console.warn('pushSharedState failed:', e);
+        }
+      }
     };
     if (immediate) return doPush(); else sharedSaveTimer = setTimeout(doPush, 900);
   }
@@ -6602,7 +6642,7 @@
           // merge would keep it — so the entry would linger on the other device.
           const now = Date.now();
           state.items[tabKey].forEach(x => {
-            if (ids.has(x.id)) { x.deleted = true; x.deletedAt = now; x.deletedFromTab = tabKey; }
+            if (ids.has(x.id)) { x.deleted = true; x.deletedAt = now; x.updatedAt = now; x.deletedFromTab = tabKey; }
           });
           touched.forEach(bid => { const biz = bizById(bid); if (biz) recordActivity(biz, 'deleted', `Deleted balance entry by ${b.recorder}`); });
           persistAll();
@@ -6906,6 +6946,7 @@
             // update in place
             const it = existingById.get(r._id);
             it.name = r.name; it.balance = r.balance; it.recordedBy = recorder;
+            it.updatedAt = now; // v213: stamp so cross-device merge resolves correctly
             it.bizIds = targetBizIds.length ? targetBizIds.slice() : (it.bizIds || []);
             recordHistory(it, 'edited');
             keptIds.add(r._id);
@@ -6915,6 +6956,7 @@
               id: 'x' + (state.nextItemId++),
               name: r.name, balance: r.balance,
               bizIds: targetBizIds.slice(), recordedBy: recorder, batchId,
+              createdAt: now, updatedAt: now, // v213: stamp for cross-device merge
               createdByBiz: isViewOnly() ? (state.bizContext || true) : false,
               history: [{ ts: now, action: 'created', label: `Created by ${recorder}` }]
             };
@@ -6954,6 +6996,13 @@
             bizIds: targetBizIds.slice(),
             recordedBy: recorder,
             batchId,
+            createdAt: now,
+            // v213: balance items previously never set updatedAt, so the
+            // cross-device merge (which keeps the copy with the higher updatedAt)
+            // saw 0 === 0 for every balance item and couldn't tell a member's new
+            // entry from the owner's stale copy — letting a stale push overwrite
+            // and "disappear" a just-added entry. Stamp it on every create/edit.
+            updatedAt: now,
             // Track who actually created the entry: the owner, or a business member.
             // Owners can DELETE business-created entries but must NOT edit them.
             createdByBiz: isViewOnly() ? (state.bizContext || true) : false,

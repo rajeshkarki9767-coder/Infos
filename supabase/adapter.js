@@ -488,20 +488,33 @@
     async saveSharedState(businessCloudId, data, expectedVersion) {
       const c = getClient(); if (!c) throw new Error('Supabase not configured');
       if (!businessCloudId) throw new Error('businessCloudId required');
-      // Get the user id for updated_by, but DON'T hard-fail the push if we can't
-      // confirm it quickly — a slow getUser() previously threw "Not signed in" and
-      // killed sync even though the user was signed in. RLS still rejects any
-      // unauthorized write server-side, so this is safe. currentUser() now reads
-      // the local session first (no network), so this is fast in the normal case.
       let userId = null;
       try { const u = await Auth.currentUser(); userId = u && u.id; } catch (e) {}
-      let baseVersion = Number(expectedVersion) || 0;
+      const baseVersion = Number(expectedVersion) || 0;
+      // v213 DATA-LOSS FIX: this used to bump baseVersion UP to the cloud's current
+      // version whenever the cloud was ahead, then unconditionally upsert — which
+      // meant a STALE push (e.g. the owner's ~10s self-heal that hadn't yet received
+      // a member's new entry) would overwrite the newer cloud row and give it a
+      // higher version, permanently dropping the member's entry ("disappeared after
+      // some time"). That is the opposite of safe. We now do an OPTIMISTIC
+      // concurrency check: if the cloud version is already AHEAD of what this push
+      // was based on, the local slice is stale — we ABORT instead of clobbering, and
+      // signal the caller to pull-then-retry. Allowing a force write (e.g. an
+      // explicit user-initiated full re-share) still goes through expectedVersion=0
+      // intentionally only where the caller knows it holds the latest.
+      let cloudVersion = 0;
       try {
         const { data: cur } = await c.from('shared_state')
           .select('version').eq('business_cloud_id', businessCloudId).maybeSingle();
-        if (cur && typeof cur.version === 'number' && cur.version > baseVersion) baseVersion = cur.version;
-      } catch (_) { /* if the pre-read fails, fall back to expectedVersion */ }
-      const nextVersion = baseVersion + 1;
+        if (cur && typeof cur.version === 'number') cloudVersion = cur.version;
+      } catch (_) { /* if the pre-read fails, fall back to expectedVersion path below */ }
+      if (cloudVersion > baseVersion) {
+        const err = new Error('stale-write: cloud version ' + cloudVersion + ' is ahead of base ' + baseVersion);
+        err.code = 'STALE_VERSION';
+        err.cloudVersion = cloudVersion;
+        throw err;
+      }
+      const nextVersion = Math.max(baseVersion, cloudVersion) + 1;
       const row = {
         business_cloud_id: businessCloudId,
         data: data || {},

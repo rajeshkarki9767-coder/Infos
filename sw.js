@@ -1,5 +1,5 @@
-const CACHE_VERSION = 'infos-v211.0.0';
-const RUNTIME_CACHE = 'infos-runtime-v211';
+const CACHE_VERSION = 'infos-v213.0.0';
+const RUNTIME_CACHE = 'infos-runtime-v213';
 
 const PRECACHE_URLS = [
   '/',
