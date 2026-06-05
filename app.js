@@ -448,7 +448,10 @@
         } catch (_) {}
       }
     }
-    try { if (pushedAny && window.__InfosSyncDone) window.__InfosSyncDone(); } catch {}
+    // v220 FIX: always settle the sync indicator after the loop. Previously this
+    // only fired when pushedAny was true, so a cycle where every push was
+    // stale-skipped (STALE_VERSION) left the "Syncing…" pill stuck.
+    try { if (window.__InfosSyncDone) window.__InfosSyncDone(); } catch {}
     window.__ownerPushInflight = false;
     // If an edit happened while we were pushing, run once more to flush it.
     if (window.__ownerPushQueued) {
@@ -492,7 +495,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '219.0.0';
+  const APP_VERSION = '220.0.0';
 
   // ---------- State ----------
   const state = {
@@ -3981,6 +3984,14 @@
         } else {
           console.warn('pushSharedState failed:', e);
         }
+      } finally {
+        // v220 FIX: ALWAYS clear the "Syncing…" indicator, on success OR failure.
+        // Previously the indicator was only reset on the success path, so a push
+        // that hit STALE_VERSION (constant during the duplicate-business version
+        // war) or any other error left the pill stuck on "Syncing…" forever — the
+        // reported "keeps loading, only says syncing, never synced" on the business
+        // device. The finally guarantees the status settles regardless of outcome.
+        try { if (window.__InfosSyncDone) window.__InfosSyncDone(); } catch (_) {}
       }
     };
     if (immediate) return doPush(); else sharedSaveTimer = setTimeout(doPush, 900);
