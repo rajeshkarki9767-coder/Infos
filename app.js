@@ -495,7 +495,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '221.0.0';
+  const APP_VERSION = '222.0.0';
 
   // ---------- State ----------
   const state = {
@@ -512,6 +512,11 @@
     // numeric threshold. An entry whose balance is at or below its business's limit
     // gets a warning badge, and the Balance tab shows a banner listing them.
     balanceLimits: {},
+    // v222: the All-businesses view's OWN item order (tab → [itemId,...]). Reordering
+    // in All view writes here, a separate global arrangement that does NOT disturb any
+    // per-business order (state.itemOrder). Lets multi-business items be arranged in the
+    // combined view without the ambiguity of picking which business's order to change.
+    globalItemOrder: {},
     bizContext: null,
     activeTagId: null,
     sidebarCollapsed: false,
@@ -589,7 +594,7 @@
   // who had it toggled on previously don't stay stuck in icon-only mode.
   state.sidebarCollapsed = false;
   app.classList.remove('collapsed');
-  ['user','bizContext','activeBizId','lastBizFilter','balanceLimits','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
+  ['user','bizContext','activeBizId','lastBizFilter','balanceLimits','globalItemOrder','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
    'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked','soundEnabled',
    'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__activeOwnerEmail','activityClearedAt','activityClearedByBiz','clearedActivityIds','seenNoticeIds','lastSeenNoticesAt','seenActivityIds','lastSeenActivityAt'].forEach(k => {
     if (prefs[k] !== undefined) state[k] = prefs[k];
@@ -981,6 +986,31 @@
   }
 
   // v15: Move an item up or down in the per-business order for a tab.
+  // v222: reorder within the All-businesses view, writing to a SEPARATE global
+  // order (state.globalItemOrder) so per-business orders are untouched.
+  function reorderItemGlobal(tabKey, itemId, dir) {
+    if (!state.globalItemOrder) state.globalItemOrder = {};
+    // The All view shows every non-deleted, unpinned item across all businesses.
+    const items = (state.items[tabKey] || []).filter(i => !i.deleted && !i.pinned);
+    const saved = state.globalItemOrder[tabKey] || [];
+    const ranked = new Map(saved.map((id, i) => [id, i]));
+    items.sort((a, b) => {
+      const ai = ranked.has(a.id) ? ranked.get(a.id) : 1e9;
+      const bi = ranked.has(b.id) ? ranked.get(b.id) : 1e9;
+      if (ai !== bi) return ai - bi;
+      const ca = a.createdAt || 0, cb = b.createdAt || 0;
+      if (ca !== cb) return ca - cb;
+      return itemIdSeq(a.id) - itemIdSeq(b.id);
+    });
+    const idx = items.findIndex(i => i.id === itemId);
+    if (idx < 0) return;
+    const newIdx = dir === 'up' ? idx - 1 : idx + 1;
+    if (newIdx < 0 || newIdx >= items.length) return;
+    [items[idx], items[newIdx]] = [items[newIdx], items[idx]];
+    state.globalItemOrder[tabKey] = items.map(i => i.id);
+    persistAll();
+    state.history.pop(); setActive(state.currentTab || tabKey, 'fade');
+  }
   function reorderItemForBiz(bizId, tabKey, itemId, dir) {
     if (!state.itemOrder) state.itemOrder = {};
     if (!state.itemOrder[bizId]) state.itemOrder[bizId] = {};
@@ -6094,8 +6124,11 @@
     const orderingBizId = (state.bizContext) ? state.bizContext
                        : (state.activeBizId && state.activeBizId !== 'all' && state.activeBizId !== 'none') ? state.activeBizId
                        : null;
-    const canReorder = isNumbered && !isViewOnly() && !!orderingBizId;
-    if (canReorder) {
+    // v222: the All-businesses view is now directly reorderable too, writing to a
+    // separate global order. (Owner only; numbered tabs only.)
+    const isAllView = isNumbered && !isViewOnly() && !orderingBizId && (state.activeBizId === 'all' || !state.activeBizId);
+    const canReorder = isNumbered && !isViewOnly() && (!!orderingBizId || isAllView);
+    if (canReorder && orderingBizId) {
       const saved = state.itemOrder?.[orderingBizId]?.[tabKey] || [];
       const indexed = new Map(saved.map((id, i) => [id, i]));
       // Anything saved comes first in saved-order; new items append in their natural order.
@@ -6110,31 +6143,35 @@
         // (A before B) instead of relying on unstable array/merge order.
         return itemIdSeq(a.id) - itemIdSeq(b.id);
       });
-    } else if (isNumbered && (state.activeBizId === 'all' || !orderingBizId) && state.itemOrder) {
-      // ALL-BUSINESSES view. Per-business orders can't combine into one true global
-      // order (the same position number means different things in different
-      // businesses), so we anchor on a single business: the one the owner most
-      // recently filtered to or reordered (state.lastBizFilter). Items belonging to
-      // that business appear first, in exactly the order arranged there; everything
-      // else follows in creation order. This makes the arrangement the owner last
-      // worked on the one reflected in the combined view — e.g. reorder Marvel, and
-      // the All view mirrors Marvel's order.
-      //
-      // (Earlier attempts ranked by "best position across any business" — which let
-      // a multi-business item borrow a top rank elsewhere — or by "first business in
-      // state.businesses order" — which sank arranged items when the anchor business
-      // wasn't first globally. Both depended on things the owner doesn't control.)
-      const anchorId = (state.lastBizFilter && bizById(state.lastBizFilter)) ? state.lastBizFilter : null;
-      const anchorOrder = anchorId ? (state.itemOrder?.[anchorId]?.[tabKey] || []) : [];
-      const ranked = new Map(anchorOrder.map((id, i) => [id, i]));
-      all = [...all].sort((a, b) => {
-        const ai = ranked.has(a.id) ? ranked.get(a.id) : 1e9;
-        const bi = ranked.has(b.id) ? ranked.get(b.id) : 1e9;
-        if (ai !== bi) return ai - bi;
-        const ca = a.createdAt || 0, cb = b.createdAt || 0;
-        if (ca !== cb) return ca - cb;
-        return itemIdSeq(a.id) - itemIdSeq(b.id);
-      });
+    } else if (isAllView) {
+      // ALL-BUSINESSES view, now directly reorderable. Sort by the dedicated global
+      // order (state.globalItemOrder). If the owner has never reordered in All view,
+      // fall back to the v208 anchor (lastBizFilter) so existing behavior is preserved
+      // until they first drag something here.
+      const globalOrder = state.globalItemOrder?.[tabKey] || [];
+      if (globalOrder.length) {
+        const ranked = new Map(globalOrder.map((id, i) => [id, i]));
+        all = [...all].sort((a, b) => {
+          const ai = ranked.has(a.id) ? ranked.get(a.id) : 1e9;
+          const bi = ranked.has(b.id) ? ranked.get(b.id) : 1e9;
+          if (ai !== bi) return ai - bi;
+          const ca = a.createdAt || 0, cb = b.createdAt || 0;
+          if (ca !== cb) return ca - cb;
+          return itemIdSeq(a.id) - itemIdSeq(b.id);
+        });
+      } else {
+        const anchorId = (state.lastBizFilter && bizById(state.lastBizFilter)) ? state.lastBizFilter : null;
+        const anchorOrder = anchorId ? (state.itemOrder?.[anchorId]?.[tabKey] || []) : [];
+        const ranked = new Map(anchorOrder.map((id, i) => [id, i]));
+        all = [...all].sort((a, b) => {
+          const ai = ranked.has(a.id) ? ranked.get(a.id) : 1e9;
+          const bi = ranked.has(b.id) ? ranked.get(b.id) : 1e9;
+          if (ai !== bi) return ai - bi;
+          const ca = a.createdAt || 0, cb = b.createdAt || 0;
+          if (ca !== cb) return ca - cb;
+          return itemIdSeq(a.id) - itemIdSeq(b.id);
+        });
+      }
     }
 
     const q = (state.listSearch && state.listSearch[tabKey] || '').toLowerCase().trim();
@@ -6167,8 +6204,12 @@
     html += activeTagBanner();
 
     if (canReorder) {
-      const bizName = bizById(orderingBizId)?.name || '';
-      html += `<div class="reorder-banner"><i class="ti ti-arrows-sort"></i><span>You can reorder items for <strong>${esc(bizName)}</strong> using the arrows on each card.</span></div>`;
+      if (orderingBizId) {
+        const bizName = bizById(orderingBizId)?.name || '';
+        html += `<div class="reorder-banner"><i class="ti ti-arrows-sort"></i><span>You can reorder items for <strong>${esc(bizName)}</strong> using the arrows on each card.</span></div>`;
+      } else {
+        html += `<div class="reorder-banner"><i class="ti ti-arrows-sort"></i><span>You can reorder items in the <strong>All businesses</strong> view using the arrows on each card. This arrangement is separate from each business's own order.</span></div>`;
+      }
     }
 
     if (!isViewOnly()) {
@@ -6224,7 +6265,8 @@
         e.stopPropagation();
         const id = btn.dataset.reorderId;
         const dir = btn.dataset.reorder; // 'up' | 'down'
-        reorderItemForBiz(orderingBizId, tabKey, id, dir);
+        if (orderingBizId) reorderItemForBiz(orderingBizId, tabKey, id, dir);
+        else reorderItemGlobal(tabKey, id, dir); // All-businesses view → global order
         haptic();
       });
     }
@@ -9081,7 +9123,7 @@
     // v13: ignore any old sidebarCollapsed value
     state.sidebarCollapsed = false;
     app.classList.remove('collapsed');
-    ['user','bizContext','activeBizId','lastBizFilter','balanceLimits','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
+    ['user','bizContext','activeBizId','lastBizFilter','balanceLimits','globalItemOrder','activeTagId','businesses','nextBizId','nextItemId','nextTabId',
      'globalRenames','items','customTabs','tabOrder','onboarded','pushPermissionAsked','soundEnabled',
      'templates','cryptoMeta','syncAdapter','bizAllowedTabs','bizCloudMap','bizCloudVersions','bizTabOrder','accounts','recentSignins','customAccent','currentTab','globalActivity','itemOrder','__lastBalNames','__lastBalRecorder','hiddenTabs','__sharedMode','__sharedBusinessId','__sharedEmail','__sharedVersion','bizPasswords','__activeOwnerEmail','activityClearedAt','activityClearedByBiz','clearedActivityIds','seenNoticeIds','lastSeenNoticesAt','seenActivityIds','lastSeenActivityAt'].forEach(k => {
       if (p[k] !== undefined) state[k] = p[k];
