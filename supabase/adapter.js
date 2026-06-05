@@ -406,6 +406,27 @@
         if (error) throw error;
         return cloudId;
       }
+      // v216: before inserting, check for an EXISTING business this owner already
+      // has with the same name. Previously this always inserted when no cloudId was
+      // passed, so a lost/empty bizCloudMap entry (after a reset, re-share, or a new
+      // device) created a DUPLICATE business row — splitting the member's data and
+      // shared_state across two ids and causing entries to "disappear". Reusing the
+      // existing row keeps one canonical business per name.
+      try {
+        const trimmed = (name || '').trim();
+        if (trimmed) {
+          const { data: existing } = await c.from('businesses')
+            .select('id').eq('owner_id', user.id).eq('name', trimmed)
+            .order('id', { ascending: true }).limit(1);
+          if (existing && existing.length) {
+            // Refresh its name/color and reuse it.
+            await c.from('businesses')
+              .update({ name: trimmed, color: color || '#378ADD' })
+              .eq('id', existing[0].id).eq('owner_id', user.id);
+            return existing[0].id;
+          }
+        }
+      } catch (_) { /* fall through to insert if the lookup fails */ }
       const { data, error } = await c.from('businesses')
         .insert({ owner_id: user.id, name: name || '', color: color || '#378ADD' })
         .select('id').single();

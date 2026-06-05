@@ -378,9 +378,69 @@
       .sort(function (x, y) { return (y.ts || 0) - (x.ts || 0); });
   }
 
+  // v216 DATA-LOSS FIX: the owner's self-heal push previously uploaded a slice
+  // built PURELY from the owner's local state, which overwrote the cloud row and
+  // discarded any items the owner doesn't have locally — most importantly Balance
+  // entries, which are created on the business-login side and may not have merged
+  // into the owner's local state yet. That repeatedly wiped members' balance data
+  // (and rocketed the version counter). This makes the owner push NON-DESTRUCTIVE:
+  // it merges the owner's freshly-built slice ON TOP OF the current cloud slice,
+  // so cloud-only items survive, while the owner's genuine changes (including
+  // explicit tombstones for deletes) still apply.
+  //
+  // Rules per tab, per item id:
+  //   - present in both: keep the one with the higher updatedAt (owner edits win
+  //     when newer; member edits the owner hasn't seen are preserved).
+  //   - present only in cloud: KEEP (this is the member-only data we were losing).
+  //   - present only in local: ADD (owner's new item).
+  //   - explicit tombstone (deleted:true) in local: the owner deleted it — honor it.
+  function mergeSliceOntoCloud(localSlice, cloudSlice) {
+    localSlice = localSlice || {};
+    if (!cloudSlice || !cloudSlice.items) return localSlice; // nothing in cloud yet
+    var out = Object.assign({}, localSlice);
+    var localItems = localSlice.items || {};
+    var cloudItems = cloudSlice.items || {};
+    var mergedItems = {};
+    var tabs = {};
+    Object.keys(localItems).forEach(function (t) { tabs[t] = true; });
+    Object.keys(cloudItems).forEach(function (t) { tabs[t] = true; });
+    Object.keys(tabs).forEach(function (tab) {
+      var loc = localItems[tab] || [];
+      var cld = cloudItems[tab] || [];
+      var byId = {};
+      var order = [];
+      // Seed with cloud items (preserve member-only data).
+      cld.forEach(function (it) {
+        if (!it || it.id == null) return;
+        var k = String(it.id);
+        if (!(k in byId)) order.push(k);
+        byId[k] = it;
+      });
+      // Overlay local items.
+      loc.forEach(function (it) {
+        if (!it || it.id == null) return;
+        var k = String(it.id);
+        var existing = byId[k];
+        if (!existing) { byId[k] = it; order.push(k); return; }
+        // Local tombstone always wins (owner explicitly deleted).
+        if (it.deleted) { byId[k] = it; return; }
+        // If cloud copy is a tombstone, keep the deletion.
+        if (existing.deleted) { return; }
+        var lu = (typeof it.updatedAt === 'number') ? it.updatedAt : 0;
+        var cu = (typeof existing.updatedAt === 'number') ? existing.updatedAt : 0;
+        byId[k] = (lu >= cu) ? it : existing;
+      });
+      var list = order.map(function (k) { return byId[k]; }).filter(Boolean);
+      if (list.length) mergedItems[tab] = list;
+    });
+    out.items = mergedItems;
+    return out;
+  }
+
   var api = {
     SCHEMA: SCHEMA,
     buildSharedSlice: buildSharedSlice,
+    mergeSliceOntoCloud: mergeSliceOntoCloud,
     sliceToMemberState: sliceToMemberState,
     memberStateToSlice: memberStateToSlice,
     applySliceToOwnerState: applySliceToOwnerState,
