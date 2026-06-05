@@ -495,7 +495,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '220.0.0';
+  const APP_VERSION = '221.0.0';
 
   // ---------- State ----------
   const state = {
@@ -3765,6 +3765,16 @@
         }
         if (localBizId) {
           const __beforeOwnerRT = itemIdSnapshot();
+          // v221: capture the visible-items signature BEFORE applying so we can
+          // skip a needless re-render if the merge produces an identical result.
+          // The flicker ("appeared, disappeared, refreshed, appeared") came from
+          // the owner repainting the list on its OWN self-heal echo even though the
+          // merged content was unchanged — the repaint briefly showed a transient
+          // state. Comparing before/after and only rendering on a real change stops
+          // the repaint-to-same-state flicker. (Data was never lost — SQL confirmed
+          // the entry persists; this is purely the owner's render.)
+          let __sigBefore = '';
+          try { __sigBefore = stableStringify(state.items || {}); } catch (e) {}
           // v214 diagnostics: count balance items for this biz before/after apply
           // so the sync panel shows whether an arriving entry survives the merge.
           let __balBefore = 0;
@@ -3783,8 +3793,13 @@
           try { const sl = Slice.buildSharedSlice(state, localBizId, cloudBusinessId); window.__ownerPushSig = window.__ownerPushSig || {}; window.__ownerPushSig[cloudBusinessId] = stableStringify(sl.items || {}) + '|' + stableStringify(sl.business || {}) + '|' + stableStringify(sl.activity || []) + '|' + stableStringify(sl.clearedActivityIds || []); } catch (e) {}
           state.__suppressOwnerPush = true;
           try { persistAll(); } finally { state.__suppressOwnerPush = false; }
-          rerenderPreservingScroll(() => rerenderCurrentTab());
-          try { updateBadges(); buildNav(); } catch (e) {}
+          // Only re-render if the visible items actually changed.
+          let __sigAfter = '';
+          try { __sigAfter = stableStringify(state.items || {}); } catch (e) {}
+          if (__sigAfter !== __sigBefore) {
+            rerenderPreservingScroll(() => rerenderCurrentTab());
+            try { updateBadges(); buildNav(); } catch (e) {}
+          }
           // Sound/notification for items a member just added (e.g. a balance entry).
           // This realtime path applied silently before, so the owner heard nothing
           // until — if ever — the slower poll re-detected it. Chime here.
