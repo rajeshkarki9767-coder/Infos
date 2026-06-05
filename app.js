@@ -492,7 +492,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '218.0.0';
+  const APP_VERSION = '219.0.0';
 
   // ---------- State ----------
   const state = {
@@ -673,6 +673,27 @@
     return allowed.includes(key);
   }
   function bizById(id) { return state.businesses.find(b => b.id === id); }
+  // Per-business low-balance limit helpers (shared by the Balance list and the
+  // view-entry modal). A limit is set per business in its settings; an item is
+  // "low" if its balance is at or below the limit of any business it belongs to
+  // (optionally restricted to a single focused business via `focusBizId`).
+  function balanceLimitFor(bid) {
+    const v = state.balanceLimits && state.balanceLimits[bid];
+    return (typeof v === 'number' && !isNaN(v)) ? v : null;
+  }
+  function isItemLow(it, focusBizId) {
+    const n = parseFloat(it && it.balance);
+    if (isNaN(n)) return false;
+    const bids = focusBizId ? [focusBizId] : itemBizIds(it);
+    return bids.some(bid => { const lim = balanceLimitFor(bid); return lim != null && n <= lim; });
+  }
+  function lowBizNamesFor(it, focusBizId) {
+    const n = parseFloat(it && it.balance);
+    if (isNaN(n)) return [];
+    const bids = focusBizId ? [focusBizId] : itemBizIds(it);
+    return bids.filter(bid => { const lim = balanceLimitFor(bid); return lim != null && n <= lim; })
+               .map(bid => (bizById(bid) || {}).name).filter(Boolean);
+  }
   async function bizSetPassword(b, plaintext) {
     // Always store plaintext (encryption feature removed).
     b.password = plaintext;
@@ -6579,16 +6600,8 @@
     // owner's limit control can render in BOTH the empty state and the list.
     const limitBizId = isViewOnly() ? state.bizContext
       : (state.activeBizId && state.activeBizId !== 'all' && state.activeBizId !== 'none' ? state.activeBizId : null);
-    const limitFor = (bid) => {
-      const v = state.balanceLimits && state.balanceLimits[bid];
-      return (typeof v === 'number' && !isNaN(v)) ? v : null;
-    };
-    const isLowItem = (it) => {
-      const n = parseFloat(it.balance);
-      if (isNaN(n)) return false;
-      const bids = limitBizId ? [limitBizId] : itemBizIds(it);
-      return bids.some(bid => { const lim = limitFor(bid); return lim != null && n <= lim; });
-    };
+    const limitFor = (bid) => balanceLimitFor(bid);
+    const isLowItem = (it) => isItemLow(it, limitBizId);
     const buildLimitBarHTML = () => '';
     const wireLimitHandlers = () => {};
 
@@ -6642,29 +6655,28 @@
     html += buildLimitBarHTML();
 
     // Which businesses is an item low for? (names, for labeling warnings)
-    const lowBizNames = (it) => {
-      const n = parseFloat(it.balance);
-      if (isNaN(n)) return [];
-      const bids = limitBizId ? [limitBizId] : itemBizIds(it);
-      return bids.filter(bid => { const lim = limitFor(bid); return lim != null && n <= lim; })
-                 .map(bid => (bizById(bid) || {}).name).filter(Boolean);
-    };
+    const lowBizNames = (it) => lowBizNamesFor(it, limitBizId);
 
-    // Banner: list entries at/below the limit, each labeled with its business name.
-    const lowEntries = [];
-    filtered.forEach(it => { if (isLowItem(it)) lowEntries.push(it); });
-    if (lowEntries.length) {
-      const names = lowEntries.slice(0, 12).map(it => {
-        const bns = lowBizNames(it);
-        const bizLabel = bns.length ? ` — ${esc(bns.join(', '))}` : '';
-        return `${esc(it.name || '(unnamed)')} (${esc(formatBalanceAmount(it.balance))})${bizLabel}`;
-      }).join('; ');
-      const more = lowEntries.length > 12 ? ` +${lowEntries.length - 12} more` : '';
+    // Banner: "Low Balances !!" with one line per business → name (amount), ...
+    // Build a map: businessName → [ "name (amount)", ... ]
+    const lowByBiz = new Map();
+    filtered.forEach(it => {
+      if (!isLowItem(it)) return;
+      const entryLabel = `${it.name || '(unnamed)'} (${formatBalanceAmount(it.balance)})`;
+      lowBizNames(it).forEach(bn => {
+        if (!lowByBiz.has(bn)) lowByBiz.set(bn, []);
+        lowByBiz.get(bn).push(entryLabel);
+      });
+    });
+    if (lowByBiz.size) {
+      const lines = [...lowByBiz.entries()].map(([bn, entries]) =>
+        `<div class="balance-low-line"><span class="balance-low-biz">${esc(bn)}:</span> ${entries.map(e => esc(e)).join(', ')}</div>`
+      ).join('');
       html += `<div class="balance-low-alert" role="alert">
         <i class="ti ti-alert-triangle"></i>
-        <div>
-          <strong>${lowEntries.length} low balance${lowEntries.length === 1 ? '' : 's'}</strong>
-          <div class="balance-low-alert-detail">${lowEntries.length === 1 ? 'This balance is' : 'These balances are'} at or below the set limit: ${names}${more}</div>
+        <div class="balance-low-body">
+          <strong class="balance-low-title">Low Balances !!</strong>
+          ${lines}
         </div>
       </div>`;
     }
@@ -6763,12 +6775,15 @@
   function openBalanceViewModal(b) {
     const createdStr = formatBalanceStamp(b.created);
     const editedStr = b.edited ? formatBalanceStamp(b.editedAt) : null;
-    const rows = b.items.map((it, i) => `
-      <div class="balance-view-row">
+    const rows = b.items.map((it, i) => {
+      const low = isItemLow(it);
+      return `
+      <div class="balance-view-row${low ? ' balance-view-row-low' : ''}">
         <span class="balance-view-num">${i + 1}</span>
-        <span class="balance-view-name">${esc(it.name || '(unnamed)')}</span>
-        <span class="balance-view-amount">${esc(formatBalanceAmount(it.balance))}</span>
-      </div>`).join('');
+        <span class="balance-view-name">${esc(it.name || '(unnamed)')}${low ? ' <i class="ti ti-alert-triangle balance-view-low-icon" title="Low balance"></i>' : ''}</span>
+        <span class="balance-view-amount${low ? ' balance-view-amount-low' : ''}">${esc(formatBalanceAmount(it.balance))}</span>
+      </div>`;
+    }).join('');
     openModal(`
       <div class="modal-head"><h3>View Entry</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
       <div class="modal-body">
