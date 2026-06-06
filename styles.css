@@ -254,30 +254,42 @@ input[type="password"]::-webkit-textfield-decoration-container { visibility: hid
 .demo-hint-title { color: var(--text-secondary); font-weight: 500; margin-bottom: 4px; }
 .demo-hint code { font-family: var(--font-mono); color: var(--text-primary); }
 
-.btn-primary { padding: 11px 18px; font-size: 14px; font-weight: 500; background: var(--accent-solid); color: white; border: none; border-radius: var(--radius-md); transition: transform 0.1s, opacity 0.2s, filter 0.2s; font-family: inherit; }
-.btn-primary:hover { filter: brightness(1.05); }
-.btn-primary:active { transform: scale(0.98); }
-.btn-primary:disabled { opacity: 0.6; cursor: default; }
+.btn-primary { padding: 11px 18px; font-size: 14px; font-weight: 600; letter-spacing: 0.01em; background: var(--accent-solid); color: white; border: none; border-radius: var(--radius-md); transition: transform 0.12s var(--ease-spring), filter 0.2s, box-shadow 0.2s; font-family: inherit; box-shadow: var(--shadow-sm); }
+.btn-primary:hover { filter: brightness(1.06); box-shadow: var(--shadow-md); }
+.btn-primary:active { transform: scale(0.97); box-shadow: var(--shadow-sm); }
+.btn-primary:disabled { opacity: 0.55; cursor: default; box-shadow: none; }
 .btn-primary.btn-sm { padding: 6px 14px; font-size: 12px; }
 .btn-block { width: 100%; }
 
-.btn-outline { padding: 11px 18px; font-size: 14px; background: transparent; color: var(--text-primary); border: 1px solid var(--border-strong); border-radius: var(--radius-md); font-family: inherit; transition: background 0.15s; }
-.btn-outline:hover { background: var(--surface-1); }
+.btn-outline { padding: 11px 18px; font-size: 14px; font-weight: 500; background: transparent; color: var(--text-primary); border: 1px solid var(--border-strong); border-radius: var(--radius-md); font-family: inherit; transition: background 0.15s, border-color 0.15s, transform 0.12s var(--ease-spring); }
+.btn-outline:hover { background: var(--surface-1); border-color: var(--text-tertiary); }
+.btn-outline:active { transform: scale(0.97); }
 .btn-outline.btn-sm { padding: 6px 12px; font-size: 12px; }
 
-.btn-danger { padding: 10px 16px; font-size: 13px; background: var(--danger-bg); color: var(--danger-fg); border: none; border-radius: var(--radius-md); font-family: inherit; font-weight: 500; }
+.btn-danger { padding: 10px 16px; font-size: 13px; background: var(--danger-bg); color: var(--danger-fg); border: none; border-radius: var(--radius-md); font-family: inherit; font-weight: 600; transition: transform 0.12s var(--ease-spring), filter 0.2s; }
+.btn-danger:active { transform: scale(0.97); }
+.btn-danger:hover { filter: brightness(0.97); }
 .btn-danger-icon { color: var(--danger-fg); }
 
-.btn-link, .btn-link-sm { background: transparent; border: none; color: var(--accent-solid); font-family: inherit; padding: 0; font-weight: 500; }
+.btn-link, .btn-link-sm { background: transparent; border: none; color: var(--accent-solid); font-family: inherit; padding: 0; font-weight: 600; }
 .btn-link-sm { font-size: 12px; }
 .btn-link-sm:disabled { opacity: 0.4; cursor: default; }
 
-.btn-back { width: 100%; margin-top: 18px; padding: 10px; font-size: 13px; background: transparent; border: none; color: var(--text-secondary); display: flex; align-items: center; justify-content: center; gap: 6px; font-family: inherit; border-radius: var(--radius-md); }
+.btn-back { width: 100%; margin-top: 18px; padding: 10px; font-size: 13px; background: transparent; border: none; color: var(--text-secondary); display: flex; align-items: center; justify-content: center; gap: 6px; font-family: inherit; border-radius: var(--radius-md); transition: background 0.15s; }
 .btn-back:hover { background: var(--surface-1); }
 
-.btn-icon { width: 36px; height: 36px; padding: 0; background: transparent; border: none; border-radius: var(--radius-md); color: var(--text-secondary); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.btn-icon { width: 38px; height: 38px; padding: 0; background: transparent; border: none; border-radius: var(--radius-md); color: var(--text-secondary); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; transition: background 0.15s, color 0.15s, transform 0.12s var(--ease-spring); }
 .btn-icon:hover { background: var(--surface-1); color: var(--text-primary); }
+.btn-icon:active { transform: scale(0.92); }
 .btn-icon i { font-size: 19px; }
+
+/* v223: accessible, consistent keyboard focus ring across interactive elements. */
+.btn-primary:focus-visible, .btn-outline:focus-visible, .btn-danger:focus-visible,
+.btn-icon:focus-visible, .btn-link:focus-visible, .btn-link-sm:focus-visible,
+.btn-back:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent-solid);
+  outline-offset: 2px;
+}
 
 .divider { text-align: center; font-size: 12px; color: var(--text-tertiary); position: relative; margin: 4px 0; }
 .divider::before, .divider::after { content: ''; position: absolute; top: 50%; width: calc(50% - 24px); height: 1px; background: var(--border-soft); }
@@ -405,12 +417,12 @@ body.drawer-locked { overflow: hidden; touch-action: none; }
 .page-enter-left { animation: slideInLeft 0.28s cubic-bezier(0.2, 0.8, 0.2, 1); }
 .page-enter-fade { animation: fadeIn 0.22s ease; }
 
-.card-row { background: var(--surface-elevated); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); padding: 15px 16px; margin-bottom: 10px; color: var(--text-primary); transition: border-color 0.15s, transform 0.15s, background 0.15s, box-shadow 0.15s; position: relative; }
+.card-row { background: var(--surface-elevated); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); padding: 15px 16px; margin-bottom: 10px; color: var(--text-primary); transition: border-color 0.15s, transform 0.12s var(--ease-spring), background 0.15s, box-shadow 0.2s; position: relative; box-shadow: var(--shadow-sm); }
 .card-row.clickable { cursor: pointer; touch-action: manipulation; }
-.card-row.clickable:hover { border-color: var(--border-strong); box-shadow: 0 2px 10px rgba(0,0,0,0.04); }
-.card-row.clickable:active { transform: scale(0.995); }
+.card-row.clickable:hover { border-color: var(--border-strong); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.card-row.clickable:active { transform: scale(0.985); box-shadow: var(--shadow-sm); }
 .card-row.pinned { border-left: 3px solid var(--accent-solid); }
-.card-row.selected { border-color: var(--accent-solid); background: var(--accent-bg); }
+.card-row.selected { border-color: var(--accent-solid); background: var(--accent-bg); box-shadow: 0 0 0 1px var(--accent-solid); }
 .card-checkbox { width: 22px; height: 22px; border-radius: 6px; border: 1.5px solid var(--border-strong); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; cursor: pointer; }
 .card-checkbox.checked { background: var(--accent-solid); border-color: var(--accent-solid); color: white; }
 .card-checkbox i { font-size: 14px; }
@@ -624,6 +636,37 @@ body.drawer-locked { overflow: hidden; touch-action: none; }
   .bulk-bar #bulk-all { display: none; }
   .bulk-bar .btn-icon { width: 32px; height: 32px; }
   .bulk-bar .btn-icon i { font-size: 17px; }
+}
+
+/* ============================================================
+   v223: Native-app feel on touch devices. Bigger, comfortable
+   tap targets; momentum scrolling; no flash of grey tap highlight;
+   prevent text-selection on controls; safe-area aware spacing.
+   ============================================================ */
+@media (pointer: coarse) {
+  /* Comfortable minimum tap target (Apple HIG 44px, Material 48dp). */
+  .btn-icon { width: 42px; height: 42px; }
+  .btn-primary, .btn-outline, .btn-danger { padding-top: 12px; padding-bottom: 12px; }
+  .card-row { padding: 14px 16px; }
+  .bottom-tab { min-height: 52px; }
+  .menu-btn, .drawer-close { width: 42px; height: 42px; }
+  /* Larger comfortable hit area for list rows without changing their look. */
+  .card-reorder-btn { min-width: 38px; min-height: 38px; }
+}
+html, body, #app {
+  -webkit-tap-highlight-color: transparent; /* no grey flash on tap (Android) */
+  -webkit-touch-callout: none;
+}
+#page-content, .modal-body, .sidebar-scroll, .drawer-scroll {
+  -webkit-overflow-scrolling: touch; /* momentum scroll on iOS */
+  overscroll-behavior: contain;      /* no scroll chaining / bounce leak */
+}
+button, .btn-icon, .bottom-tab, .nav-item {
+  -webkit-user-select: none; user-select: none; /* controls shouldn't select text */
+}
+/* Respect reduced-motion preference for accessibility. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }
 
 /* ============================================================
@@ -2619,10 +2662,12 @@ body.dark .idpass-segtabs > button.active,
 :root {
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04), 0 1px 1px rgba(0,0,0,0.03);
-  --shadow-md: 0 2px 6px rgba(0,0,0,0.05), 0 4px 12px rgba(0,0,0,0.06);
-  --shadow-lg: 0 4px 12px rgba(0,0,0,0.08), 0 8px 24px rgba(0,0,0,0.08);
-  --shadow-xl: 0 12px 32px rgba(0,0,0,0.10), 0 20px 48px rgba(0,0,0,0.10);
+  /* v223: softer, more layered shadows for a calmer, more premium depth. Each
+     step blends a tight contact shadow with a wider ambient one. */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.05);
+  --shadow-md: 0 2px 4px rgba(0,0,0,0.04), 0 6px 16px rgba(0,0,0,0.07);
+  --shadow-lg: 0 4px 8px rgba(0,0,0,0.05), 0 12px 28px rgba(0,0,0,0.10);
+  --shadow-xl: 0 8px 20px rgba(0,0,0,0.08), 0 24px 56px rgba(0,0,0,0.13);
 }
 #app[data-theme="dark"] {
   --shadow-sm: 0 1px 2px rgba(0,0,0,0.30), 0 1px 1px rgba(0,0,0,0.20);
