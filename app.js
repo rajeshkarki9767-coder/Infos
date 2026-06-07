@@ -421,13 +421,10 @@
         // ALSO record the realtime guard's signature for this slice. The owner is
         // subscribed to its own businesses' realtime, so this very push echoes back
         // as a realtime event. Without this, the guard wouldn't recognize the echo,
-        // would re-apply it, and the cycle would churn the version endlessly. The
-        // formula MUST match the guard's owner-branch sig exactly.
-        try {
-          window.__ownerSliceSig = window.__ownerSliceSig || {};
-          window.__ownerSliceSig[p.cloudId] = stableStringify((p.slice && p.slice.items) || {}) + '|' + stableStringify((p.slice && p.slice.business) || {})
-            + '|' + stableStringify((p.slice && p.slice.activity) || []) + '|' + stableStringify((p.slice && p.slice.clearedActivityIds) || []);
-        } catch (e) {}
+        // v224: the owner realtime guard no longer reads __ownerSliceSig (it was
+        // the over-aggressive content gate that suppressed real updates). Echo
+        // recognition now relies on the version gate (incoming<=applied) plus
+        // __ownerPushSig for self-heal dedup, so this write is removed as dead code.
         pushedAny = true;
       } catch (e) {
         // v213: a stale push was correctly REJECTED by saveSharedState because the
@@ -495,7 +492,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '223.0.0';
+  const APP_VERSION = '226.0.0';
 
   // ---------- State ----------
   const state = {
@@ -3744,11 +3741,15 @@
             || stableStringify(mergedMs.clearedActivityIds || []) !== stableStringify(state.clearedActivityIds || []);
           changed = itemsChanged || actChanged;
         } else {
-          const newSig = stableStringify(snap.data.items || {}) + '|' + stableStringify(snap.data.business || {})
-            + '|' + stableStringify(snap.data.activity || []) + '|' + stableStringify(snap.data.clearedActivityIds || []);
-          window.__ownerSliceSig = window.__ownerSliceSig || {};
-          changed = window.__ownerSliceSig[cloudBusinessId] !== newSig;
-          window.__ownerSliceSig[cloudBusinessId] = newSig;
+          // v224: for the OWNER, do NOT skip on a raw-slice signature match. The
+          // owner applies via a MERGE (applySliceToOwnerState), so a raw-incoming
+          // signature can't reliably predict whether owner state will change — and
+          // a false "unchanged" here was a cause of member entries not appearing on
+          // the owner until they cycled businesses. The version gate above already
+          // dropped stale/equal echoes; a strictly-newer version means real new
+          // data, so always proceed to apply. The post-apply persist + render are
+          // cheap and correctness matters more than skipping a repaint.
+          changed = true;
         }
         if (!changed) {
           if (state.__sharedMode) state.__sharedVersion = snap.version || state.__sharedVersion;
@@ -3803,18 +3804,7 @@
           // state. Comparing before/after and only rendering on a real change stops
           // the repaint-to-same-state flicker. (Data was never lost — SQL confirmed
           // the entry persists; this is purely the owner's render.)
-          let __sigBefore = '';
-          try { __sigBefore = stableStringify(state.items || {}); } catch (e) {}
-          // v214 diagnostics: count balance items for this biz before/after apply
-          // so the sync panel shows whether an arriving entry survives the merge.
-          let __balBefore = 0;
-          try { __balBefore = (state.items.balance || []).filter(x => !x.deleted && itemHasBiz(x, localBizId)).length; } catch (e) {}
           Slice.applySliceToOwnerState(state, snap.data, localBizId);
-          try {
-            const __balAfter = (state.items.balance || []).filter(x => !x.deleted && itemHasBiz(x, localBizId)).length;
-            const __incBal = ((snap.data.items && snap.data.items.balance) || []).filter(x => x && !x.deleted).length;
-            syncLog({ ev: 'owner-apply', biz: cloudBusinessId, balBefore: __balBefore, balAfter: __balAfter, balIncoming: __incBal, cloudV: snap.version || 0 });
-          } catch (e) {}
           if (!state.bizCloudVersions) state.bizCloudVersions = {};
           state.bizCloudVersions[cloudBusinessId] = snap.version || 0;
           // Record the applied content as the owner's push baseline so the ~10s
@@ -3823,16 +3813,22 @@
           try { const sl = Slice.buildSharedSlice(state, localBizId, cloudBusinessId); window.__ownerPushSig = window.__ownerPushSig || {}; window.__ownerPushSig[cloudBusinessId] = stableStringify(sl.items || {}) + '|' + stableStringify(sl.business || {}) + '|' + stableStringify(sl.activity || []) + '|' + stableStringify(sl.clearedActivityIds || []); } catch (e) {}
           state.__suppressOwnerPush = true;
           try { persistAll(); } finally { state.__suppressOwnerPush = false; }
-          // Only re-render if the visible items actually changed.
-          let __sigAfter = '';
-          try { __sigAfter = stableStringify(state.items || {}); } catch (e) {}
-          if (__sigAfter !== __sigBefore) {
+          // v224 FIX: ALWAYS re-render after a genuine owner apply. The v221
+          // "only render if visible items changed" guard caused the reported bug
+          // where a member's balance entry reached owner state but did NOT show
+          // until the owner cycled through businesses and back — the guard, plus
+          // the outer raw-slice signature gate, could skip the repaint even though
+          // real data had arrived. The outer version gate (incoming<=applied) and
+          // content guard already drop stale/identical echoes before we get here,
+          // so by this point the data is genuinely new and must be shown. Mirrors
+          // the member branch, which always re-renders. A faint echo-flicker is an
+          // acceptable trade for never missing a real update.
+          const modalNowO = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
+          if (!modalNowO && !document.getElementById('fullscreen-message')) {
             rerenderPreservingScroll(() => rerenderCurrentTab());
             try { updateBadges(); buildNav(); } catch (e) {}
           }
           // Sound/notification for items a member just added (e.g. a balance entry).
-          // This realtime path applied silently before, so the owner heard nothing
-          // until — if ever — the slower poll re-detected it. Chime here.
           try { chimeForArrivals(__beforeOwnerRT); } catch (e) {}
         }
       }
@@ -6203,14 +6199,8 @@
     `;
     html += activeTagBanner();
 
-    if (canReorder) {
-      if (orderingBizId) {
-        const bizName = bizById(orderingBizId)?.name || '';
-        html += `<div class="reorder-banner"><i class="ti ti-arrows-sort"></i><span>You can reorder items for <strong>${esc(bizName)}</strong> using the arrows on each card.</span></div>`;
-      } else {
-        html += `<div class="reorder-banner"><i class="ti ti-arrows-sort"></i><span>You can reorder items in the <strong>All businesses</strong> view using the arrows on each card. This arrangement is separate from each business's own order.</span></div>`;
-      }
-    }
+    // v225: reorder description banner removed — the arrows on each card are
+    // self-explanatory, and the banner added vertical clutter above the list.
 
     if (!isViewOnly()) {
       const verb = tabKey === 'notices' ? 'New notice' : 'New entry';
@@ -6843,7 +6833,13 @@
   function openBalanceViewModal(b) {
     const createdStr = formatBalanceStamp(b.created);
     const editedStr = b.edited ? formatBalanceStamp(b.editedAt) : null;
-    const rows = b.items.map((it, i) => {
+    // v226: always display rows in a STABLE order — the order they were created
+    // (item ids are 'x'+n, assigned sequentially at creation and never changed).
+    // Previously rows rendered in array order, which a sync merge could shuffle,
+    // so the same entry could show its names in a different order after syncing.
+    // Sorting by the intrinsic id sequence makes the view consistent everywhere.
+    const viewItems = b.items.slice().sort((x, y) => itemIdSeq(x.id) - itemIdSeq(y.id));
+    const rows = viewItems.map((it, i) => {
       const low = isItemLow(it);
       return `
       <div class="balance-view-row${low ? ' balance-view-row-low' : ''}">
@@ -6982,7 +6978,10 @@
     // and "Recorded by" is intentionally left blank so it's re-entered each time.
     let rows;
     if (editingBatch) {
-      rows = editingBatch.map(it => ({ name: it.name || '', balance: it.balance || '', _id: it.id }));
+      // v226: same stable creation-order sort as the view modal, so editing shows
+      // rows in the identical order to viewing (sync merges can't shuffle them).
+      rows = editingBatch.slice().sort((x, y) => itemIdSeq(x.id) - itemIdSeq(y.id))
+        .map(it => ({ name: it.name || '', balance: it.balance || '', _id: it.id }));
     } else {
       const prevNames = lastBalanceNamesForBiz(tabKey);
       rows = prevNames.length ? prevNames.map(n => ({ name: n, balance: '' })) : [{ name: '', balance: '' }];

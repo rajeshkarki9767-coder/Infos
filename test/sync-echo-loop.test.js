@@ -32,9 +32,9 @@ console.log("  " + 7 + " passed, 0 failed");
   const fs2 = require('fs'); const path2 = require('path');
   const app2 = fs2.readFileSync(path2.join(__dirname, '..', 'app.js'), 'utf8');
   let f2 = 0; const ck2 = (n,x)=>{ console.log((x?'  \u2713 ':'  \u2717 ')+n); if(!x)f2++; };
-  ck2('owner push records __ownerSliceSig (echo recognition)', /window\.__ownerSliceSig\[p\.cloudId\] = stableStringify\(\(p\.slice && p\.slice\.items\)/.test(app2));
-  ck2('formula matches realtime guard owner-branch sig', /stableStringify\(snap\.data\.items \|\| \{\}\) \+ '\|' \+ stableStringify\(snap\.data\.business/.test(app2));
+  ck2('owner realtime applies on strictly-newer version (no raw-sig skip)', /v224: for the OWNER, do NOT skip on a raw-slice signature[\s\S]{0,600}changed = true;/.test(app2));
+  ck2('owner realtime always re-renders after a genuine apply (v224)', /v224 FIX: ALWAYS re-render after a genuine owner apply/.test(app2));
   ck2('owner push still records __ownerPushSig (self-heal dedup)', /window\.__ownerPushSig\[p\.cloudId\] = p\.sig;/.test(app2));
   if (f2) { console.log('\n  '+f2+' failed'); process.exit(1); }
-  console.log('  3 passed (v161 owner echo guard)');
+  console.log('  3 passed (v224 owner render/echo guard)');
 })();

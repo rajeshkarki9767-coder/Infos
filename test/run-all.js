@@ -32,6 +32,7 @@ const suites = [
   ['Owner push non-destructive / preserves member data (v216)', 'owner-push-nondestructive.test.js'],
   ['Sync indicator always clears (v220)', 'sync-indicator-clears.test.js'],
   ['All-view global reorder isolation (v222)', 'global-reorder.test.js'],
+  ['Balance view rows stable order (v226)', 'balance-view-order.test.js'],
   ['Detail-view ctx guard (v108 blank-page crash)', 'detail-ctx-guard.test.js'],
   ['End-to-end shared flow (pglite)', 'e2e.test.js'],
   ['DOM smoke (jsdom)', 'smoke.test.js'],
