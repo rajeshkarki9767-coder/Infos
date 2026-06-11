@@ -165,6 +165,19 @@
   //   - Switching to a DIFFERENT account drops the in-memory cache so the next
   //     load() reads that account's own blob (no cross-account bleed).
   async function useAccount(email) {
+    // v228: guard the whole bind against a hung IndexedDB. Several rawGet/rawSet
+    // calls below have no internal timeout; on some Android WebViews / low-storage
+    // / private-mode cases an IDB request can hang and never settle, which froze
+    // the (awaited) login boot on its loading screen forever. Race the real work
+    // against a timeout so a stuck DB degrades to in-memory instead of hanging.
+    const _real = _useAccountInner(email);
+    const _to = new Promise(res => setTimeout(() => res('__TO__'), 4000));
+    try {
+      const r = await Promise.race([_real, _to]);
+      if (r === '__TO__') { try { console.warn('useAccount timed out; continuing in-memory'); } catch {} }
+    } catch (e) { /* swallow — caller proceeds */ }
+  }
+  async function _useAccountInner(email) {
     const id = accountIdFromEmail(email);
     if (!id) return; // nothing to bind to (e.g. local-only with no email yet)
     if (id === activeAccountId) return; // already bound to this account

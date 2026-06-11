@@ -492,7 +492,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '226.0.0';
+  const APP_VERSION = '228.0.0';
 
   // ---------- State ----------
   const state = {
@@ -3598,14 +3598,29 @@
     screenMain.classList.add('screen-active');
     state.history = [];
     recordSignin({ email, name: realBizName, kind: 'business', bizId: biz.id, color: (state.businesses && state.businesses[0] && state.businesses[0].color) || biz.color || null, logo: (state.businesses && state.businesses[0] && state.businesses[0].logo) || null });
-    buildNav(); updateActiveBizDisplay();
-    let bizRestoreTab = null;
-    if (isBootRestore) { try { bizRestoreTab = localStorage.getItem('infos-last-tab'); } catch {} }
-    // A business login can't see owner-only tabs (Businesses); guard the restore.
-    if (bizRestoreTab && getTabDef(bizRestoreTab) && !(getTabDef(bizRestoreTab).ownerOnly)) {
-      setActive(bizRestoreTab);
-    } else {
-      setActive('notices');
+    // v227: GUARANTEE the business session reaches a usable screen. Previously, if
+    // any step in this reveal/render block threw (name resolve, recordSignin,
+    // buildNav, setActive), the function exited with the loading splash still up —
+    // the reported "business login keeps loading only". Wrap the render so a failure
+    // still forces the main screen visible and disarms the watchdog, rather than
+    // stranding the user on an infinite splash.
+    try {
+      buildNav(); updateActiveBizDisplay();
+      let bizRestoreTab = null;
+      if (isBootRestore) { try { bizRestoreTab = localStorage.getItem('infos-last-tab'); } catch {} }
+      // A business login can't see owner-only tabs (Businesses); guard the restore.
+      if (bizRestoreTab && getTabDef(bizRestoreTab) && !(getTabDef(bizRestoreTab).ownerOnly)) {
+        setActive(bizRestoreTab);
+      } else {
+        setActive('notices');
+      }
+    } catch (revealErr) {
+      console.warn('business reveal/render failed, forcing safe screen:', revealErr);
+      try { screenMain.classList.add('screen-active'); } catch {}
+      try { const auth = document.getElementById('screen-auth'); if (auth) auth.classList.remove('screen-active'); } catch {}
+      try { hideLoadingSplash(); } catch {}
+      try { const bs = document.getElementById('boot-splash'); if (bs) bs.remove(); } catch {}
+      try { setActive('notices'); } catch {}
     }
 
     // Go live: any change to the shared row re-hydrates this device.
@@ -4296,18 +4311,14 @@
           }
           return;
         }
-        // Not a member → also check the membership table directly (covers older
-        // member accounts created before role metadata, or if memberInfo missed).
-        try {
-          const biz = await window.InfosSupabase.Auth.getMemberBusiness();
-          if (biz) {
-            btn.textContent = original; btn.disabled = false;
-            await enterSharedBusiness(biz, email);
-            return;
-          }
-        } catch (memErr) {
-          console.warn('Business-login check failed, continuing as owner:', memErr);
-        }
+        // v227 FIX: the account is NOT a member (no member role and no business_id
+        // in its metadata), so it is an OWNER. Previously this fell through to a
+        // business_members TABLE lookup and, if it found ANY row, auto-entered that
+        // business — which wrongly logged the owner straight into one of their own
+        // businesses when an owner happened to have a membership row. The metadata
+        // check above is authoritative (isMember is true whenever a real member
+        // role OR a stamped business_id exists), so reaching here means owner.
+        // Do NOT auto-enter a business; proceed to the owner workspace.
         // Turn on sync and pull any existing cloud state for this user.
         try {
           await Sync.enable('supabase');
@@ -9291,15 +9302,11 @@
             screenMain.classList.remove('screen-active'); screenAuth.classList.add('screen-active');
             return;
           }
-          // Older member accounts (no metadata) — check the membership table too.
-          try {
-            const biz = await raceT(window.InfosSupabase.Auth.getMemberBusiness(), 5000);
-            if (biz && biz !== __BOOT_TIMEOUT) {
-              hideBootSplash();
-              await enterSharedBusiness(biz, sbUser.email || '', { bootRestore: true });
-              return;
-            }
-          } catch (memErr) { console.warn('Business-login bootstrap check failed:', memErr); }
+          // v227 FIX: not a member (authoritative metadata check above) → OWNER.
+          // Do NOT do a membership-table lookup that would auto-enter a business
+          // when the owner happens to have a stray business_members row. This was a
+          // cause of the owner being logged straight into one of their businesses
+          // on reload. Proceed to the owner workspace.
           try { const sub = document.getElementById('boot-splash-sub'); if (sub) sub.textContent = 'Syncing your data…'; } catch {}
           // SHARED-DEVICE SAFETY (boot): if the PERSISTED owner differs from the
           // live session owner (e.g. switched Steve→Zeus, then reloaded), clear the
