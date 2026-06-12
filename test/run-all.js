@@ -35,6 +35,7 @@ const suites = [
   ['Balance view rows stable order (v226)', 'balance-view-order.test.js'],
   ['Owner login no auto-enter business (v227)', 'owner-no-auto-enter.test.js'],
   ['useAccount timeout (v228 stuck-login fix)', 'useaccount-timeout.test.js'],
+  ['Low banner latest-batch only (v229)', 'low-banner-latest.test.js'],
   ['Detail-view ctx guard (v108 blank-page crash)', 'detail-ctx-guard.test.js'],
   ['End-to-end shared flow (pglite)', 'e2e.test.js'],
   ['DOM smoke (jsdom)', 'smoke.test.js'],

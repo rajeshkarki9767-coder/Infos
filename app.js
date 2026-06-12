@@ -492,7 +492,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '228.0.0';
+  const APP_VERSION = '229.0.0';
 
   // ---------- State ----------
   const state = {
@@ -6726,13 +6726,28 @@
     // Which businesses is an item low for? (names, for labeling warnings)
     const lowBizNames = (it) => lowBizNamesFor(it, limitBizId);
 
-    // Banner: "Low Balances !!" with one line per business → name (amount), ...
-    // Build a map: businessName → [ "name (amount)", ... ]
+    // Banner: "Low Balances !!" — but only check the LATEST entry (batch) per
+    // business, not every entry ever. v229: previously this scanned all filtered
+    // items, so old batches piled into the banner (and the same name showed many
+    // times). Now, for each business, we take its most-recent batch and only flag
+    // low balances within that. `batches` is already sorted newest-first.
     const lowByBiz = new Map();
-    filtered.forEach(it => {
-      if (!isLowItem(it)) return;
-      const entryLabel = `${it.name || '(unnamed)'} (${formatBalanceAmount(it.balance)})`;
-      lowBizNames(it).forEach(bn => {
+    // Determine which businesses are in scope: the focused one, or all when unfiltered.
+    const scopeBizIds = limitBizId
+      ? [limitBizId]
+      : state.businesses.map(b => b.id);
+    scopeBizIds.forEach(bid => {
+      // Find this business's latest batch (first in newest-first order that has
+      // an item belonging to this business).
+      const latestBatch = batches.find(b => b.items.some(it => itemHasBiz(it, bid)));
+      if (!latestBatch) return;
+      const bn = (bizById(bid) || {}).name;
+      if (!bn) return;
+      // Within that latest batch, flag the rows that are low for THIS business.
+      latestBatch.items.forEach(it => {
+        if (!itemHasBiz(it, bid)) return;
+        if (!isItemLow(it, bid)) return;
+        const entryLabel = `${it.name || '(unnamed)'} (${formatBalanceAmount(it.balance)})`;
         if (!lowByBiz.has(bn)) lowByBiz.set(bn, []);
         lowByBiz.get(bn).push(entryLabel);
       });
