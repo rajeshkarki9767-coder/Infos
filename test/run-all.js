@@ -36,6 +36,8 @@ const suites = [
   ['Owner login no auto-enter business (v227)', 'owner-no-auto-enter.test.js'],
   ['useAccount timeout (v228 stuck-login fix)', 'useaccount-timeout.test.js'],
   ['Low banner latest-batch only (v229)', 'low-banner-latest.test.js'],
+  ['Balance auto-prune keep 2 newest (v230)', 'balance-prune.test.js'],
+  ['Poll not starved by dropped echoes (v231)', 'poll-starvation.test.js'],
   ['Detail-view ctx guard (v108 blank-page crash)', 'detail-ctx-guard.test.js'],
   ['End-to-end shared flow (pglite)', 'e2e.test.js'],
   ['DOM smoke (jsdom)', 'smoke.test.js'],

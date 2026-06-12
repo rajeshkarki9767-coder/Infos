@@ -492,7 +492,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '229.0.0';
+  const APP_VERSION = '231.0.0';
 
   // ---------- State ----------
   const state = {
@@ -698,6 +698,49 @@
     const bids = focusBizId ? [focusBizId] : itemBizIds(it);
     return bids.filter(bid => { const lim = balanceLimitFor(bid); return lim != null && n <= lim; })
                .map(bid => (bizById(bid) || {}).name).filter(Boolean);
+  }
+  // v230: keep only the 2 NEWEST balance entries (batches) per business; older
+  // ones are auto-removed when a new entry is added (and once on first render for
+  // pre-existing history), because old balance snapshots are obsolete once newer
+  // ones exist. Removal uses the standard SOFT-delete tombstone (deleted=true +
+  // updatedAt stamp) — a hard removal would NOT sync: the non-destructive merge
+  // would simply restore the missing items from the other device. Tombstones are
+  // how deletion propagates owner ↔ business.
+  const BALANCE_KEEP_BATCHES = 2;
+  function pruneOldBalanceBatches(bizId) {
+    if (!bizId) return 0;
+    const list = state.items && state.items.balance;
+    if (!list || !list.length) return 0;
+    // Group this business's live balance items by batch.
+    const byBatch = new Map();
+    list.forEach(it => {
+      if (it.deleted) return;
+      if (!itemHasBiz(it, bizId)) return;
+      const bid = it.batchId || ('solo_' + it.id);
+      if (!byBatch.has(bid)) byBatch.set(bid, []);
+      byBatch.get(bid).push(it);
+    });
+    if (byBatch.size <= BALANCE_KEEP_BATCHES) return 0;
+    // Newest-first by the batch's max createdAt (tiebreak: id sequence).
+    const ordered = [...byBatch.entries()].map(([bid, items]) => ({
+      bid, items,
+      created: Math.max(...items.map(i => i.createdAt || 0)),
+      seq: Math.max(...items.map(i => itemIdSeq(i.id)))
+    })).sort((a, b) => (b.created - a.created) || (b.seq - a.seq));
+    const toRemove = ordered.slice(BALANCE_KEEP_BATCHES);
+    const now = Date.now();
+    let pruned = 0;
+    toRemove.forEach(batch => {
+      batch.items.forEach(it => {
+        // Only prune items that belong SOLELY to this business — an item shared
+        // with another business must not be deleted out from under it.
+        const bids = itemBizIds(it);
+        if (bids.length > 1 && bids.some(x => x !== bizId)) return;
+        it.deleted = true; it.deletedAt = now; it.updatedAt = now; it.deletedFromTab = 'balance';
+        pruned++;
+      });
+    });
+    return pruned;
   }
   async function bizSetPassword(b, plaintext) {
     // Always store plaintext (encryption feature removed).
@@ -3667,7 +3710,9 @@
       // payload's own data makes it truly instant with zero extra network.
       if (row && row.data) {
         try {
-          window.__lastRealtimeApply = Date.now();
+          // v231: do NOT stamp __lastRealtimeApply here — applySharedSnapshotDirect
+          // stamps it only when the payload genuinely applies (passes the version
+          // gate), so dropped echoes can't starve the poll fallback.
           applySharedSnapshotDirect(cloudBusinessId, { data: row.data, version: row.version || 0 });
           return;
         } catch (e) {}
@@ -3725,6 +3770,17 @@
       if (__incomingV && __appliedV && __incomingV <= __appliedV) {
         return; // stale or duplicate echo — ignore
       }
+      // v231 FIX: mark realtime "healthy" ONLY here, after the version gate —
+      // i.e. when a payload is genuinely APPLIED. Previously the subscription
+      // callbacks stamped __lastRealtimeApply on every RECEIVED payload, including
+      // our own stale echoes that this gate then dropped. Since the poll skips
+      // whenever realtime looked recently-active, a stream of dropped echoes (from
+      // the owner's own pushes) STARVED the poll — the very fallback meant to
+      // catch a missed member update. Result: a member's new entry that lost its
+      // websocket event didn't show on the owner until echoes quieted down
+      // ("shows eventually/sometimes"). Stamping only on real applies lets the
+      // poll run whenever realtime isn't actually delivering new data.
+      window.__lastRealtimeApply = Date.now();
       const modalOpen = (function () { const m = document.getElementById('modal'); return m && !m.hidden; })();
       const fsmOpen = !!document.getElementById('fullscreen-message');
       if (modalOpen || fsmOpen || (typeof sharedSaveTimer !== 'undefined' && sharedSaveTimer)) {
@@ -4084,7 +4140,7 @@
         const unsub = window.InfosSupabase.adapter.subscribeSharedState(cloudId, (row) => {
           // Apply the realtime payload's data directly — no slow re-fetch.
           if (row && row.data) {
-            try { window.__lastRealtimeApply = Date.now(); applySharedSnapshotDirect(cloudId, { data: row.data, version: row.version || 0 }); return; } catch (e) {}
+            try { applySharedSnapshotDirect(cloudId, { data: row.data, version: row.version || 0 }); return; } catch (e) {} // v231: stamp moved inside apply
           }
           clearTimeout(window.__ownerRtDebounce);
           window.__ownerRtDebounce = setTimeout(() => refreshSharedFromCloud(cloudId, true), 30);
@@ -6653,6 +6709,18 @@
   // ============================================================
   function renderBalanceList(c) {
     const tabKey = 'balance';
+    // v230: clean up PRE-EXISTING obsolete history once per session — keep only
+    // the 2 newest batches per business. Guarded: only persists when something
+    // was actually pruned, and runs at most once per session (no render loops).
+    if (!window.__balancePruneDone) {
+      window.__balancePruneDone = true;
+      try {
+        let pruned = 0;
+        const scope = state.bizContext ? [state.bizContext] : (state.businesses || []).map(b => b.id);
+        scope.forEach(bid => { pruned += pruneOldBalanceBatches(bid); });
+        if (pruned > 0) persistAll();
+      } catch (e) {}
+    }
     const all = (state.items[tabKey] || []).filter(i => !i.deleted);
     const filtered = filterByBiz(all);
 
@@ -7233,6 +7301,9 @@
         // Global activity (one entry per item)
         created.forEach(it => recordGlobalActivity(tabKey, 'created', it));
         if (created.length) playBalanceSound();
+        // v230: a new entry supersedes old ones — keep only the 2 newest batches
+        // per business and tombstone the rest (auto-cleanup of obsolete snapshots).
+        try { targetBizIds.forEach(bid => pruneOldBalanceBatches(bid)); } catch (e) {}
         persistAll();
         closeModal();
         state.history.pop(); setActive(tabKey, 'fade');
