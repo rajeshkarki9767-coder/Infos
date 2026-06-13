@@ -492,7 +492,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '231.0.0';
+  const APP_VERSION = '232.0.0';
 
   // ---------- State ----------
   const state = {
@@ -5588,8 +5588,27 @@
         try { clearTimeout(sharedSaveTimer); sharedSaveTimer = null; } catch {}
         try {
           await window.InfosSupabase.Auth.restoreSession(stashed.access_token, stashed.refresh_token);
-          // The active Supabase session is now the target account. Reload; boot
-          // reads the restored session and enters the account cleanly.
+          // v232 FIX (two-tap switch): setSession can RESOLVE before the restored
+          // (and possibly token-rotated) session finishes persisting as the active
+          // one — especially when the stashed access token had expired and a
+          // network refresh happened inside setSession. Reloading inside that
+          // window boots the OLD account, so the user had to switch a second time
+          // ("sometimes works, sometimes doesn't"). Verify the ACTIVE user is the
+          // target before reloading (brief bounded poll), and re-stash the rotated
+          // tokens so the NEXT switch back uses fresh ones instead of a dead
+          // single-use refresh token.
+          let confirmed = false;
+          for (let i = 0; i < 6; i++) {
+            try {
+              const u = await window.InfosSupabase.Auth.currentUser();
+              if (u && u.email && (u.email || '').toLowerCase() === (email || '').toLowerCase()) { confirmed = true; break; }
+            } catch {}
+            await new Promise(r => setTimeout(r, 250));
+          }
+          try { if (confirmed) await stashAccountSession(email, kind || 'owner', bizId || null); } catch {}
+          // Reload either way (bounded — never strand the user on the splash):
+          // confirmed → boots the target; unconfirmed after ~1.5s → boot's own
+          // session read is the final arbiter, same as before this fix.
           location.reload();
         } catch (e) {
           // Token expired/invalid → drop it and fall back to a password sign-in

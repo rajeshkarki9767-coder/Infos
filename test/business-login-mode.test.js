@@ -61,7 +61,7 @@ check('owner CAN DELETE Balance batches (view + delete, no edit)', /const canDel
 check('Cmd+N on Balance restricted to business login', /state\.items\.balance && isViewOnly\(\)\) openBalanceModal\(\)/.test(src));
 
 console.log('\naccount switch — passwordless session restore, with sign-out+reload fallback:');
-const pas = src.slice(src.indexOf('function performAccountSwitch'), src.indexOf('function performAccountSwitch') + 5200);
+const pas = src.slice(src.indexOf('function performAccountSwitch'), src.indexOf('function performAccountSwitch') + 7000);
 check('switch tries passwordless session restore first', /stashed\.access_token && stashed\.refresh_token && !isOwnLocalBiz/.test(pas) && /restoreSession\(stashed\.access_token/.test(pas));
 check('switch falls back to sign-out + reload (shared)', /if \(state\.__sharedMode\)/.test(pas) && /location\.reload\(\)/.test(pas));
 check('shared switch awaits signOut before reload', /await Promise\.race/.test(pas));
