@@ -492,7 +492,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '232.0.0';
+  const APP_VERSION = '233.0.0';
 
   // ---------- State ----------
   const state = {
@@ -547,7 +547,7 @@
     globalRenames: {},
     hiddenTabs: [],
     customTabs: [],
-    tabOrder: ['notices', 'games', 'system', 'idpass', 'balance', 'schedule', 'businesses', 'trash'],
+    tabOrder: ['notices', 'games', 'system', 'idpass', 'schedule', 'businesses', 'trash'],
     templates: [
       { id: 'tpl-saas', name: 'SaaS company', desc: 'Engineering, Product, Sales tags', kind: 'business',
         biz: { color: '#378ADD', tags: ['Engineering', 'Product', 'Sales'] }, starters: [] },
@@ -609,12 +609,11 @@
   }
   if (!state.items.schedule) state.items.schedule = [];
 
-  // v16 migration: ensure 'balance' is in tabOrder + items map for users coming from earlier versions
-  // Balance sits just above Attachments (schedule).
-  if (!state.tabOrder.includes('balance')) {
-    const schedIdx = state.tabOrder.indexOf('schedule');
-    if (schedIdx >= 0) state.tabOrder.splice(schedIdx, 0, 'balance');
-    else state.tabOrder.push('balance');
+  // v233: Balance tab removed. Strip it from any existing user's tabOrder so it
+  // never appears, and drop its render route. (Earlier versions migrated it IN;
+  // this migrates it OUT.)
+  if (Array.isArray(state.tabOrder)) {
+    state.tabOrder = state.tabOrder.filter(t => t !== 'balance');
   }
   if (!state.items.balance) state.items.balance = [];
 
@@ -678,70 +677,6 @@
     return allowed.includes(key);
   }
   function bizById(id) { return state.businesses.find(b => b.id === id); }
-  // Per-business low-balance limit helpers (shared by the Balance list and the
-  // view-entry modal). A limit is set per business in its settings; an item is
-  // "low" if its balance is at or below the limit of any business it belongs to
-  // (optionally restricted to a single focused business via `focusBizId`).
-  function balanceLimitFor(bid) {
-    const v = state.balanceLimits && state.balanceLimits[bid];
-    return (typeof v === 'number' && !isNaN(v)) ? v : null;
-  }
-  function isItemLow(it, focusBizId) {
-    const n = parseFloat(it && it.balance);
-    if (isNaN(n)) return false;
-    const bids = focusBizId ? [focusBizId] : itemBizIds(it);
-    return bids.some(bid => { const lim = balanceLimitFor(bid); return lim != null && n <= lim; });
-  }
-  function lowBizNamesFor(it, focusBizId) {
-    const n = parseFloat(it && it.balance);
-    if (isNaN(n)) return [];
-    const bids = focusBizId ? [focusBizId] : itemBizIds(it);
-    return bids.filter(bid => { const lim = balanceLimitFor(bid); return lim != null && n <= lim; })
-               .map(bid => (bizById(bid) || {}).name).filter(Boolean);
-  }
-  // v230: keep only the 2 NEWEST balance entries (batches) per business; older
-  // ones are auto-removed when a new entry is added (and once on first render for
-  // pre-existing history), because old balance snapshots are obsolete once newer
-  // ones exist. Removal uses the standard SOFT-delete tombstone (deleted=true +
-  // updatedAt stamp) — a hard removal would NOT sync: the non-destructive merge
-  // would simply restore the missing items from the other device. Tombstones are
-  // how deletion propagates owner ↔ business.
-  const BALANCE_KEEP_BATCHES = 2;
-  function pruneOldBalanceBatches(bizId) {
-    if (!bizId) return 0;
-    const list = state.items && state.items.balance;
-    if (!list || !list.length) return 0;
-    // Group this business's live balance items by batch.
-    const byBatch = new Map();
-    list.forEach(it => {
-      if (it.deleted) return;
-      if (!itemHasBiz(it, bizId)) return;
-      const bid = it.batchId || ('solo_' + it.id);
-      if (!byBatch.has(bid)) byBatch.set(bid, []);
-      byBatch.get(bid).push(it);
-    });
-    if (byBatch.size <= BALANCE_KEEP_BATCHES) return 0;
-    // Newest-first by the batch's max createdAt (tiebreak: id sequence).
-    const ordered = [...byBatch.entries()].map(([bid, items]) => ({
-      bid, items,
-      created: Math.max(...items.map(i => i.createdAt || 0)),
-      seq: Math.max(...items.map(i => itemIdSeq(i.id)))
-    })).sort((a, b) => (b.created - a.created) || (b.seq - a.seq));
-    const toRemove = ordered.slice(BALANCE_KEEP_BATCHES);
-    const now = Date.now();
-    let pruned = 0;
-    toRemove.forEach(batch => {
-      batch.items.forEach(it => {
-        // Only prune items that belong SOLELY to this business — an item shared
-        // with another business must not be deleted out from under it.
-        const bids = itemBizIds(it);
-        if (bids.length > 1 && bids.some(x => x !== bizId)) return;
-        it.deleted = true; it.deletedAt = now; it.updatedAt = now; it.deletedFromTab = 'balance';
-        pruned++;
-      });
-    });
-    return pruned;
-  }
   async function bizSetPassword(b, plaintext) {
     // Always store plaintext (encryption feature removed).
     b.password = plaintext;
@@ -1292,7 +1227,9 @@
     system: { name: 'System', icon: 'server-cog', render: renderSystemList, fab: true, kind: 'list' },
     games: { name: 'Games', icon: 'device-gamepad-2', render: renderGames, fab: true, kind: 'list' },
     schedule: { name: 'Attachments', icon: 'paperclip', render: renderScheduleList, fab: true, kind: 'list' },
-    balance: { name: 'Balance', icon: 'wallet', render: renderBalanceList, fab: true, kind: 'list' },
+    // v233: Balance tab fully removed at user request (persistent sync/glitch
+    // issues). The tab, its detail route, modals, limits, prune, and sync handling
+    // are gone. Existing balance data in the cloud is left untouched (not deleted).
     idpass: { name: 'ID & Pass', icon: 'key', render: renderIdPassOverview, kind: 'parent' },
     'idpass-system': { name: 'System', icon: 'server-cog', render: renderIdPassSystem, fab: true, kind: 'list' },
     'idpass-accounts': { name: 'Accounts', icon: 'user-circle', render: renderIdPassAccounts, fab: true, kind: 'list' },
@@ -1300,7 +1237,6 @@
     trash: { name: 'Trash', icon: 'trash', render: renderTrash, ownerOnly: true },
     'biz-detail': { name: '', icon: '', render: renderBizDetail, hidden: true },
     'item-detail': { name: '', icon: '', render: renderItemDetail, hidden: true },
-    'balance-detail': { name: '', icon: '', render: renderBalanceDetail, hidden: true },
     'user-guide': { name: 'User guide', icon: 'book-2', render: renderUserGuide, hidden: true },
     about: { name: 'About', icon: 'info-square-rounded', render: renderAbout, hidden: true },
     privacy: { name: 'Privacy', icon: 'shield-lock', render: renderPrivacy, hidden: true },
@@ -1659,10 +1595,8 @@
       else setActive('notices','left');
     }
     else if (tab === 'balance-detail') {
-      const itemId = parts[2];
-      const it = (state.items.balance || []).find(x => x.id === itemId);
-      if (it) setActive('balance-detail','left',{itemId,title:it.name||'Entry',sub:`Recorded by ${it.recordedBy||'Unknown'}`});
-      else setActive('balance','left');
+      // v233: Balance removed — route any stale balance-detail link to notices.
+      setActive('notices','left');
     }
     else setActive(tab, 'left');
   }
@@ -1926,9 +1860,7 @@
           const sub = state.bizContext ? tabDisp(tabKey).name : `${tabDisp(tabKey).name} · ${where}`;
           const run = () => {
             closeSearch();
-            if (tabKey === 'balance') {
-              setActive('balance-detail', 'right', { itemId: it.id, title, sub: `Recorded by ${it.recordedBy || 'Unknown'}` });
-            } else if (isViewOnly()) {
+            if (isViewOnly()) {
               openItemDetailModal(tabKey, it.id);
             } else {
               setActive('item-detail', 'right', { itemTab: tabKey, itemId: it.id, title });
@@ -1990,7 +1922,7 @@
       e.preventDefault();
       if (state.currentTab === 'balance') {
         // Balance entries are added ONLY by the business login (view-only session).
-        if (state.items.balance && isViewOnly()) openBalanceModal();
+        // v233: Balance removed — no Cmd+N balance handler.
       } else if (state.items[state.currentTab] && !isViewOnly()) {
         openItemModal(state.currentTab);
       }
@@ -2276,11 +2208,6 @@
           </div>
           <div class="color-swatches" id="m-color-swatches">${BIZ_COLORS.map(c => `<button type="button" class="color-swatch ${chosenColor.toUpperCase() === c.toUpperCase() ? 'selected' : ''}" data-c="${c}" style="background:${c};" aria-label="${c}"></button>`).join('')}</div>
         </div>
-        <div class="field" style="margin-bottom:12px;">
-          <label>Low-balance warning limit (optional)</label>
-          <input id="m-bal-limit" type="number" inputmode="decimal" min="0" placeholder="e.g. 750" value="${editing && state.balanceLimits && typeof state.balanceLimits[editing.id] === 'number' ? esc(String(state.balanceLimits[editing.id])) : ''}"/>
-          <div style="font-size:11px;color:var(--text-tertiary);line-height:1.5;margin-top:4px;">Balance entries at or below this amount show a warning on the Balance tab. Leave blank for no warning.</div>
-        </div>
         <div id="m-error" class="error-msg" hidden></div>
       </div>
       <div class="modal-foot">
@@ -2355,17 +2282,6 @@
         recordActivity(newBiz, 'created', 'Business created');
       }
       const savedBiz = editing || state.businesses[state.businesses.length - 1];
-      // Per-business low-balance limit (moved here from the Balance tab).
-      {
-        const limRaw = ($('#m-bal-limit')?.value || '').trim();
-        state.balanceLimits = state.balanceLimits || {};
-        if (limRaw === '') {
-          delete state.balanceLimits[savedBiz.id];
-        } else {
-          const limN = parseFloat(limRaw);
-          if (!isNaN(limN) && limN >= 0) state.balanceLimits[savedBiz.id] = limN;
-        }
-      }
       closeModal(); buildNav(); updateActiveBizDisplay(); persistAll();
       const cur = state.history[state.history.length-1]?.split(':')[0];
       if (cur === 'businesses' || cur === 'biz-detail') {
@@ -4200,7 +4116,7 @@
     state.bizCloudMap = {};
     state.bizCloudVersions = {};
     state.bizPasswords = {};
-    state.tabOrder = ['notices', 'games', 'system', 'idpass', 'balance', 'schedule', 'businesses', 'trash'];
+    state.tabOrder = ['notices', 'games', 'system', 'idpass', 'schedule', 'businesses', 'trash'];
     state.nextBizId = 1; state.nextItemId = 1; state.nextTabId = 100;
     state.activeBizId = 'all'; state.bizContext = null; state.activeTagId = null;
   }
@@ -4222,7 +4138,7 @@
     state.items = state.items || {};
     state.businesses = state.businesses || [];
     state.accounts = state.accounts || [];
-    state.tabOrder = state.tabOrder || ['notices','games','system','idpass','balance','schedule','businesses','trash'];
+    state.tabOrder = state.tabOrder || ['notices','games','system','idpass','schedule','businesses','trash'];
     // Bring local-only bizPasswords entries back in: if local has a password
     // for a business that remote doesn't, KEEP it (handles the v131 migration
     // where local b.password values existed but cloud's bizPasswords map was
@@ -6721,620 +6637,6 @@
   function renderIdPassAccounts(c) { renderListTab(c, 'idpass-accounts', 'user-circle', 'No accounts', isViewOnly() ? 'Nothing assigned.' : 'Tap the button below to add.'); }
   function renderCustomTab(c) { const tabKey = state.currentTab; renderListTab(c, tabKey, 'star', 'No items', isViewOnly() ? 'Nothing assigned.' : 'Tap the button below to add.'); }
 
-  // ============================================================
-  // Balance tab — players (or anyone) make entries with a Name and Balance.
-  // Owners can also create, but the typical user is the business team member.
-  // Owners can delete entries. Recent on top. No reorder, no numbering.
-  // ============================================================
-  function renderBalanceList(c) {
-    const tabKey = 'balance';
-    // v230: clean up PRE-EXISTING obsolete history once per session — keep only
-    // the 2 newest batches per business. Guarded: only persists when something
-    // was actually pruned, and runs at most once per session (no render loops).
-    if (!window.__balancePruneDone) {
-      window.__balancePruneDone = true;
-      try {
-        let pruned = 0;
-        const scope = state.bizContext ? [state.bizContext] : (state.businesses || []).map(b => b.id);
-        scope.forEach(bid => { pruned += pruneOldBalanceBatches(bid); });
-        if (pruned > 0) persistAll();
-      } catch (e) {}
-    }
-    const all = (state.items[tabKey] || []).filter(i => !i.deleted);
-    const filtered = filterByBiz(all);
-
-    // Balance entries are added ONLY by the business login (the business records
-    // its own balances). The owner is view-only here — they review/filter entries
-    // but don't add them. (This is the inverse of the other tabs, where only the
-    // owner adds.) isViewOnly() is true for a business login, false for the owner.
-    const canAddBalance = isViewOnly();
-    const fabHTML = canAddBalance
-      ? `<div class="tab-actions-bar"><button class="btn-primary btn-block tab-add-btn" id="tab-add-btn"><i class="ti ti-plus" style="font-size:15px;vertical-align:-3px;"></i> Add entry</button></div>`
-      : '';
-
-    // Per-business low-balance limit helpers (v216.1). Defined up front so the
-    // owner's limit control can render in BOTH the empty state and the list.
-    const limitBizId = isViewOnly() ? state.bizContext
-      : (state.activeBizId && state.activeBizId !== 'all' && state.activeBizId !== 'none' ? state.activeBizId : null);
-    const limitFor = (bid) => balanceLimitFor(bid);
-    const isLowItem = (it) => isItemLow(it, limitBizId);
-    const buildLimitBarHTML = () => '';
-    const wireLimitHandlers = () => {};
-
-    if (!filtered.length) {
-      const emptySub = canAddBalance
-        ? 'Tap "Add entry" to record balances under a recorder\'s name.'
-        : 'Balance entries are added by the business login. They\'ll appear here once recorded.';
-      c.innerHTML = `${fabHTML}${buildLimitBarHTML()}<div class="empty-state-inline"><i class="ti ti-wallet"></i><div><div style="font-weight:600;color:var(--text-primary);">No balance entries yet</div><div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">${emptySub}</div></div></div>`;
-      const ab = $('#tab-add-btn'); if (ab) ab.onclick = () => openBalanceModal();
-      wireLimitHandlers();
-      return;
-    }
-
-    // Group entries by their batchId — one card per "Add entry" submission.
-    // Each card = "Entry Made by [recorder]" holding all the name/balance rows
-    // saved together. Newest submission on top.
-    const origIndex = new Map(all.map((it, i) => [it.id, i]));
-    const batchMap = new Map();
-    filtered.forEach(it => {
-      const bid = it.batchId || ('solo_' + it.id);
-      if (!batchMap.has(bid)) batchMap.set(bid, []);
-      batchMap.get(bid).push(it);
-    });
-    const batches = [...batchMap.entries()].map(([bid, items]) => {
-      items.sort((a, b) => (origIndex.get(a.id) || 0) - (origIndex.get(b.id) || 0));
-      const created = Math.max(...items.map(i => itemCreatedAt(i) || 0));
-      const edited = items.some(i => (i.history || []).some(e => e.action === 'edited'));
-      const editedAt = edited ? Math.max(...items.map(i => itemUpdatedAt(i) || 0)) : null;
-      return { bid, items, recorder: items[0].recordedBy || 'Unknown', created, edited, editedAt,
-               sumIndex: Math.max(...items.map(i => origIndex.get(i.id) || 0)) };
-    });
-    batches.sort((a, b) => (b.created - a.created) || (b.sumIndex - a.sumIndex));
-
-    // Balance permissions:
-    //  - Business login (view-only session): manages its own entries — edit + delete.
-    //  - Owner: view-only for EDITING (cannot edit business-entered balances), but
-    //    CAN DELETE them. So the owner reviews business entries and can remove them,
-    //    but not change their contents.
-    const canEditBatch = (b) => {
-      if (!isViewOnly()) return false; // owner never edits Balance entries
-      return b.items.every(it => itemBizIds(it).includes(state.bizContext));
-    };
-    const canDeleteBatch = (b) => {
-      if (!isViewOnly()) return true; // owner CAN delete (any business's entries)
-      return b.items.every(it => itemBizIds(it).includes(state.bizContext));
-    };
-
-    let html = fabHTML;
-
-    // Owner limit control — always visible at the top (built up front).
-    html += buildLimitBarHTML();
-
-    // Which businesses is an item low for? (names, for labeling warnings)
-    const lowBizNames = (it) => lowBizNamesFor(it, limitBizId);
-
-    // Banner: "Low Balances !!" — but only check the LATEST entry (batch) per
-    // business, not every entry ever. v229: previously this scanned all filtered
-    // items, so old batches piled into the banner (and the same name showed many
-    // times). Now, for each business, we take its most-recent batch and only flag
-    // low balances within that. `batches` is already sorted newest-first.
-    const lowByBiz = new Map();
-    // Determine which businesses are in scope: the focused one, or all when unfiltered.
-    const scopeBizIds = limitBizId
-      ? [limitBizId]
-      : state.businesses.map(b => b.id);
-    scopeBizIds.forEach(bid => {
-      // Find this business's latest batch (first in newest-first order that has
-      // an item belonging to this business).
-      const latestBatch = batches.find(b => b.items.some(it => itemHasBiz(it, bid)));
-      if (!latestBatch) return;
-      const bn = (bizById(bid) || {}).name;
-      if (!bn) return;
-      // Within that latest batch, flag the rows that are low for THIS business.
-      latestBatch.items.forEach(it => {
-        if (!itemHasBiz(it, bid)) return;
-        if (!isItemLow(it, bid)) return;
-        const entryLabel = `${it.name || '(unnamed)'} (${formatBalanceAmount(it.balance)})`;
-        if (!lowByBiz.has(bn)) lowByBiz.set(bn, []);
-        lowByBiz.get(bn).push(entryLabel);
-      });
-    });
-    if (lowByBiz.size) {
-      const lines = [...lowByBiz.entries()].map(([bn, entries]) =>
-        `<div class="balance-low-line"><span class="balance-low-biz">${esc(bn)}:</span> ${entries.map(e => esc(e)).join(', ')}</div>`
-      ).join('');
-      html += `<div class="balance-low-alert" role="alert">
-        <i class="ti ti-alert-triangle"></i>
-        <div class="balance-low-body">
-          <strong class="balance-low-title">Low Balances !!</strong>
-          ${lines}
-        </div>
-      </div>`;
-    }
-    html += '<div class="balance-flat-list">';
-    batches.forEach(b => {
-      const createdStr = formatBalanceStamp(b.created);
-      const editedStr = b.edited ? formatBalanceStamp(b.editedAt) : null;
-      const showEdit = canEditBatch(b);
-      const showDel = canDeleteBatch(b);
-      const lowInBatch = b.items.some(isLowItem);
-      let lowBadge = '';
-      if (lowInBatch) {
-        const bizNamesSet = [];
-        b.items.forEach(it => lowBizNames(it).forEach(nm => { if (!bizNamesSet.includes(nm)) bizNamesSet.push(nm); }));
-        const label = bizNamesSet.length ? `Low: ${esc(bizNamesSet.join(', '))}` : 'Low';
-        lowBadge = `<span class="balance-low-badge" title="Has a balance at or below the limit"><i class="ti ti-alert-triangle" style="font-size:11px;vertical-align:-1px;"></i> ${label}</span>`;
-      }
-      html += `<div class="balance-row balance-row-clickable${lowInBatch ? ' balance-row-low' : ''}" data-balance-view="${esc(b.bid)}">
-        <div class="balance-row-main">
-          <div class="balance-row-body">
-            <div class="balance-row-name">Entry Made by ${esc(b.recorder)} ${lowBadge}</div>
-            <div class="balance-row-meta">
-              <span class="balance-row-stamp"><i class="ti ti-clock" style="font-size:11px;vertical-align:-1px;"></i> ${esc(createdStr)}</span>
-              ${editedStr ? `<span class="balance-row-stamp balance-row-edited"><i class="ti ti-pencil" style="font-size:11px;vertical-align:-1px;"></i> Edited ${esc(editedStr)}</span>` : ''}
-            </div>
-          </div>
-        </div>
-        <div class="balance-row-actions" onclick="event.stopPropagation();">
-          ${showEdit ? `<button class="btn-icon" data-bal-edit="${esc(b.bid)}" aria-label="Edit entry" title="Edit"><i class="ti ti-edit"></i></button>` : ''}
-          ${showDel ? `<button class="btn-icon btn-icon-danger" data-bal-del="${esc(b.bid)}" aria-label="Delete entry" title="Delete"><i class="ti ti-trash"></i></button>` : ''}
-        </div>
-      </div>`;
-    });
-    html += '</div>';
-    c.innerHTML = html;
-
-    const ab = $('#tab-add-btn'); if (ab) ab.onclick = () => openBalanceModal();
-    wireLimitHandlers();
-
-    const batchById = (bid) => batches.find(b => b.bid === bid);
-
-    // Edit a whole batch → opens the entry panel pre-filled with all its rows.
-    c.querySelectorAll('[data-bal-edit]').forEach(btn => btn.onclick = (e) => {
-      e.stopPropagation();
-      const b = batchById(btn.dataset.balEdit);
-      if (!b) return;
-      if (!isViewOnly() && b.items.some(it => it.createdByBiz)) {
-        toast('Business-entered records can only be deleted, not edited');
-        return;
-      }
-      openBalanceModal(b.bid);
-    });
-
-    // Delete a whole batch (all rows saved together).
-    c.querySelectorAll('[data-bal-del]').forEach(btn => btn.onclick = (e) => {
-      e.stopPropagation();
-      const b = batchById(btn.dataset.balDel);
-      if (!b) return;
-      const n = b.items.length;
-      confirmAction({
-        title: 'Delete this entry?',
-        message: `This permanently deletes the entry made by ${b.recorder} (${n} ${n === 1 ? 'record' : 'records'}). This cannot be undone.`,
-        confirmLabel: 'Delete',
-        danger: true,
-        onConfirm: () => {
-          const ids = new Set(b.items.map(i => i.id));
-          const touched = new Set(); b.items.forEach(it => itemBizIds(it).forEach(x => touched.add(x)));
-          b.items.forEach(it => recordGlobalActivity(tabKey, 'trashed', it));
-          // SOFT-delete (not a hard array removal). buildSharedSlice emits a
-          // tombstone for items with deleted=true, which is how the deletion
-          // propagates to the other side (owner ↔ business). A hard removal would
-          // just make the item ABSENT from the slice, and the non-destructive
-          // merge would keep it — so the entry would linger on the other device.
-          const now = Date.now();
-          state.items[tabKey].forEach(x => {
-            if (ids.has(x.id)) { x.deleted = true; x.deletedAt = now; x.updatedAt = now; x.deletedFromTab = tabKey; }
-          });
-          touched.forEach(bid => { const biz = bizById(bid); if (biz) recordActivity(biz, 'deleted', `Deleted balance entry by ${b.recorder}`); });
-          persistAll();
-          state.history.pop(); setActive(tabKey, 'fade');
-          (tabKey === 'balance' ? playBalanceDeleteSound() : playDeleteSound()); toast('Entry deleted');
-        }
-      });
-    });
-
-    // Tapping a card opens the read-only View Entry modal (X + Cancel).
-    c.querySelectorAll('[data-balance-view]').forEach(row => row.onclick = (e) => {
-      e.stopPropagation();
-      const b = batchById(row.dataset.balanceView);
-      if (b) openBalanceViewModal(b);
-    });
-  }
-
-  // Read-only "View Entry" modal: recorder + timestamps + numbered name/amount
-  // list. X top-right and Cancel bottom; no edit/delete here.
-  function openBalanceViewModal(b) {
-    const createdStr = formatBalanceStamp(b.created);
-    const editedStr = b.edited ? formatBalanceStamp(b.editedAt) : null;
-    // v226: always display rows in a STABLE order — the order they were created
-    // (item ids are 'x'+n, assigned sequentially at creation and never changed).
-    // Previously rows rendered in array order, which a sync merge could shuffle,
-    // so the same entry could show its names in a different order after syncing.
-    // Sorting by the intrinsic id sequence makes the view consistent everywhere.
-    const viewItems = b.items.slice().sort((x, y) => itemIdSeq(x.id) - itemIdSeq(y.id));
-    const rows = viewItems.map((it, i) => {
-      const low = isItemLow(it);
-      return `
-      <div class="balance-view-row${low ? ' balance-view-row-low' : ''}">
-        <span class="balance-view-num">${i + 1}</span>
-        <span class="balance-view-name">${esc(it.name || '(unnamed)')}${low ? ' <i class="ti ti-alert-triangle balance-view-low-icon" title="Low balance"></i>' : ''}</span>
-        <span class="balance-view-amount${low ? ' balance-view-amount-low' : ''}">${esc(formatBalanceAmount(it.balance))}</span>
-      </div>`;
-    }).join('');
-    openModal(`
-      <div class="modal-head"><h3>View Entry</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
-      <div class="modal-body">
-        <div class="balance-view-recorder">Recorded by: <strong>${esc(b.recorder)}</strong></div>
-        <div class="balance-view-stamp">${esc(createdStr)}${editedStr ? ` · Edited ${esc(editedStr)}` : ''}</div>
-        <div class="balance-view-list">${rows}</div>
-        <div class="balance-view-total"><span>Total</span><strong>${esc(formatBalanceAmount(b.items.reduce((s, it) => s + (parseFloat(it.balance) || 0), 0)))}</strong></div>
-      </div>
-      <div class="modal-foot"><button class="btn-outline" id="m-cancel">Cancel</button></div>
-    `);
-    $('#m-close').onclick = closeModal;
-    $('#m-cancel').onclick = closeModal;
-  }
-
-  // Read-only detail page (legacy single-entry route, kept for deep links).
-  function renderBalanceDetail(c, ctx) {
-    if (!ctx) ctx = state.__currentCtx;
-    if (!ctx) { try { setActive('balance'); } catch (e) {} return; }
-    const tabKey = 'balance';
-    const it = (state.items[tabKey] || []).find(x => x.id === ctx.itemId);
-    if (!it) { c.innerHTML = emptyState('alert-circle', 'Entry not found', 'It may have been deleted.'); return; }
-    const created = itemCreatedAt(it);
-    const updated = itemUpdatedAt(it);
-    const edited = (it.history || []).some(e => e.action === 'edited');
-    c.innerHTML = `
-      <div class="detail-section">
-        <div class="balance-detail-hero">
-          <div class="balance-detail-name">${esc(it.name || '(unnamed)')}</div>
-          <div class="balance-detail-amount">${esc(formatBalanceAmount(it.balance))}</div>
-        </div>
-      </div>
-      <div class="detail-section">
-        <div class="section-label">Details</div>
-        <div class="info-pill">
-          <div class="detail-meta-row"><i class="ti ti-user" style="font-size:13px;"></i><span style="width:96px;">Recorded by</span><strong>${esc(it.recordedBy || 'Unknown')}</strong></div>
-          <div class="detail-meta-row"><i class="ti ti-wallet" style="font-size:13px;"></i><span style="width:96px;">Balance</span><strong>${esc(formatBalanceAmount(it.balance))}</strong></div>
-          <div class="detail-meta-row"><i class="ti ti-clock" style="font-size:13px;"></i><span style="width:96px;">Created</span><strong>${formatDateTime(created)}</strong></div>
-          ${edited ? `<div class="detail-meta-row"><i class="ti ti-pencil" style="font-size:13px;"></i><span style="width:96px;">Edited</span><strong>${formatDateTime(updated)}</strong></div>` : ''}
-        </div>
-      </div>`;
-  }
-
-  // Format date in the style: "Mon, Jan 15 · 3:42 PM"
-  function formatBalanceStamp(ts) {
-    if (!ts) return '—';
-    const d = new Date(ts);
-    const day = d.toLocaleDateString(undefined, { weekday: 'short' });
-    const date = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-    return `${day}, ${date} · ${time}`;
-  }
-
-  // Format a balance amount: keep raw if it has currency text, else just trim trailing zeros
-  function formatBalanceAmount(v) {
-    if (v == null || v === '') return '—';
-    if (typeof v === 'number') return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
-    const s = String(v).trim();
-    const n = parseFloat(s);
-    if (!isNaN(n) && /^[+\-]?[\d,.]+$/.test(s.replace(/\s/g, ''))) {
-      return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-    }
-    return s; // keeps things like "$100" or "₹500" as-is
-  }
-
-  // Open the Add/Edit Balance modal. Allows biz users (view-only) to create entries,
-  // and lets them add multiple rows in one shot via "Add more".
-  // Returns the names from the most recent balance batch belonging to the current
-  // business (state.bizContext for a biz login, or the active business filter for an
-  // owner), in that batch's saved row order. Used to pre-fill a new balance entry so
-  // the same roster of names can be re-entered quickly. Returns [] if none / no biz.
-  function lastBalanceNamesForBiz(tabKey) {
-    const bizId = isViewOnly() ? state.bizContext
-      : (state.activeBizId && state.activeBizId !== 'all' && state.activeBizId !== 'none' ? state.activeBizId : null);
-    if (!bizId) return [];
-    const items = (state.items[tabKey] || []).filter(it => !it.deleted && itemBizIds(it).includes(bizId));
-    if (!items.length) return [];
-    // Preserve creation/array order for stable within-batch ordering.
-    const origIndex = new Map(items.map((it, i) => [it.id, i]));
-    const batchMap = new Map();
-    items.forEach(it => {
-      const bid = it.batchId || ('solo_' + it.id);
-      if (!batchMap.has(bid)) batchMap.set(bid, []);
-      batchMap.get(bid).push(it);
-    });
-    let best = null;
-    for (const [, group] of batchMap) {
-      const created = Math.max(...group.map(i => itemCreatedAt(i) || 0));
-      const sumIndex = Math.max(...group.map(i => origIndex.get(i.id) || 0));
-      if (!best || created > best.created || (created === best.created && sumIndex > best.sumIndex)) {
-        best = { group, created, sumIndex };
-      }
-    }
-    if (!best) return [];
-    best.group.sort((a, b) => (origIndex.get(a.id) || 0) - (origIndex.get(b.id) || 0));
-    // Distinct, non-empty names, order preserved.
-    const seen = new Set(); const names = [];
-    best.group.forEach(it => {
-      const n = (it.name || '').trim();
-      if (n && !seen.has(n)) { seen.add(n); names.push(n); }
-    });
-    return names;
-  }
-
-  function openBalanceModal(editId) {
-    const tabKey = 'balance';
-    // Balance entries are added/edited ONLY by the business login (a view-only
-    // session). The owner is view-only on Balance, so refuse to open the editor
-    // for them — defense in depth behind the hidden Add button.
-    if (!isViewOnly()) { toast('Balance entries are added by the business login'); return; }
-    // editId may be a single item id (legacy) OR a batchId (a whole submission).
-    let editingBatch = null;
-    let editing = null;
-    if (editId) {
-      const byBatch = (state.items[tabKey] || []).filter(i => i.batchId === editId && !i.deleted);
-      if (byBatch.length) {
-        editingBatch = byBatch;
-        editing = byBatch[0];
-      } else {
-        editing = state.items[tabKey].find(i => i.id === editId) || null;
-        if (editing) editingBatch = [editing];
-      }
-    }
-    // For edit: one row per existing entry in the batch.
-    // For new entries: pre-fill the rows with the NAMES from the most recent
-    // balance batch for this business (in that batch's saved order), leaving the
-    // balance blank. This lets the business login re-enter the same roster of
-    // names quickly and just fill in the new amounts. Names remain fully editable,
-    // and "Recorded by" is intentionally left blank so it's re-entered each time.
-    let rows;
-    if (editingBatch) {
-      // v226: same stable creation-order sort as the view modal, so editing shows
-      // rows in the identical order to viewing (sync merges can't shuffle them).
-      rows = editingBatch.slice().sort((x, y) => itemIdSeq(x.id) - itemIdSeq(y.id))
-        .map(it => ({ name: it.name || '', balance: it.balance || '', _id: it.id }));
-    } else {
-      const prevNames = lastBalanceNamesForBiz(tabKey);
-      rows = prevNames.length ? prevNames.map(n => ({ name: n, balance: '' })) : [{ name: '', balance: '' }];
-    }
-
-    function renderRows() {
-      const wrap = document.getElementById('bal-rows');
-      if (!wrap) return;
-      wrap.innerHTML = rows.map((r, i) => `
-        <div class="balance-form-row" data-bal-row="${i}">
-          <div class="balance-form-row-num">${i + 1}</div>
-          <input type="text" class="balance-input-name" placeholder="Name" data-bal-name="${i}" value="${esc(r.name)}" autocomplete="off"/>
-          <input type="text" class="balance-input-amount" placeholder="Balance" data-bal-amt="${i}" inputmode="decimal" value="${esc(r.balance)}" autocomplete="off"/>
-          ${rows.length > 1 ? `<button type="button" class="btn-icon balance-form-remove" data-bal-rm="${i}" aria-label="Remove row"><i class="ti ti-x"></i></button>` : ''}
-        </div>
-      `).join('');
-      // Bind name/amount inputs to keep `rows` in sync as user types
-      wrap.querySelectorAll('[data-bal-name]').forEach(inp => {
-        inp.oninput = () => { rows[parseInt(inp.dataset.balName)].name = inp.value; };
-      });
-      wrap.querySelectorAll('[data-bal-amt]').forEach(inp => {
-        inp.oninput = () => { rows[parseInt(inp.dataset.balAmt)].balance = inp.value; };
-      });
-      wrap.querySelectorAll('[data-bal-rm]').forEach(btn => btn.onclick = () => {
-        const i = parseInt(btn.dataset.balRm);
-        rows.splice(i, 1);
-        renderRows();
-      });
-      window.__InfosIcons?.replaceIcons(wrap);
-    }
-
-    // For biz users, the bizId is fixed (state.bizContext).
-    // For owners creating, they can pick businesses (re-use the assign UI from item modal).
-    const isBizUser = isViewOnly();
-    const ownerHasBiz = !isBizUser && state.businesses.length > 0;
-    let ownerChosenBizIds = editing
-      ? (editing.bizIds ? [...editing.bizIds] : [])
-      : (state.activeBizId && state.activeBizId !== 'all' && state.activeBizId !== 'none' ? [state.activeBizId] : []);
-
-    function renderOwnerBizAssign() {
-      const wrap = document.getElementById('bal-biz');
-      if (!wrap) return;
-      const allSelected = ownerChosenBizIds.length === state.businesses.length && state.businesses.length > 0;
-      wrap.innerHTML = `
-        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
-          ${state.businesses.map(b => {
-            const sel = ownerChosenBizIds.includes(b.id);
-            return `<span class="assign-pill ${sel ? 'selected' : ''}" data-bal-biz="${esc(b.id)}"><span class="biz-color-dot" style="background:${esc(b.color || '#888')}"></span>${esc(b.name)}${sel ? ' <i class="ti ti-check" style="font-size:11px;"></i>' : ''}</span>`;
-          }).join('')}
-        </div>
-        <button type="button" class="btn-outline btn-sm" id="bal-biz-all">${allSelected ? 'Unassign all' : 'Assign to all'}</button>
-      `;
-      wrap.querySelectorAll('[data-bal-biz]').forEach(el => el.onclick = () => {
-        const bid = el.dataset.balBiz;
-        if (ownerChosenBizIds.includes(bid)) ownerChosenBizIds = ownerChosenBizIds.filter(x => x !== bid);
-        else ownerChosenBizIds.push(bid);
-        renderOwnerBizAssign();
-      });
-      const allBtn = document.getElementById('bal-biz-all');
-      if (allBtn) allBtn.onclick = () => {
-        if (ownerChosenBizIds.length === state.businesses.length) ownerChosenBizIds = [];
-        else ownerChosenBizIds = state.businesses.map(b => b.id);
-        renderOwnerBizAssign();
-      };
-      window.__InfosIcons?.replaceIcons(wrap);
-    }
-
-    openModal(`
-      <div class="modal-head"><h3>${editing ? 'Edit Balance Entry' : 'New Balance Entries'}</h3><button id="m-close" class="btn-icon" aria-label="Close"><i class="ti ti-x"></i></button></div>
-      <div class="modal-body">
-        <div class="settings-hint" style="margin-bottom:10px;">${editing ? 'Edit this entry.' : 'Type who is recording these entries, then add one or more name + balance rows.'}</div>
-        <div class="field" style="margin-bottom:12px;">
-          <label>Recorded by</label>
-          <input id="bal-recorder" type="text" placeholder="Who is recording this?" value="${esc(editing ? (editing.recordedBy || '') : '')}" autocomplete="off"/>
-        </div>
-        <div id="bal-rows"></div>
-        <button type="button" class="btn-outline btn-sm balance-form-add" id="bal-add-row" style="margin-bottom:12px;"><i class="ti ti-plus" style="font-size:13px;vertical-align:-2px;"></i> Add more</button>
-        ${ownerHasBiz ? `<div class="field" style="margin-bottom:10px;"><label>Assign to business${state.businesses.length === 1 ? '' : 'es'}</label><div id="bal-biz"></div></div>` : ''}
-      </div>
-      <div class="modal-foot"><button class="btn-outline" id="m-cancel">Cancel</button><button class="btn-primary" id="bal-save">${editing ? 'Save' : 'Add'}</button></div>
-    `);
-    renderRows();
-    if (ownerHasBiz) renderOwnerBizAssign();
-
-    const addRowBtn = document.getElementById('bal-add-row');
-    if (addRowBtn) addRowBtn.onclick = () => {
-      rows.push({ name: '', balance: '' });
-      renderRows();
-      // Focus the newly-added name input
-      setTimeout(() => {
-        const inputs = document.querySelectorAll('[data-bal-name]');
-        inputs[inputs.length - 1]?.focus();
-      }, 30);
-    };
-
-    document.getElementById('bal-save').onclick = () => {
-      const recorder = (document.getElementById('bal-recorder')?.value || '').trim();
-      if (!recorder) { toast('Recorded by field is empty'); document.getElementById('bal-recorder')?.focus(); return; }
-      // Validate: every row must have a name AND a balance
-      const cleaned = rows.map(r => ({ name: (r.name || '').trim(), balance: (r.balance || '').trim() }));
-      const valid = cleaned.filter(r => r.name && r.balance);
-      if (!valid.length) { toast('Enter a name and balance for at least one row'); return; }
-      const skipped = cleaned.length - valid.length;
-      // Owner must assign the entry to at least one business, otherwise it's
-      // orphaned: it only shows in the "All" view, disappears under any business
-      // filter, and (critically) never syncs to a business login because the
-      // shared slice for a business only includes items assigned to it. If the
-      // owner has businesses but picked none, default to the business they're
-      // currently viewing; if they're in "All", ask them to choose.
-      let ownerTarget = ownerChosenBizIds;
-      if (!isBizUser && state.businesses.length > 0 && ownerTarget.length === 0) {
-        if (state.activeBizId && state.activeBizId !== 'all' && state.activeBizId !== 'none') {
-          ownerTarget = [state.activeBizId];
-        } else {
-          toast('Choose which business this balance entry is for');
-          return;
-        }
-      }
-      const targetBizIds = isBizUser ? [state.bizContext] : ownerTarget;
-      const now = Date.now();
-      state.__lastBalRecorder = recorder;
-
-      if (editingBatch) {
-        // Edit a whole batch: reconcile the modal rows against existing items.
-        const batchId = editing.batchId || ('bb' + now + '_' + Math.random().toString(36).slice(2, 6));
-        const existingById = new Map(editingBatch.map(it => [it.id, it]));
-        const keptIds = new Set();
-        // v210 DATA-LOSS FIX: an existing row is "removed" ONLY if the user
-        // actually deleted it from the form (its _id no longer appears in `rows`).
-        // The previous logic removed any existing item whose row failed the
-        // name+balance validity check — so editing an entry and leaving a balance
-        // blank (now easy, since v209 pre-fills names with blank balances) silently
-        // and PERMANENTLY deleted that row. We now track which existing ids are
-        // still present in the form regardless of validity, and only remove the
-        // ones the user explicitly took out. Removal is also a soft-delete (to
-        // Trash), consistent with the rest of the app, instead of a hard splice.
-        const idsStillInForm = new Set(rows.filter(r => r._id).map(r => r._id));
-        const validRows = rows.map(r => ({ name: (r.name || '').trim(), balance: (r.balance || '').trim(), _id: r._id }))
-                              .filter(r => r.name && r.balance);
-        validRows.forEach(r => {
-          if (r._id && existingById.has(r._id)) {
-            // update in place
-            const it = existingById.get(r._id);
-            it.name = r.name; it.balance = r.balance; it.recordedBy = recorder;
-            it.updatedAt = now; // v213: stamp so cross-device merge resolves correctly
-            it.bizIds = targetBizIds.length ? targetBizIds.slice() : (it.bizIds || []);
-            recordHistory(it, 'edited');
-            keptIds.add(r._id);
-          } else {
-            // a newly added row within this batch
-            const newItem = {
-              id: 'x' + (state.nextItemId++),
-              name: r.name, balance: r.balance,
-              bizIds: targetBizIds.slice(), recordedBy: recorder, batchId,
-              createdAt: now, updatedAt: now, // v213: stamp for cross-device merge
-              createdByBiz: isViewOnly() ? (state.bizContext || true) : false,
-              history: [{ ts: now, action: 'created', label: `Created by ${recorder}` }]
-            };
-            state.items[tabKey].push(newItem);
-            keptIds.add(newItem.id);
-          }
-        });
-        // An existing row that is still in the form but currently invalid (e.g. a
-        // blank balance the user hasn't filled yet) must be PRESERVED, not deleted.
-        // Keep its previous saved values untouched.
-        editingBatch.forEach(it => { if (idsStillInForm.has(it.id) && !keptIds.has(it.id)) keptIds.add(it.id); });
-        // Soft-delete only the rows the user explicitly removed from the form.
-        editingBatch.forEach(it => {
-          if (!keptIds.has(it.id)) {
-            it.deleted = true; it.deletedAt = Date.now(); it.deletedFromTab = tabKey;
-            recordHistory(it, 'deleted');
-          }
-        });
-        // If the recorder name changed, apply to all kept rows (already set above)
-        const touched = new Set(); targetBizIds.forEach(b => touched.add(b)); editingBatch.forEach(it => itemBizIds(it).forEach(b => touched.add(b)));
-        touched.forEach(bid => { const b = bizById(bid); if (b) recordActivity(b, 'edited', `Edited balance entry by ${recorder}`); });
-        state.items[tabKey].filter(x => x.batchId === batchId).forEach(it => recordGlobalActivity(tabKey, 'edited', it));
-        state.__lastBalRecorder = recorder;
-        persistAll();
-        closeModal();
-        state.history.pop(); setActive(tabKey, 'fade');
-        toast('Entry updated');
-      } else {
-        // Create new — one per row, all sharing one batch + recorder
-        const batchId = 'bb' + now + '_' + Math.random().toString(36).slice(2, 6);
-        const created = [];
-        valid.forEach(r => {
-          const newItem = {
-            id: 'x' + (state.nextItemId++),
-            name: r.name,
-            balance: r.balance,
-            bizIds: targetBizIds.slice(),
-            recordedBy: recorder,
-            batchId,
-            createdAt: now,
-            // v213: balance items previously never set updatedAt, so the
-            // cross-device merge (which keeps the copy with the higher updatedAt)
-            // saw 0 === 0 for every balance item and couldn't tell a member's new
-            // entry from the owner's stale copy — letting a stale push overwrite
-            // and "disappear" a just-added entry. Stamp it on every create/edit.
-            updatedAt: now,
-            // Track who actually created the entry: the owner, or a business member.
-            // Owners can DELETE business-created entries but must NOT edit them.
-            createdByBiz: isViewOnly() ? (state.bizContext || true) : false,
-            history: [{ ts: now, action: 'created', label: `Created by ${recorder}` }]
-          };
-          state.items[tabKey].push(newItem);
-          created.push(newItem);
-        });
-        // Remember the set of names just used so the next "Add entry" pre-fills them
-        // (balances stay empty). De-duplicate while preserving order.
-        state.__lastBalNames = [...new Set(valid.map(r => r.name))];
-        // Activity per business
-        targetBizIds.forEach(bid => {
-          const b = bizById(bid);
-          if (!b) return;
-          if (created.length === 1) {
-            recordActivity(b, 'added', `Added balance: ${created[0].name} (${formatBalanceAmount(created[0].balance)})`);
-          } else {
-            recordActivity(b, 'added', `${recorder} added ${created.length} balance entries`);
-          }
-        });
-        // Global activity (one entry per item)
-        created.forEach(it => recordGlobalActivity(tabKey, 'created', it));
-        if (created.length) playBalanceSound();
-        // v230: a new entry supersedes old ones — keep only the 2 newest batches
-        // per business and tombstone the rest (auto-cleanup of obsolete snapshots).
-        try { targetBizIds.forEach(bid => pruneOldBalanceBatches(bid)); } catch (e) {}
-        persistAll();
-        closeModal();
-        state.history.pop(); setActive(tabKey, 'fade');
-        toast(skipped > 0
-          ? `Added ${valid.length}; skipped ${skipped} empty`
-          : (valid.length === 1 ? 'Entry added' : `${valid.length} entries added`));
-      }
-    };
-
-    document.getElementById('m-cancel').onclick = closeModal;
-    const balClose = document.getElementById('m-close'); if (balClose) balClose.onclick = closeModal;
-  }
 
   function renderSystemList(c) {
     renderListTab(c, 'system', 'server-cog', 'No system entries', isViewOnly() ? 'Nothing assigned to you yet.' : 'Tap "New entry" above to add one.');

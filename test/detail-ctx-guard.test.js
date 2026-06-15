@@ -36,10 +36,5 @@ const guardIdx = itemHead.indexOf('if (!ctx)');
 const accessIdx = itemHead.indexOf('ctx.itemTab');
 check('renderItemDetail guard precedes ctx.itemTab access', guardIdx !== -1 && accessIdx !== -1 && guardIdx < accessIdx);
 
-// renderBalanceDetail must guard a missing ctx before reading ctx.itemId.
-const balDetail = app.slice(app.indexOf('function renderBalanceDetail'));
-const balHead = balDetail.slice(0, 300);
-check('renderBalanceDetail falls back to stored ctx', /if \(!ctx\) ctx = state\.__currentCtx/.test(balHead));
-
 console.log(`\n  ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

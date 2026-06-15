@@ -53,12 +53,6 @@ console.log('\nno orphaned entries — new owner items always get an assignment:
 check('no "Myself"/self-assign option (items assign to businesses only)', !/data-assign-self/.test(src) && /let assignSelf = false;/.test(src));
 check('item save requires a business assignment', /toast\('Assign this to a business'\)/.test(src));
 
-console.log('\nBALANCE: only the business login adds; owner is view-only on Balance:');
-check('Balance "Add entry" button only shown to business login (canAddBalance = isViewOnly())', /const canAddBalance = isViewOnly\(\)/.test(src));
-check('openBalanceModal refuses the owner (hard gate)', /Balance entries are added by the business login'\); return; \}/.test(src));
-check('owner cannot EDIT Balance batches', /const canEditBatch = \(b\) => \{\s*if \(!isViewOnly\(\)\) return false;/.test(src));
-check('owner CAN DELETE Balance batches (view + delete, no edit)', /const canDeleteBatch = \(b\) => \{\s*if \(!isViewOnly\(\)\) return true;/.test(src));
-check('Cmd+N on Balance restricted to business login', /state\.items\.balance && isViewOnly\(\)\) openBalanceModal\(\)/.test(src));
 
 console.log('\naccount switch — passwordless session restore, with sign-out+reload fallback:');
 const pas = src.slice(src.indexOf('function performAccountSwitch'), src.indexOf('function performAccountSwitch') + 7000);
@@ -72,7 +66,6 @@ check('isViewOnly() is true when bizContext set', /function isViewOnly\(\)\s*\{\
 // The "New entry" button on list tabs is hidden when isViewOnly() — non-Balance
 // tabs are owner-only for adding. Confirm that gate still exists.
 check('list "New entry" button gated behind !isViewOnly()', /if \(!isViewOnly\(\)\) \{[\s\S]{0,200}tab-add-btn/.test(src));
-check('Balance entry assigns to bizContext for the business user', /const targetBizIds = isBizUser \? \[state\.bizContext\]/.test(src));
 // Businesses tab is owner-only and hidden for view-only sessions.
 check('Businesses tab is ownerOnly (hidden for business logins)', /businesses:\s*\{[^}]*ownerOnly:\s*true/.test(src));
 
@@ -81,7 +74,6 @@ console.log('\nCONFIRMED — non-Balance tabs: only the OWNER adds (business log
 // for a view-only session, so System/Games/Schedule/ID&Pass/custom can't be edited.
 const oim = src.slice(src.indexOf('function openItemModal'), src.indexOf('function openItemModal') + 120);
 check('openItemModal returns early for view-only (business login cannot add on non-Balance tabs)', /if \(isViewOnly\(\)\) return;/.test(oim));
-check('Balance add path keyed on isViewOnly (business user)', /const isBizUser = isViewOnly\(\)/.test(src));
 
 console.log('\nCONFIRMED REQ 2 — business login sees ALL data on ALL tabs of its business:');
 // The member slice must NOT carry a tab-restriction, so every tab is visible.
@@ -112,7 +104,6 @@ console.log('\nactivity log + owner real-time Balance (v63+):');
 check('activity log skips "created" (only edits/deletes/restores logged)', /if \(action === 'created'\) return;/.test(src));
 check('owner does NOT echo-push while applying a remote update (suppress flag breaks the poll→push loop)', /!state\.__suppressOwnerPush/.test(src) && /state\.__suppressOwnerPush = true;/.test(src));
 check('autoShareBusiness starts owner live sync after sharing (real-time without reload)', /__cloudShareOk = true;[\s\S]{0,320}startOwnerSharedSync\(\)/.test(src));
-check('owner CAN delete Balance entries but cannot edit them', /canDeleteBatch = \(b\) => \{\s*if \(!isViewOnly\(\)\) return true;/.test(src) && /canEditBatch = \(b\) => \{\s*if \(!isViewOnly\(\)\) return false;/.test(src));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
