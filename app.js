@@ -492,7 +492,7 @@
   // ---------- App version ----------
   // Single source of truth for the human-visible version, shown on Settings → About.
   // Keep this in sync with sw.js CACHE_VERSION when cutting a build.
-  const APP_VERSION = '233.0.0';
+  const APP_VERSION = '235.0.0';
 
   // ---------- State ----------
   const state = {
@@ -1207,6 +1207,14 @@
       updateActiveBizDisplay(); buildNav(); updateBadges(); persistAll();
       const cur = state.history[state.history.length-1]?.split(':')[0];
       if (cur && TAB_DEFS[cur]) { state.history.pop(); setActive(cur, 'fade'); }
+      // v234: pull fresh cloud data for the business just switched to, so the view
+      // reflects other devices' changes immediately instead of waiting for the
+      // next poll tick (a cause of "switching shows old data briefly").
+      try {
+        const lid = el.dataset.bizChip;
+        const cid = state.bizCloudMap && state.bizCloudMap[lid];
+        if (cid && !state.__sharedMode) refreshSharedFromCloud(cid, true);
+      } catch {}
       haptic();
     });
     $$('[data-tag-chip]', c).forEach(el => el.onclick = (e) => {
@@ -3657,9 +3665,9 @@
       // so polling every couple seconds is inexpensive when nothing changed.
       // Tiny anti-hammer guard: skip only if a realtime apply happened <1.5s ago.
       const sinceRealtime = Date.now() - (window.__lastRealtimeApply || 0);
-      if (sinceRealtime < 1500) return;
+      if (sinceRealtime < 900) return;
       try { refreshSharedFromCloud(cloudBusinessId, false); } catch {}
-    }, 2500);
+    }, 1500); // v234: faster fallback poll (was 2500) so missed updates surface sooner
   }
 
   // Apply a shared snapshot we ALREADY have in hand (e.g. from a realtime payload)
@@ -4085,12 +4093,12 @@
       // and starve the poll, so we must not skip on that basis. The version check
       // is cheap; the heavy fetch only fires when a version actually advanced.
       const sinceRealtime = Date.now() - (window.__lastRealtimeApply || 0);
-      if (sinceRealtime < 1500) return;
+      if (sinceRealtime < 900) return;
       Object.keys(state.bizCloudMap).forEach(lid => {
         const cid = state.bizCloudMap[lid];
         if (cid && bizById(lid)) { try { refreshSharedFromCloud(cid, false); } catch {} }
       });
-    }, 2500);
+    }, 1500); // v234: faster fallback poll (was 2500)
     ownerSharedUnsubs.push(() => { try { clearInterval(window.__ownerSharedPoll); } catch {} });
     // Re-render in case the initial pull changed anything (silent — no flash).
     try { if (state.user) rerenderPreservingScroll(() => rerenderCurrentTab()); } catch {}

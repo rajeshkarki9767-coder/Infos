@@ -3970,12 +3970,3 @@ select:focus-visible,
 .move-dest-row.selected { border-color: var(--accent-solid); background: var(--accent-bg); }
 .move-dest-row.selected .move-dest-check { opacity: 1; }
 .move-dest-row.selected i:first-child { color: var(--accent-solid); }
-
-/* Balance — flat newest-first list (no grouping) */
-
-/* Balance — read-only "View Entry" modal */
-
-/* Balance — low-balance warning banner (latest entry below threshold) */
-/* low-balance highlighting inside the view-entry modal */
-
-/* v215/216: per-business low-balance limit control */
