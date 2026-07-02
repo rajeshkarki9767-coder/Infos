@@ -15,6 +15,13 @@
 }
 
 #app[data-theme="light"], #app[data-theme="auto"] {
+  /* v236 FIX: --brand/--danger/--success were USED in 11 rules but never DEFINED,
+     so those colors/backgrounds silently failed (invisible badge tints, uncolored
+     danger buttons, missing active-device highlight). Alias them to the real
+     tokens; they resolve per-theme because the underlying tokens are themed. */
+  --brand: var(--accent-solid);
+  --danger: var(--danger-fg);
+  --success: var(--success-fg);
   --app-bg: #FAFAF7;
   --sidebar-bg: #F1EFE8;
   --surface-elevated: #FFFFFF;
@@ -39,6 +46,9 @@
 }
 
 #app[data-theme="dark"] {
+  --brand: var(--accent-solid);
+  --danger: var(--danger-fg);
+  --success: var(--success-fg);
   --app-bg: #1A1A18;
   --sidebar-bg: #131311;
   --surface-elevated: #242421;
